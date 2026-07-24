@@ -36,6 +36,25 @@ Task 5: complete (commit 20fdd7d, review clean both verdicts)
     population RMS correct, motion_lag indexing has no off-by-one and normalises
     the window so shift search is unbiased, bone_length_deviation is population
     stdev and skips invalid joints.
+Task 6: complete (commits cbf4529..5e668a4) -- IMPLEMENTATION reviewed clean by
+  the implementer's own mutation testing; NOT yet run through a task reviewer.
+  - Implementer flagged DONE_WITH_CONCERNS: the rigidity property test -- the
+    formal statement of the design's central guarantee -- did not bite. Reversing
+    the traversal order (worst possible decomposition bug) measured EXACTLY
+    0.000000 deviation, because every joint carried identical symmetric +/-noise
+    with identity bases, so the corruption cancelled.
+  - Fixed with _articulated_hand_source: 26-joint hierarchical pose, distinct
+    bone lengths, distinct per-joint rotations, deterministic asymmetric noise
+    (seeded RNG), whole-hand motion. Measures 8 bones at several depths.
+  - All three mutations now caught: reversed order (0.017-0.021 m), raw-vs-
+    filtered parent (0.006-0.010 m), skipped dedup (new _test_hand_filter_dedup).
+  - Correction: raw-vs-filtered parent was previously judged mathematically
+    undetectable. It only looked that way because the old test data never MOVED --
+    with a static hand, filtered ~= raw and there is nothing to lag behind.
+
+## OUTSTANDING
+Task 6 still needs a task reviewer pass (spec + quality). Tasks 7-10 not started.
+Task 10 requires David in a headset; Tasks 7-9 are automatable.
 
 ## Minor findings for final-review triage
 - workshop_station.gd:11 hard-preloads godot_webxr_kit (pre-existing DAG break in
