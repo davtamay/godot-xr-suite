@@ -16,6 +16,7 @@ func _init() -> void:
 	_test_hand_filter(failures)
 	_test_hand_filter_dedup(failures)
 	_test_confidence_gate(failures)
+	_test_publisher(failures)
 	if failures.is_empty():
 		print("XR hand conditioning: PASS")
 		quit(0)
@@ -677,3 +678,37 @@ func _test_confidence_gate(failures: Array[String]) -> void:
 		still_valid = expiring.capture(1, 0, expiring_frame)
 	if still_valid:
 		failures.append("gate held past hold_duration_sec instead of reporting invalid")
+
+func _test_publisher(failures: Array[String]) -> void:
+	var frame := XRHandFrame.new()
+	frame.begin_capture(1, 12345, 1)
+	frame.set_joint(
+		XRHandTracker.HAND_JOINT_WRIST,
+		Transform3D(Basis.IDENTITY, Vector3(0.25, 0.5, 0.75)),
+		0.011,
+		XRHandTracker.HAND_JOINT_FLAG_POSITION_VALID | XRHandTracker.HAND_JOINT_FLAG_ORIENTATION_VALID)
+	frame.tracking_valid = true
+
+	var tracker := XRHandTracker.new()
+	XRConditionedHandPublisher.write_frame_to_tracker(frame, tracker, XRHandTracker.HAND_TRACKING_SOURCE_UNOBSTRUCTED)
+
+	if not tracker.has_tracking_data:
+		failures.append("publisher did not mark the shadow tracker as tracking")
+	var origin := tracker.get_hand_joint_transform(XRHandTracker.HAND_JOINT_WRIST).origin
+	if not origin.is_equal_approx(Vector3(0.25, 0.5, 0.75)):
+		failures.append("publisher wrote the wrong wrist origin: %s" % str(origin))
+	if not is_equal_approx(tracker.get_hand_joint_radius(XRHandTracker.HAND_JOINT_WRIST), 0.011):
+		failures.append("publisher did not carry the joint radius through")
+	if (tracker.get_hand_joint_flags(XRHandTracker.HAND_JOINT_WRIST) & XRHandTracker.HAND_JOINT_FLAG_POSITION_VALID) == 0:
+		failures.append("publisher did not carry joint flags through")
+	# hand_tracking_source must survive, or the modality manager stops working.
+	if tracker.hand_tracking_source != XRHandTracker.HAND_TRACKING_SOURCE_UNOBSTRUCTED:
+		failures.append("publisher did not carry hand_tracking_source through")
+
+	# An invalid frame must clear the tracking flag rather than freeze.
+	var lost := XRHandFrame.new()
+	lost.begin_capture(1, 12400, 2)
+	lost.tracking_valid = false
+	XRConditionedHandPublisher.write_frame_to_tracker(lost, tracker, XRHandTracker.HAND_TRACKING_SOURCE_UNKNOWN)
+	if tracker.has_tracking_data:
+		failures.append("publisher left has_tracking_data set after an invalid frame")
