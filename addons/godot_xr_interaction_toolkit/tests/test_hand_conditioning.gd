@@ -615,6 +615,29 @@ class _ScriptedSource extends XRHandPoseSource:
 		return false
 
 func _test_confidence_gate(failures: Array[String]) -> void:
+	var first_source := _ScriptedSource.new()
+	first_source.pattern = [true, true]
+	var first_gate := XRHandConfidenceGate.new(first_source)
+	var first_frame := XRHandFrame.new()
+
+	# First acquisition alone must raise a discontinuity: the filter has no
+	# history yet, so it must SEED from this first sample rather than blend
+	# against uninitialised state. Checked in isolation, on its own gate, so a
+	# later reacquisition's discontinuity cannot mask a missing one here.
+	if not first_gate.capture(1, 0, first_frame):
+		failures.append("gate rejected the very first tracked frame")
+	if not first_gate.consume_discontinuity(1):
+		failures.append("gate did not raise a discontinuity on first acquisition")
+	if first_gate.consume_discontinuity(1):
+		failures.append("first-acquisition discontinuity was not cleared after being consumed")
+
+	# A discontinuity must fire once per acquisition event, not on every frame:
+	# a second consecutive tracked frame with no dropout must not re-raise it.
+	if not first_gate.capture(1, 0, first_frame):
+		failures.append("gate rejected a normal consecutive tracked frame")
+	if first_gate.consume_discontinuity(1):
+		failures.append("gate raised a discontinuity on a normal frame with no dropout")
+
 	var source := _ScriptedSource.new()
 	# tracked, tracked, LOST, LOST, tracked
 	source.pattern = [true, true, false, false, true]
