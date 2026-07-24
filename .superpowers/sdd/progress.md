@@ -63,7 +63,25 @@ Task 7: complete (commits 7133cdd..7b0be31, review clean both verdicts; reviewer
     PASS). A bonus mutation (fires every frame) is also now caught.
 
 ## OUTSTANDING
-Next action: Task 8 (shadow-tracker publisher), base 7b0be31. Then Tasks 9, 10. Task 10 requires David in a headset; 7-9 automatable.
+Task 8: IMPLEMENTED (commit a716d37, base df7c4d8). NOT yet reviewed.
+  - Mutations caught: dropped hand_tracking_source, has_tracking_data left true
+    on an invalid frame, skipped radii, skipped flags.
+  - Mutations NOT caught: the per-render-frame cache in get_conditioned() --
+    neither "always re-run" nor "never re-run" fails any test. The plan's test
+    only calls the STATIC write_frame_to_tracker (deliberately, so it runs
+    headless without XRServer), so the lazy-once-per-render-frame behaviour has
+    ZERO coverage despite being a core design property. Implementer followed the
+    brief and flagged it rather than adding out-of-scope coverage. CLOSE THIS
+    before or during Task 9, which depends on that caching for the A/B toggle.
+
+## NEXT ACTIONS, in order
+1. Close the Task 8 cache-coverage gap (above), then task-reviewer pass on
+   Task 8 (base df7c4d8).
+2. Task 9: resolver conditioned mode + unify the 8 bypassing call sites +
+   xr_package.cfg provides += hand_input. Watch the XRHandFilter enabled-toggle
+   note above.
+3. Task 10: baseline traces, tuning, WEB frame-cost measurement, on-device
+   earn-in. REQUIRES DAVID IN A HEADSET. A/B on the WebGL path, not WebGPU. Task 10 requires David in a headset; 7-9 automatable.
 
 CARRY INTO TASK 9 (A/B toggle): reviewer found XRHandFilter does not reset
 _last_timestamp / _has_output when `enabled` flips false->true, so the first
