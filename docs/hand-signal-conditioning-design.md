@@ -152,6 +152,13 @@ alpha(c, dt) = 1 / (1 + tau/dt),  tau = 1 / (2*pi*c)
 Parameters: `min_cutoff` (Hz — governs stillness at rest), `beta` (governs lag
 reduction under motion), `d_cutoff` (Hz — smoothing of the speed estimate).
 
+**Operates on `Vector3` and `Quaternion` as whole units, not per component** —
+one speed estimate from the magnitude, one alpha, one native `lerp`/`slerp`.
+See Performance for why this is both faster and more correct. State is held in
+flat packed arrays indexed by joint rather than in per-scalar objects, so this
+is a set of static functions over shared state rather than an instance per
+filtered value.
+
 **Driven by real timestamps, not frame counts.** WebXR frame pacing is
 variable; a frame-count-driven filter silently retunes itself whenever the
 framerate moves. `dt` comes from `Time.get_ticks_usec()` deltas.
@@ -159,12 +166,15 @@ framerate moves. `dt` comes from `Time.get_ticks_usec()` deltas.
 - **Depends on:** nothing.
 - **Used by:** `XRHandFilter` only.
 
-### `XRHandQuaternionFilter` (RefCounted)
+### Rotation filtering
 
-Rotation variant. Reuses `XROneEuroFilter`'s adaptive cutoff computation, with
-speed measured as angular distance per second, applied via `slerp` rather than
-scalar lerp. Includes hemisphere correction (negate when `dot < 0`) so the
-filter never takes the long way around.
+Same adaptive cutoff, with speed measured as angular distance per second and
+applied via a single `slerp`. Includes hemisphere correction (negate when
+`dot < 0`) so the filter never takes the long way around.
+
+Fingertip joints are **position-only** — they have no children, and their
+rotation is unused by poke and pinch — so they skip rotation filtering
+entirely.
 
 ### `XRHandJointHierarchy`
 
@@ -181,11 +191,13 @@ The core. For each frame:
 
 1. Decompose into **wrist world pose** plus, for every other joint, its
    transform **relative to its parent**.
-2. Filter the wrist position (3 scalar filters) and wrist rotation (quaternion
-   filter).
-3. Filter each joint's parent-local rotation.
+2. Filter the wrist position and rotation.
+3. Filter each joint's parent-local rotation (tips excepted — see above).
 4. Filter each joint's parent-local **translation** with a very low cutoff.
 5. Recompose world transforms by walking the hierarchy.
+
+Steps 2–4 skip entirely when the raw pose is unchanged from the previous frame,
+and step 3–4 cover only the joints currently consumed. See Performance.
 
 **Why parent-local.** Filtering world positions independently lets neighbouring
 joints be smoothed by different amounts, so bone lengths breathe and the hand
@@ -311,6 +323,22 @@ becomes a same-directory reference.
 Gesture recognition, feature extraction, and both visualizers stay in
 `godot_xr_hands`. Only the acquisition plumbing moves.
 
+**Manifest update.** The suite declares inter-addon dependencies formally in
+`xr_package.cfg`, which the package resolver and Project Doctor read.
+`xr.interaction` is `layer="foundation"` with `requires=PackedStringArray()`,
+and `xr.hands` is `layer="capability"` with `requires=["xr.interaction"]`. This
+design keeps both true — which is exactly why the acquisition layer moves down
+rather than the resolver moving up. The inverse would have made a *foundation*
+package require a *capability* package, giving mutually recursive `requires`
+and a foundation that cannot be installed alone.
+
+Deliverable: add a hand-input capability to `xr.interaction`'s `provides` list,
+since the toolkit now offers conditioned hand data to packages above it.
+
+Unaffected: `godot_universal_xr_apk` is `layer="deployment"`,
+`requires=["openxr.vendors"]`, `runtime_footprint="Editor/export only"`. It has
+no coupling to either addon and packages whatever the project contains.
+
 Consequence worth stating: the toolkit's own poke, direct, and ray interactors
 now get conditioned hand data even when the toolkit is installed alone, without
 `godot_xr_hands` present. That is the correct outcome — they are the heaviest
@@ -350,20 +378,72 @@ for A/B and debugging.
 
 ## Performance
 
-Approximately 380 scalar filter updates per frame across both hands
-(2 hands x [26 joints x (4 rotation + 3 translation)] + wrist pose). Each
-update is roughly 8 float operations plus two divisions.
+### Why this is designed for, not deferred
 
-Estimated **0.1–0.4 ms/frame in GDScript**, worse under WebAssembly — call it
-1–3% of a 72 Hz frame budget. This is an estimate, not a measurement; the trace
-harness produces the real number and it is a gate on acceptance, not a
-footnote.
+The usual posture — ship the obvious implementation, measure, optimize if
+needed — assumes a cheap escape hatch. Here there isn't one.
 
-Per `CLAUDE.md`'s layer preference this ships as project code. If measurement
-shows it does not fit, the mitigations in order are: flat `PackedFloat32Array`
-filter state to eliminate per-joint allocation; precomputed alpha where cutoff
-is stable; skipping unread joints while the mesh hand is hidden. GDExtension is
-a last resort requiring its own justification, not part of this plan.
+`EVIDENCE_LOG.md` records that Godot's default web export templates ship
+`variant/extensions_support=false`, and that GDExtension on web requires the
+`dlink` template variant. Dropping to native code is therefore a **custom
+export template** commitment — layer 7 in `CLAUDE.md`'s hierarchy — not a
+drop-in rewrite. For the WebXR target, GDScript-level efficiency is the primary
+lever rather than a fallback.
+
+Two of the measures below are also *more correct* than the naive approach, so
+they belong in the first implementation regardless of cost.
+
+### Vectorize — do not filter per-component
+
+A position filtered as three independent scalars gives each axis its own
+adaptive alpha. Because One Euro's cutoff tracks per-axis speed, a diagonal
+motion smooths the slow axis more than the fast one, the slow component lags
+further, and **the trajectory bends**. The filter introduces a direction error
+that scales with how diagonal the motion is.
+
+Instead: derive one speed estimate from the vector's magnitude, compute one
+alpha, apply one native `lerp`. Rotations likewise — one angular speed, one
+alpha, one `slerp`. Direction is preserved exactly, and 7 GDScript-level
+operations per joint collapse to 2.
+
+This is a deliberate choice, not the only valid one — per-component filtering
+is common in 1€ implementations. For a rigid skeleton, where direction fidelity
+matters more than per-axis tuning, the shared-alpha variant is the better
+trade.
+
+### Flat state, not filter objects
+
+The obvious implementation allocates one filter object per filtered scalar —
+roughly 380 `RefCounted` instances, each accessed through property get/set,
+which is among GDScript's slowest operations. State lives instead in
+`PackedVector3Array` / `PackedFloat32Array` indexed by joint, operated on by
+static functions. Removes both the allocation and the property lookups.
+
+### Skip work that cannot matter
+
+| Measure | Saving |
+|---|---|
+| No-op when the raw pose is unchanged from last frame (render rate commonly exceeds hand-tracking rate) | Whole chain, on a meaningful fraction of frames |
+| Filter only consumed joints — with the mesh hand hidden, roughly 8 of 26 matter; re-seed on show, which is invisible because the hand just appeared | ~3x in gesture-only scenes |
+| Fingertips are position-only — the 5 tips have no children and their rotation is unused by poke and pinch | 5 quaternion filters per hand |
+| Hoist per-frame constants (`1 / (2*pi*dt)`) out of the joint loop | Constant factor |
+
+### Budget
+
+Approximately **104 vector-level operations on flat arrays** per frame across
+both hands, versus ~380 scalar operations on objects for the naive version.
+
+No number is claimed here. The naive estimate was 0.1–0.4 ms in GDScript and
+the measures above should improve on it substantially, but **the trace harness
+produces the real figure and it is a gate on acceptance, not a footnote** —
+including a WebAssembly measurement, since that is the target that matters and
+the one where GDScript is weakest.
+
+If measurement still shows it does not fit, the next step is a scope decision
+(filter fewer joints, or condition only the consumers that demonstrably need
+it), not an automatic jump to GDExtension — which would drag in the `dlink`
+template and its own build, size, and deployment costs, and needs its own
+justification.
 
 ## Testing
 
@@ -432,10 +512,13 @@ it is made.
 
 **Red team — how this fails.**
 
-- *Cost exceeds budget on WebAssembly.* Most likely failure. GDScript in wasm
-  is materially slower than native, and this runs every frame on the critical
-  path. Mitigated by measuring early — the harness exists before tuning starts,
-  so this is caught in week one, not at demo time.
+- *Cost exceeds budget on WebAssembly.* Most likely failure, and the one with
+  the worst escape hatch: GDScript in wasm is materially slower than native,
+  this runs every frame on the critical path, and dropping to GDExtension means
+  adopting the `dlink` export template. Mitigated by designing for efficiency
+  up front rather than deferring it (see Performance) and by measuring on the
+  web target early — the harness exists before tuning starts, so this is caught
+  in week one, not at demo time.
 - *Gentle tuning yields an underwhelming result.* Constrained by the recognizer
   decision above, the filter may not be allowed to be strong enough to deliver
   a felt improvement. Detected by the metrics; the response is the follow-up
@@ -462,6 +545,9 @@ it is made.
 | Accessor is split | 7 files via resolver; 8+ call sites via raw `XRServer.get_tracker` |
 | Shadow trackers are viable in Godot 4.8 | `xr_simulator.gd:703-705` writes joints into a constructed `XRHandTracker` |
 | Toolkit is the dependency-free runtime base | `DECISION_LOG.md` (addon split); hands hard-preloads toolkit in 4 files, toolkit references hands only via editor strings and one no-op model path |
+| The DAG is declared formally, not just by convention | `xr_package.cfg`: `xr.interaction` layer=foundation requires=[]; `xr.hands` layer=capability requires=["xr.interaction"] |
+| Universal APK is unaffected by addon layering | `godot_universal_xr_apk/xr_package.cfg`: layer=deployment, requires=["openxr.vendors"], runtime_footprint="Editor/export only" |
+| GDExtension is not a cheap fallback on web | `EVIDENCE_LOG.md`: default web templates ship `variant/extensions_support=false`; GDExtension web use requires the `dlink` template variant |
 | The acquisition seam exists and is unused outside gestures | `xr_hand_pose_source.gd`; only `xr_gesture_runtime.gd` consumes it |
 | Meta conditions at the data source | ISDK `Runtime/Scripts/Input/OneEuroFilter/` (7 files), applied via `Input/Hands/DataModifiers/HandFilter.cs` |
 | Meta tunes filtering per hand region | ISDK `Input/OneEuroFilter/HandFilterParameterBlock.cs` |
@@ -469,6 +555,11 @@ it is made.
 
 ## Next smallest step
 
-Build `XROneEuroFilter` plus its unit tests and the trace recorder — in that
-order. The recorder must exist before any tuning happens, so the first
-parameter choice is made against a real baseline rather than a guess.
+Build `XROneEuroFilter` — vectorized over `Vector3`/`Quaternion` with flat
+packed state from the start, not a scalar-object version to be optimized later
+— plus its unit tests, then the trace recorder.
+
+The recorder must exist before any tuning happens, so the first parameter
+choice is made against a real baseline rather than a guess. Its first job is a
+WebAssembly cost measurement, since that is the target where the budget is
+tightest and the fallback is most expensive.
