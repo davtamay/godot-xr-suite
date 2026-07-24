@@ -12,6 +12,7 @@ func _init() -> void:
 	_test_rotation_filter(failures)
 	_test_trace_round_trip(failures)
 	_test_recorder_dedup_guard(failures)
+	_test_trace_metrics(failures)
 	if failures.is_empty():
 		print("XR hand conditioning: PASS")
 		quit(0)
@@ -288,3 +289,56 @@ func _wrist_frame(wrist_x: float) -> XRHandFrame:
 		XRHandTracker.HAND_JOINT_FLAG_POSITION_VALID)
 	frame.tracking_valid = true
 	return frame
+
+func _test_trace_metrics(failures: Array[String]) -> void:
+	# Jitter: a constant signal has zero spread; a noisy one does not.
+	var still := PackedVector3Array()
+	for i in range(20):
+		still.append(Vector3(0.5, 0.5, 0.5))
+	if not is_zero_approx(XRHandTraceMetrics.rest_jitter(still)):
+		failures.append("a constant signal must have zero rest jitter")
+
+	var noisy := PackedVector3Array()
+	for i in range(20):
+		noisy.append(Vector3(0.5 + (0.01 if i % 2 == 0 else -0.01), 0.5, 0.5))
+	var noisy_jitter := XRHandTraceMetrics.rest_jitter(noisy)
+	if not is_equal_approx(noisy_jitter, 0.01):
+		failures.append("expected 0.01 m rest jitter, got %.5f" % noisy_jitter)
+
+	# Lag: a signal delayed by a known number of frames must be measured back.
+	var dt := 1.0 / 72.0
+	var raw := PackedVector3Array()
+	var delayed := PackedVector3Array()
+	var shift := 3
+	for i in range(60):
+		raw.append(Vector3(sin(i * 0.2), 0, 0))
+		delayed.append(Vector3(sin((i - shift) * 0.2), 0, 0))
+	var measured := XRHandTraceMetrics.motion_lag_seconds(raw, delayed, dt, 10)
+	if not is_equal_approx(measured, shift * dt):
+		failures.append("expected %.5f s of lag, measured %.5f s" % [shift * dt, measured])
+
+	# Bone length: a rigid chain has zero deviation, a stretching one does not.
+	var rigid := _bone_frames([0.03, 0.03, 0.03, 0.03])
+	if not is_zero_approx(XRHandTraceMetrics.bone_length_deviation(rigid, XRHandTracker.HAND_JOINT_INDEX_FINGER_TIP)):
+		failures.append("a rigid bone must have zero length deviation")
+
+	var stretching := _bone_frames([0.03, 0.04, 0.03, 0.04])
+	if XRHandTraceMetrics.bone_length_deviation(stretching, XRHandTracker.HAND_JOINT_INDEX_FINGER_TIP) <= 0.0:
+		failures.append("a stretching bone must report non-zero length deviation")
+
+## Builds trace-shaped frames where the index tip sits `lengths[i]` from its parent.
+func _bone_frames(lengths: Array) -> Array:
+	var parent_joint: int = XRHandJointHierarchy.PARENT[XRHandTracker.HAND_JOINT_INDEX_FINGER_TIP]
+	var built: Array = []
+	for length in lengths:
+		var transforms: Array[Transform3D] = []
+		transforms.resize(XRHandFrame.JOINT_COUNT)
+		for joint in range(XRHandFrame.JOINT_COUNT):
+			transforms[joint] = Transform3D.IDENTITY
+		transforms[parent_joint] = Transform3D(Basis.IDENTITY, Vector3.ZERO)
+		transforms[XRHandTracker.HAND_JOINT_INDEX_FINGER_TIP] = Transform3D(Basis.IDENTITY, Vector3(0, 0, length))
+		var flags := PackedInt32Array()
+		flags.resize(XRHandFrame.JOINT_COUNT)
+		flags.fill(XRHandTracker.HAND_JOINT_FLAG_POSITION_VALID)
+		built.append({"transforms": transforms, "flags": flags})
+	return built
