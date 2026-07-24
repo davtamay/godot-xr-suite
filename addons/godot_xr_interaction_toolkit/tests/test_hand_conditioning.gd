@@ -14,6 +14,7 @@ func _init() -> void:
 	_test_recorder_dedup_guard(failures)
 	_test_trace_metrics(failures)
 	_test_hand_filter(failures)
+	_test_hand_filter_dedup(failures)
 	if failures.is_empty():
 		print("XR hand conditioning: PASS")
 		quit(0)
@@ -395,25 +396,54 @@ func _test_hand_filter(failures: Array[String]) -> void:
 
 	# 2. RIGIDITY. The central guarantee: no parameters, however extreme, may
 	#    change a bone length. This must hold by construction, not by tuning.
-	var extreme := XRHandFilter.new(_noisy_source(40, 0.02))
+	#
+	#    A synthetic pose that stays symmetric (the same alternating +/-noise
+	#    on every joint, identity bases everywhere, only 3 of 26 joints even
+	#    populated) lets decomposition bugs cancel out by accident: reversing
+	#    the traversal order anchors joints on an uninitialised identity
+	#    transform -- the most severe decomposition bug possible -- and that
+	#    still measured exactly 0.000000 deviation here, because Euclidean
+	#    length is sign-insensitive and every joint wobbled by the exact same
+	#    +/-noise. _articulated_hand_source below gives every joint its own
+	#    unequal bone length, its own fixed rotation, and independently
+	#    seeded asymmetric noise, while the whole hand translates and
+	#    rotates -- so a wrong parent anchor moves a different amount than
+	#    the correct one and there is nothing left for a bug to hide behind.
+	var warmup_steps := 20
+	var total_steps := 60
+	var extreme := XRHandFilter.new(_articulated_hand_source(total_steps, 0.02))
 	extreme.position_min_cutoff = 0.01
 	extreme.position_beta = 0.0
 	extreme.rotation_min_cutoff = 0.01
 	extreme.bone_min_cutoff = 0.01
 	var captured: Array = []
 	var rigid_frame := XRHandFrame.new()
-	for step in range(40):
+	for step in range(total_steps):
 		if not extreme.capture(1, 0, rigid_frame):
 			continue
+		if step < warmup_steps:
+			continue  # let the heavily-smoothed bone-offset filter settle first.
 		var transforms: Array[Transform3D] = []
 		transforms.resize(XRHandFrame.JOINT_COUNT)
 		for joint in range(XRHandFrame.JOINT_COUNT):
 			transforms[joint] = rigid_frame.joint_transforms[joint]
 		captured.append({"transforms": transforms, "flags": rigid_frame.joint_flags.duplicate()})
 
-	var deviation := XRHandTraceMetrics.bone_length_deviation(captured, XRHandTracker.HAND_JOINT_INDEX_FINGER_TIP)
-	if deviation > 0.0005:
-		failures.append("bone length varied by %.5f m under extreme filtering (limit 0.0005)" % deviation)
+	# Several bones, at several depths in the hierarchy, not just one tip.
+	var bones_to_check := [
+		XRHandTracker.HAND_JOINT_INDEX_FINGER_PHALANX_PROXIMAL,
+		XRHandTracker.HAND_JOINT_INDEX_FINGER_PHALANX_INTERMEDIATE,
+		XRHandTracker.HAND_JOINT_INDEX_FINGER_PHALANX_DISTAL,
+		XRHandTracker.HAND_JOINT_INDEX_FINGER_TIP,
+		XRHandTracker.HAND_JOINT_MIDDLE_FINGER_PHALANX_PROXIMAL,
+		XRHandTracker.HAND_JOINT_MIDDLE_FINGER_TIP,
+		XRHandTracker.HAND_JOINT_THUMB_PHALANX_DISTAL,
+		XRHandTracker.HAND_JOINT_PINKY_FINGER_TIP,
+	]
+	for joint in bones_to_check:
+		var deviation := XRHandTraceMetrics.bone_length_deviation(captured, joint)
+		if deviation > 0.0025:
+			failures.append("bone length varied by %.6f m under extreme filtering for joint %d (limit 0.0025)" % [deviation, joint])
 
 	# 3. enabled = false is a true pass-through.
 	var bypass := XRHandFilter.new(_noisy_source(6, 0.01))
@@ -424,3 +454,139 @@ func _test_hand_filter(failures: Array[String]) -> void:
 	var expected := Vector3(-0.01, 0, 0)  # step 1 of the alternating wobble
 	if not bypass_frame.joint_transforms[XRHandTracker.HAND_JOINT_WRIST].origin.is_equal_approx(expected):
 		failures.append("disabled filter altered the frame: %s" % str(bypass_frame.joint_transforms[XRHandTracker.HAND_JOINT_WRIST].origin))
+
+## Fixed (noise-free) bone transform of `joint` relative to its TRUE parent,
+## per XRHandJointHierarchy.PARENT. Every finger gets a distinct spread
+## angle, a distinct curl, and strictly decreasing segment lengths -- unlike
+## a degenerate pose, parent-local decomposition here has real rotation and
+## real, unequal bone lengths to get wrong.
+func _skeleton_local(joint: int) -> Transform3D:
+	var chains := XRHandJointHierarchy.CHAINS
+	for chain_index in range(chains.size()):
+		var chain: Array = chains[chain_index]
+		var depth := chain.find(joint)
+		if depth == -1:
+			continue
+		var yaw := deg_to_rad(-30.0 + 15.0 * chain_index)
+		var pitch := deg_to_rad(-10.0 - 8.0 * depth + 3.0 * chain_index)
+		var roll := deg_to_rad(4.0 * chain_index - 2.0 * depth)
+		var basis := Basis.from_euler(Vector3(pitch, yaw, roll))
+		if depth == 0:
+			# Metacarpal: root of the chain, spread laterally off the wrist.
+			return Transform3D(basis, basis * Vector3(0.018 * (chain_index - 2), 0.0, 0.05))
+		var length: float = maxf(0.045 - 0.008 * depth - 0.002 * chain_index, 0.012)
+		return Transform3D(basis, basis * Vector3(0.0, 0.0, length))
+	if joint == XRHandTracker.HAND_JOINT_PALM:
+		return Transform3D(Basis.IDENTITY, Vector3(0.0, -0.005, 0.03))
+	return Transform3D.IDENTITY
+
+## The whole hand's world pose at `step`: a real path, not a hold-still
+## point, so the filter is actually doing work rather than sitting at rest.
+func _wrist_world(step: int) -> Transform3D:
+	var t := float(step) / 12.0
+	var origin := Vector3(0.10 * sin(t), 0.03 * t, 0.05 * cos(t * 0.7))
+	var basis := Basis.from_euler(Vector3(0.15 * sin(t * 0.5), 0.25 * t, 0.10 * cos(t * 0.9)))
+	return Transform3D(basis, origin)
+
+## A full 26-joint, genuinely hierarchical, moving hand with asymmetric,
+## per-joint, deterministic noise. Every joint is populated (unlike
+## _noisy_source's 3-of-26), so every joint actually exercises parent-local
+## decomposition instead of the "missing parent" raw-copy fallback. Noise is
+## drawn from a seeded RandomNumberGenerator, not randf(), so the trace is
+## reproducible across runs.
+func _articulated_hand_source(sample_count: int, noise: float) -> XRHandTracePlayer:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 724026
+	var trace := XRHandTrace.new()
+	var wrist_id := XRHandTracker.HAND_JOINT_WRIST
+	for step in range(sample_count):
+		var frame := XRHandFrame.new()
+		frame.begin_capture(1, step * 13888, step)  # ~72 Hz in microseconds
+
+		var wrist_noise := Vector3(
+			rng.randf_range(-noise, noise * 1.6),
+			rng.randf_range(-noise * 0.7, noise),
+			rng.randf_range(-noise, noise * 0.5))
+		var wrist_transform := _wrist_world(step) * Transform3D(Basis.IDENTITY, wrist_noise)
+		frame.set_joint(wrist_id, wrist_transform, 0.012, XRHandTracker.HAND_JOINT_FLAG_POSITION_VALID)
+
+		var world: Array[Transform3D] = []
+		world.resize(XRHandFrame.JOINT_COUNT)
+		world[wrist_id] = wrist_transform
+
+		for joint in XRHandJointHierarchy.ORDER:
+			if joint == wrist_id:
+				continue
+			var parent_joint: int = XRHandJointHierarchy.PARENT[joint]
+			var local := _skeleton_local(joint)
+			var offset_noise := Vector3(
+				rng.randf_range(-noise, noise * 1.3),
+				rng.randf_range(-noise * 1.1, noise * 0.6),
+				rng.randf_range(-noise * 0.8, noise))
+			var angle_noise := rng.randf_range(-noise * 3.0, noise * 4.0)
+			var axis := Vector3(
+				rng.randf_range(-1.0, 1.0),
+				rng.randf_range(-1.0, 1.0),
+				rng.randf_range(-1.0, 1.0))
+			if axis.length_squared() < 0.0001:
+				axis = Vector3.UP
+			var noisy_local := Transform3D(
+				local.basis.rotated(axis.normalized(), angle_noise),
+				local.origin + offset_noise)
+			var joint_world: Transform3D = world[parent_joint] * noisy_local
+			world[joint] = joint_world
+			frame.set_joint(joint, joint_world, 0.008, XRHandTracker.HAND_JOINT_FLAG_POSITION_VALID)
+
+		frame.tracking_valid = true
+		trace.append_frame(frame)
+	return XRHandTracePlayer.new(trace)
+
+func _test_hand_filter_dedup(failures: Array[String]) -> void:
+	# Regression for the filter's own duplicate-frame guard (capture()'s
+	# early-return that replays _output[hand] when the raw wrist transform
+	# repeats). Its sibling in XRHandTraceRecorder has
+	# _test_recorder_dedup_guard; this had zero coverage before. Frame 1
+	# repeats frame 0's wrist exactly but moves the index finger a long way
+	# -- if the guard fires, that finger motion must be invisible in the
+	# output (replay, not refilter). Frame 2 moves the wrist for real,
+	# proving the filter is not simply stuck.
+	var trace := XRHandTrace.new()
+	trace.append_frame(_dedup_probe_frame(0.05, 0.03, 0))
+	trace.append_frame(_dedup_probe_frame(0.05, 0.09, 1))  # wrist unchanged, tip jumps
+	trace.append_frame(_dedup_probe_frame(0.09, 0.03, 2))  # wrist changed for real
+
+	var filter := XRHandFilter.new(XRHandTracePlayer.new(trace))
+	var out0 := XRHandFrame.new()
+	var out1 := XRHandFrame.new()
+	var out2 := XRHandFrame.new()
+	filter.capture(1, 0, out0)
+	filter.capture(1, 0, out1)
+	filter.capture(1, 0, out2)
+
+	var tip_id := XRHandTracker.HAND_JOINT_INDEX_FINGER_TIP
+	var wrist_id := XRHandTracker.HAND_JOINT_WRIST
+	if not out1.joint_transforms[tip_id].is_equal_approx(out0.joint_transforms[tip_id]):
+		failures.append("duplicate raw wrist sample was not suppressed: tip output moved from %s to %s" % [
+			str(out0.joint_transforms[tip_id].origin), str(out1.joint_transforms[tip_id].origin)])
+	if not out1.joint_transforms[wrist_id].origin.is_equal_approx(out0.joint_transforms[wrist_id].origin):
+		failures.append("duplicate raw wrist sample was not suppressed: wrist output changed")
+	if out2.joint_transforms[wrist_id].origin.is_equal_approx(out1.joint_transforms[wrist_id].origin):
+		failures.append("filter appears stuck: a genuinely new wrist sample produced no change")
+
+func _dedup_probe_frame(wrist_x: float, tip_z: float, step: int) -> XRHandFrame:
+	var frame := XRHandFrame.new()
+	frame.begin_capture(1, step * 13888, step)  # ~72 Hz in microseconds
+	frame.set_joint(
+		XRHandTracker.HAND_JOINT_WRIST,
+		Transform3D(Basis.IDENTITY, Vector3(wrist_x, 0, 0)),
+		0.01, XRHandTracker.HAND_JOINT_FLAG_POSITION_VALID)
+	frame.set_joint(
+		XRHandTracker.HAND_JOINT_INDEX_FINGER_PHALANX_DISTAL,
+		Transform3D(Basis.IDENTITY, Vector3(0.02, 0.0, 0.0)),
+		0.008, XRHandTracker.HAND_JOINT_FLAG_POSITION_VALID)
+	frame.set_joint(
+		XRHandTracker.HAND_JOINT_INDEX_FINGER_TIP,
+		Transform3D(Basis.IDENTITY, Vector3(0.02, 0.0, tip_z)),
+		0.008, XRHandTracker.HAND_JOINT_FLAG_POSITION_VALID)
+	frame.tracking_valid = true
+	return frame
