@@ -63,24 +63,27 @@ Task 7: complete (commits 7133cdd..7b0be31, review clean both verdicts; reviewer
     PASS). A bonus mutation (fires every frame) is also now caught.
 
 ## OUTSTANDING
-Task 8: IMPLEMENTED (commit a716d37, base df7c4d8). NOT yet reviewed.
-  - Mutations caught: dropped hand_tracking_source, has_tracking_data left true
-    on an invalid frame, skipped radii, skipped flags.
-  - Mutations NOT caught: the per-render-frame cache in get_conditioned() --
-    neither "always re-run" nor "never re-run" fails any test. The plan's test
-    only calls the STATIC write_frame_to_tracker (deliberately, so it runs
-    headless without XRServer), so the lazy-once-per-render-frame behaviour has
-    ZERO coverage despite being a core design property. Implementer followed the
-    brief and flagged it rather than adding out-of-scope coverage. CLOSE THIS
-    before or during Task 9, which depends on that caching for the A/B toggle.
+Task 8: complete (commits df7c4d8..13d28a4, reviewed; two fix rounds).
+  - Round 1 gap: the per-render-frame cache had ZERO coverage (both "always
+    re-run" and "never re-run" passed). Closed by extracting _should_republish.
+  - Round 2, CRITICAL, found by the reviewer: _ensure_tracker never set
+    tracker.name, so BOTH hands registered as "Unknown", the documented
+    TRACKER_NAMES lookup returned null, and publishing the right hand silently
+    OVERWROTE the left in XRServer's registry. The publisher did not publish.
+    Fixed + covered by _test_publisher_tracker_registration.
+  - Round 2, Important: get_conditioned returned a tracker on a cache HIT even
+    when the publish that filled it was untracked, while a MISS returned null --
+    null-or-object depending on call order within one frame. Now consistent.
+  - Lesson: the static write_frame_to_tracker was testable headless and got
+    covered; the XRServer-touching path was assumed untestable and got none --
+    which is exactly where the Critical bug lived. A headless --script run DOES
+    have XRServer; use it.
 
 ## NEXT ACTIONS, in order
-1. Close the Task 8 cache-coverage gap (above), then task-reviewer pass on
-   Task 8 (base df7c4d8).
-2. Task 9: resolver conditioned mode + unify the 8 bypassing call sites +
+1. Task 9: resolver conditioned mode + unify the 8 bypassing call sites +
    xr_package.cfg provides += hand_input. Watch the XRHandFilter enabled-toggle
    note above.
-3. Task 10: baseline traces, tuning, WEB frame-cost measurement, on-device
+2. Task 10: baseline traces, tuning, WEB frame-cost measurement, on-device
    earn-in. REQUIRES DAVID IN A HEADSET. A/B on the WebGL path, not WebGPU. Task 10 requires David in a headset; 7-9 automatable.
 
 CARRY INTO TASK 9 (A/B toggle): reviewer found XRHandFilter does not reset
