@@ -13,6 +13,7 @@ func _init() -> void:
 	_test_trace_round_trip(failures)
 	_test_recorder_dedup_guard(failures)
 	_test_trace_metrics(failures)
+	_test_hand_filter(failures)
 	if failures.is_empty():
 		print("XR hand conditioning: PASS")
 		quit(0)
@@ -342,3 +343,84 @@ func _bone_frames(lengths: Array) -> Array:
 		flags.fill(XRHandTracker.HAND_JOINT_FLAG_POSITION_VALID)
 		built.append({"transforms": transforms, "flags": flags})
 	return built
+
+## Builds a pose source emitting a wrist-plus-index-tip hand with optional noise.
+func _noisy_source(sample_count: int, noise: float) -> XRHandTracePlayer:
+	var trace := XRHandTrace.new()
+	var tip_offset := Vector3(0, 0, 0.03)
+	for step in range(sample_count):
+		var frame := XRHandFrame.new()
+		frame.begin_capture(1, step * 13888, step)  # ~72 Hz in microseconds
+		var wobble := Vector3(noise if step % 2 == 0 else -noise, 0, 0)
+		var wrist := Transform3D(Basis.IDENTITY, wobble)
+		frame.set_joint(XRHandTracker.HAND_JOINT_WRIST, wrist, 0.01, XRHandTracker.HAND_JOINT_FLAG_POSITION_VALID)
+		frame.set_joint(
+			XRHandTracker.HAND_JOINT_INDEX_FINGER_PHALANX_DISTAL,
+			Transform3D(Basis.IDENTITY, wobble),
+			0.008, XRHandTracker.HAND_JOINT_FLAG_POSITION_VALID)
+		frame.set_joint(
+			XRHandTracker.HAND_JOINT_INDEX_FINGER_TIP,
+			Transform3D(Basis.IDENTITY, wobble + tip_offset),
+			0.008, XRHandTracker.HAND_JOINT_FLAG_POSITION_VALID)
+		frame.tracking_valid = true
+		trace.append_frame(frame)
+	return XRHandTracePlayer.new(trace)
+
+func _test_hand_filter(failures: Array[String]) -> void:
+	# 1. Filtering attenuates wrist jitter.
+	var raw_samples := PackedVector3Array()
+	var raw_player := _noisy_source(40, 0.004)
+	var raw_frame := XRHandFrame.new()
+	while raw_player.remaining() > 0:
+		if raw_player.capture(1, 0, raw_frame):
+			raw_samples.append(raw_frame.joint_transforms[XRHandTracker.HAND_JOINT_WRIST].origin)
+
+	var filtered_samples := PackedVector3Array()
+	var filter := XRHandFilter.new(_noisy_source(40, 0.004))
+	filter.position_min_cutoff = 1.0
+	filter.position_beta = 0.0
+	var out_frame := XRHandFrame.new()
+	for step in range(40):
+		if filter.capture(1, 0, out_frame):
+			filtered_samples.append(out_frame.joint_transforms[XRHandTracker.HAND_JOINT_WRIST].origin)
+
+	if filtered_samples.size() < 30:
+		failures.append("hand filter produced only %d frames" % filtered_samples.size())
+		return
+
+	var raw_jitter := XRHandTraceMetrics.rest_jitter(raw_samples)
+	var filtered_jitter := XRHandTraceMetrics.rest_jitter(filtered_samples)
+	if filtered_jitter >= raw_jitter:
+		failures.append("filter did not reduce jitter (raw %.5f, filtered %.5f)" % [raw_jitter, filtered_jitter])
+
+	# 2. RIGIDITY. The central guarantee: no parameters, however extreme, may
+	#    change a bone length. This must hold by construction, not by tuning.
+	var extreme := XRHandFilter.new(_noisy_source(40, 0.02))
+	extreme.position_min_cutoff = 0.01
+	extreme.position_beta = 0.0
+	extreme.rotation_min_cutoff = 0.01
+	extreme.bone_min_cutoff = 0.01
+	var captured: Array = []
+	var rigid_frame := XRHandFrame.new()
+	for step in range(40):
+		if not extreme.capture(1, 0, rigid_frame):
+			continue
+		var transforms: Array[Transform3D] = []
+		transforms.resize(XRHandFrame.JOINT_COUNT)
+		for joint in range(XRHandFrame.JOINT_COUNT):
+			transforms[joint] = rigid_frame.joint_transforms[joint]
+		captured.append({"transforms": transforms, "flags": rigid_frame.joint_flags.duplicate()})
+
+	var deviation := XRHandTraceMetrics.bone_length_deviation(captured, XRHandTracker.HAND_JOINT_INDEX_FINGER_TIP)
+	if deviation > 0.0005:
+		failures.append("bone length varied by %.5f m under extreme filtering (limit 0.0005)" % deviation)
+
+	# 3. enabled = false is a true pass-through.
+	var bypass := XRHandFilter.new(_noisy_source(6, 0.01))
+	bypass.enabled = false
+	var bypass_frame := XRHandFrame.new()
+	bypass.capture(1, 0, bypass_frame)
+	bypass.capture(1, 0, bypass_frame)
+	var expected := Vector3(-0.01, 0, 0)  # step 1 of the alternating wobble
+	if not bypass_frame.joint_transforms[XRHandTracker.HAND_JOINT_WRIST].origin.is_equal_approx(expected):
+		failures.append("disabled filter altered the frame: %s" % str(bypass_frame.joint_transforms[XRHandTracker.HAND_JOINT_WRIST].origin))
