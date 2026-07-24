@@ -36,8 +36,8 @@ Task 5: complete (commit 20fdd7d, review clean both verdicts)
     population RMS correct, motion_lag indexing has no off-by-one and normalises
     the window so shift search is unbiased, bone_length_deviation is population
     stdev and skips invalid joints.
-Task 6: complete (commits cbf4529..5e668a4) -- IMPLEMENTATION reviewed clean by
-  the implementer's own mutation testing; NOT yet run through a task reviewer.
+Task 6: complete (commits cbf4529..5e668a4, review clean both verdicts; reviewer
+  independently reproduced all three mutations).
   - Implementer flagged DONE_WITH_CONCERNS: the rigidity property test -- the
     formal statement of the design's central guarantee -- did not bite. Reversing
     the traversal order (worst possible decomposition bug) measured EXACTLY
@@ -53,8 +53,18 @@ Task 6: complete (commits cbf4529..5e668a4) -- IMPLEMENTATION reviewed clean by
     with a static hand, filtered ~= raw and there is nothing to lag behind.
 
 ## OUTSTANDING
-Task 6 still needs a task reviewer pass (spec + quality). Tasks 7-10 not started.
-Task 10 requires David in a headset; Tasks 7-9 are automatable.
+Tasks 7-10 not started. Task 10 requires David in a headset; 7-9 automatable.
+
+CARRY INTO TASK 9 (A/B toggle): reviewer found XRHandFilter does not reset
+_last_timestamp / _has_output when `enabled` flips false->true, so the first
+frame after re-enabling can compute dt against a stale timestamp or hit the
+dedup shortcut against a stale wrist. Task 9's A/B toggle switches the RESOLVER
+(set_conditioned), not filter.enabled, so it may not hit this -- but verify, and
+reset filter state on the toggle if it does.
+
+DISPATCH LESSON: every task where mutation testing was explicitly requested found
+a real defect; the two where it was not requested shipped tests that could not
+fail. Always request it.
 
 ## Minor findings for final-review triage
 - workshop_station.gd:11 hard-preloads godot_webxr_kit (pre-existing DAG break in
