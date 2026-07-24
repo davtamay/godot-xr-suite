@@ -211,11 +211,29 @@ noise on top. Filtering them hard converges to a stable per-user skeleton
 estimate, which stops the mesh hand breathing — a separate visible artifact
 from joint jitter, fixed for free.
 
-**Per-source parameter sets.** Controller-emulated hands
-(`HAND_TRACKING_SOURCE_CONTROLLER`) have different noise characteristics from
-optically tracked ones — `xr_poke_interactor.gd:106` already works around this
-with a hand-written special case. `XRHandFilter` holds one parameter set per
-source and selects automatically from `tracker.hand_tracking_source`.
+**Per-source parameter sets.** Controller-emulated hands have different noise
+characteristics from optically tracked ones — the project log records them as
+actively jittery, which is why `xr_poke_interactor.gd` pins the poke point to
+the controller tip instead of riding emulated joints. `XRHandFilter` holds one
+parameter set per source.
+
+**Do not select the parameter set from `tracker.hand_tracking_source`.** The
+project log is explicit that this field is *not* reliably
+`HAND_TRACKING_SOURCE_CONTROLLER` across runtimes, and that the input modality
+manager is the authority. Use the established soft-lookup pattern from
+`xr_poke_interactor.gd:126-132` — find the manager by group, call `get_modality`
+if present, fall back to `hand_tracking_source` otherwise:
+
+```
+var manager := get_tree().get_first_node_in_group("xr_input_modality_manager")
+if manager and manager.has_method("get_modality"): ...
+```
+
+This matters for placement too. The modality manager lives in
+`godot_webxr_kit`, which sits *above* the toolkit in the DAG. A group lookup
+with a graceful fallback creates no load-time dependency and no `preload`, so
+the toolkit stays installable alone. A direct reference would invert the DAG
+exactly the way the resolver move was rejected for.
 
 - **Depends on:** `XROneEuroFilter`, `XRHandQuaternionFilter`,
   `XRHandJointHierarchy`, `XRHandFrame`.
@@ -466,8 +484,24 @@ justification.
 - Replay a trace containing a deliberate tracking dropout; assert the gate
   holds, then invalidates, then resets the filter on reacquisition.
 
-**Manual**
-- In-headset A/B on the existing gesture and poke demos.
+**Manual — the on-device earn-in**
+
+The project has a hard-won precedent here. A more sophisticated microgesture
+engine (the "Phase D sequence engine") was architecturally better but measurably
+*less reliable on-device*, and was rolled back to the older phase-state-machine
+recognizer. The rule recorded from that episode: **working code is not
+discarded for purity; a replacement must earn in on-device.**
+
+Offline metrics are necessary but not sufficient. In-headset A/B on the gesture,
+poke, and grab demos is a **gate**, not a confirmation step — see Success
+criteria.
+
+**Measurement confounder to control for.** The project log documents that on
+Galaxy WebGPU-XR the world-locked scene visibly swims on head motion while the
+hand stays stable, attributed to Chrome `XRGPUBinding`'s extra full-resolution
+copy per frame defeating reprojection — which is why WebGL is the default there
+and WebGPU opt-in. Perceived hand lag must therefore be A/B'd **on the WebGL
+path**, or platform latency will be misattributed to the filter.
 
 New tests live in `godot_xr_interaction_toolkit/tests/`, following the existing
 harness pattern of `godot_xr_hands/tests/test_gesture_foundation.gd`.
@@ -483,6 +517,10 @@ advance. Once the baseline exists, acceptance requires:
 4. Measured frame cost within the stated budget on the target device.
 5. No regression in the existing gesture test suite.
 6. All hand-tracker consumers resolve through one accessor (verifiable by grep).
+7. **On-device earn-in.** Verified better in-headset on the gesture, poke, and
+   grab demos, A/B'd on the WebGL path. If it does not feel better on-device it
+   does not ship, whatever criteria 1–3 say. Per project precedent, this
+   overrides the offline metrics rather than being outweighed by them.
 
 Criteria 1 and 2 are deliberately in tension — that tension is the whole point
 of an adaptive filter, and reporting both is what makes the result honest
@@ -500,6 +538,27 @@ This is revisitable with data rather than permanently locked. The trace harness
 measures exactly how much filtering the recognizers tolerate before their
 thresholds drift, so a later pass can remove the redundant layer and retune
 against evidence. Logged as follow-up work, not silently accepted.
+
+## Prior art in this codebase — do not regress these
+
+The suite already contains hand-stability work, most of it tuned on-device over
+repeated sessions. Conditioning sits *underneath* all of it, so each is a
+regression risk rather than a target.
+
+| Existing behaviour | Why it exists | Implication |
+|---|---|---|
+| Hand ray origin is the index-knuckle / palm anchor, not the fingertip or pinch midpoint | The original origin swung as fingers curled; moved for stability, matching Meta/Unity | Already solved. A later ray spec should not re-derive it |
+| Grip pose uses the metacarpal midpoint, with direction from the metacarpals | The tracker `PALM` joint is re-based by Godot into a humanoid convention, so held objects aimed at the knuckles; knuckle curl on pinch caused pose-dependent twist | Filtering must not disturb metacarpal geometry — the parent-local design protects this |
+| Poke point pins to the controller tip in CONTROLLER modality | Controller-emulated hand joints jitter | Conditioning *may* make riding the emulated joints viable again, but that is an opportunity to test later, not a deliverable here |
+| Poke marker shows only within reach of a pokeable | It otherwise bounced as fingers curled to pinch | Unaffected, but the same class of artifact conditioning is meant to reduce |
+| Throw tuned in the demo to scale 1.7, max 24, **3** sample frames — not the addon defaults | On-device tuning for a "punchier release flick" | A later throw spec must treat these as the tuned baseline to beat, not as defaults to overwrite |
+| Dial holds last direction below a minimum grab radius and clamps per-frame step | The grab point sweeps through the knob centre, making the angle unstable | Hand-rolled stability compensation. Worth re-measuring after conditioning, not removing on faith |
+| `xr_hand_pose_math.gd` is the shared pose utility | Created deliberately so runtime and preview agree | New conditioning code should extend it rather than growing a parallel math path |
+
+A cautionary precedent from the same log: during light-estimation work, output
+smoothing was raised from 5.5 to 20/s and **changed nothing** — the latency was
+the platform's own convergence time, not the smoothing. Measure where the delay
+actually is before attributing it to a filter.
 
 ## Risks
 
@@ -548,6 +607,9 @@ it is made.
 | The DAG is declared formally, not just by convention | `xr_package.cfg`: `xr.interaction` layer=foundation requires=[]; `xr.hands` layer=capability requires=["xr.interaction"] |
 | Universal APK is unaffected by addon layering | `godot_universal_xr_apk/xr_package.cfg`: layer=deployment, requires=["openxr.vendors"], runtime_footprint="Editor/export only" |
 | GDExtension is not a cheap fallback on web | `EVIDENCE_LOG.md`: default web templates ship `variant/extensions_support=false`; GDExtension web use requires the `dlink` template variant |
+| `hand_tracking_source` is unreliable for source detection | Project session log (Session 7 CONT12): not reliably `SOURCE_CONTROLLER` across runtimes; modality manager is the authority. Precedent implementation at `xr_poke_interactor.gd:126-132` |
+| A better architecture can still lose on-device | Project session log (Session 7 CONT3): the Phase D microgesture sequence engine was rolled back to the older recognizer for on-device reliability |
+| WebGPU-XR carries its own latency on some devices | Project session log: Chrome `XRGPUBinding` full-res copy per frame defeats reprojection on Galaxy; WebGL is the default there for that reason |
 | The acquisition seam exists and is unused outside gestures | `xr_hand_pose_source.gd`; only `xr_gesture_runtime.gd` consumes it |
 | Meta conditions at the data source | ISDK `Runtime/Scripts/Input/OneEuroFilter/` (7 files), applied via `Input/Hands/DataModifiers/HandFilter.cs` |
 | Meta tunes filtering per hand region | ISDK `Input/OneEuroFilter/HandFilterParameterBlock.cs` |
