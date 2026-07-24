@@ -24,6 +24,7 @@
 - **No ISDK code.** Meta's Interaction SDK is under the Oculus SDK License and is incompatible. Implement from published literature. The One Euro filter is Casiez, Roussel & Vogel, *1€ Filter*, CHI 2012.
 - **DAG rule:** `godot_xr_interaction_toolkit` must keep `requires=PackedStringArray()` in its `xr_package.cfg` and must never `preload` from `godot_xr_hands` or `godot_webxr_kit`. Cross-addon access uses group lookup with a graceful fallback.
 - **Break and fix forward.** Conditioning is on by default. No compatibility shims.
+- **Indentation is mixed across this repo and GDScript will not tolerate mixing *within* a file.** The toolkit's own files use TABS (`xr_grab_interactable.gd`, `xr_poke_interactor.gd`); the acquisition files moved in from `godot_xr_hands` use 4 SPACES (`xr_hand_frame.gd`, `xr_hand_pose_source.gd`, `xr_tracker_hand_pose_source.gd`). There is no `.editorconfig`. **Rule: new files use tabs; when appending to an existing file, match that file's existing indentation.** The code blocks in this plan are tab-indented — convert them when appending to a space-indented file.
 - **Do not "optimize" typed arrays into stride-N `PackedFloat32Array`.** In GDScript, the cost that matters is the number of GDScript-level operations, not the work each one does in C++. One `Array[Quaternion]` index read beats four `PackedFloat32Array` reads plus a constructor. `PackedVector3Array` is correct for vectors because it is a single read.
 
 ---
@@ -2034,11 +2035,13 @@ Where a local `_HAND_TRACKER_NAMES` / `_TRACKER_NAMES` constant becomes unused a
 cd "C:/Users/davta/Repos/godot-xr-suite"
 echo "--- remaining raw hand-tracker lookups (expect only modality manager + simulator) ---"
 grep -rn "XRServer.get_tracker(.*hand_tracker" addons --include=*.gd
-echo "--- toolkit must not preload from higher addons (expect empty) ---"
-grep -rn "godot_xr_hands\|godot_webxr_kit" addons/godot_xr_interaction_toolkit/runtime/ --include=*.gd
+echo "--- toolkit must not PRELOAD from higher addons (expect empty) ---"
+grep -rnE "preload\(\"res://addons/(godot_xr_hands|godot_webxr_kit)" addons/godot_xr_interaction_toolkit/runtime/ --include=*.gd
 ```
 
 Expected: the first prints only `xr_input_modality_manager.gd` and `xr_simulator.gd`; the second prints nothing.
+
+The second grep deliberately targets `preload(` and not the bare addon name. The toolkit legitimately holds several *path strings* into `godot_xr_hands` (`xr_grab_point.gd`, `xr_hand_activator.gd`, `xr_microgesture_locomotion_driver.gd`) which it feeds to guarded `load()` / `ResourceLoader.exists()` and which no-op when that addon is absent. Those are soft dependencies and are fine. Only `preload` is resolved at parse time and would hard-break a standalone toolkit install.
 
 - [ ] **Step 5: Declare the new capability in the manifest**
 
