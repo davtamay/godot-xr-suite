@@ -14,7 +14,11 @@ Pre-flight decisions (David):
 
 ## Task status
 Task 1: complete (commits f096ac4..8314241, review clean both verdicts)
+Task 2: complete (commit 5eb8e10, review clean both verdicts)
 
 ## Minor findings for final-review triage
 - workshop_station.gd:11 hard-preloads godot_webxr_kit (pre-existing DAG break in
   samples/, not runtime/). Spawned as separate task task_b6249a4f. Out of scope here.
+- Task 2 (Minor, reviewer): xr_hand_joint_hierarchy.gd PARENT/IS_TIP/ORDER are
+  mutable `static var` and CHAINS is an untyped Array literal; a caller could mutate
+  the topology in place. Hardening opportunity, not a defect.
