@@ -21,7 +21,7 @@ const _MODEL_PATHS := [
 	"res://addons/godot_xr_hands/models/generic_hand/left.glb",
 	"res://addons/godot_xr_hands/models/generic_hand/right.glb",
 ]
-const _TRACKER_NAMES := [&"/user/hand_tracker/left", &"/user/hand_tracker/right"]
+const XRHandTrackerResolver := preload("res://addons/godot_xr_interaction_toolkit/runtime/input/xr_hand_tracker_resolver.gd")
 
 ## Asset bone names (WebXR standard joint names) -> XRHandTracker joints.
 const _JOINT_BY_BONE := {
@@ -128,7 +128,7 @@ func _process(_delta: float) -> void:
 		var root := _roots[hand] as Node3D
 		if root == null:
 			continue
-		var tracker := XRServer.get_tracker(_TRACKER_NAMES[hand]) as XRHandTracker
+		var tracker := XRHandTrackerResolver.get_tracker(hand)
 		var live := tracker != null and tracker.has_tracking_data
 		root.visible = live
 		if not live:

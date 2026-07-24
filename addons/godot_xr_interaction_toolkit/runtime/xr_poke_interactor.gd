@@ -13,6 +13,7 @@ extends Node
 
 const _RETICLE_MATERIAL := preload("res://addons/godot_xr_interaction_toolkit/runtime/xr_reticle_material.tres")
 const XRHandGestureProvider := preload("res://addons/godot_xr_interaction_toolkit/runtime/input/xr_hand_gesture_provider.gd")
+const XRHandTrackerResolver := preload("res://addons/godot_xr_interaction_toolkit/runtime/input/xr_hand_tracker_resolver.gd")
 
 ## Group other blocks use to find poke sources.
 const GROUP := "xr_poke_interactor"
@@ -98,8 +99,6 @@ func _physics_process(_delta: float) -> void:
 	_update_markers()
 
 
-const _HAND_TRACKER_NAMES := [&"/user/hand_tracker/left", &"/user/hand_tracker/right"]
-
 func _resolve_point(hand: int) -> Vector3:
 	var controller := _controllers[hand] as XRController3D
 	var controller_live: bool = controller and controller.get_is_active() and controller.get_has_tracking_data()
@@ -109,7 +108,7 @@ func _resolve_point(hand: int) -> Vector3:
 	if _is_controller_modality(hand) and controller_live:
 		return controller.global_transform * Vector3(0.0, 0.0, -_CONTROLLER_TIP_FORWARD)
 	# Bare-hand tracking: the index fingertip.
-	var tracker := XRServer.get_tracker(_HAND_TRACKER_NAMES[hand]) as XRHandTracker
+	var tracker := XRHandTrackerResolver.get_tracker(hand)
 	if tracker and tracker.has_tracking_data and _origin:
 		var tip := XRHandTracker.HAND_JOINT_INDEX_FINGER_TIP
 		if XRHandGestureProvider.joint_position_valid(tracker, tip):
@@ -127,7 +126,7 @@ func _is_controller_modality(hand: int) -> bool:
 	var manager := get_tree().get_first_node_in_group("xr_input_modality_manager")
 	if manager and manager.has_method("get_modality"):
 		return int(manager.get_modality(hand)) == 1  # Modality.CONTROLLER
-	var tracker := XRServer.get_tracker(_HAND_TRACKER_NAMES[hand]) as XRHandTracker
+	var tracker := XRHandTrackerResolver.get_tracker(hand)
 	return tracker != null and tracker.has_tracking_data \
 			and tracker.hand_tracking_source == XRHandTracker.HAND_TRACKING_SOURCE_CONTROLLER
 

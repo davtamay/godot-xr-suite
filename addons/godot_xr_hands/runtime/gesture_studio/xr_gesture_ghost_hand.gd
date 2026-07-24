@@ -15,6 +15,7 @@ enum HandMode { LEFT, RIGHT, BOTH }
 
 const _LINE_MATERIAL := preload("res://addons/godot_xr_hands/runtime/gesture_studio/gesture_ghost_material.tres")
 const _FeatureExtractor := preload("res://addons/godot_xr_hands/runtime/gesture_studio/xr_hand_feature_extractor.gd")
+const XRHandTrackerResolver := preload("res://addons/godot_xr_interaction_toolkit/runtime/input/xr_hand_tracker_resolver.gd")
 
 const _GHOST_COLOR := Color(0.45, 0.85, 1.0, 0.9)
 const _MATCH_COLOR := Color(0.3, 1.0, 0.5, 0.95)
@@ -51,7 +52,7 @@ func _process(delta: float) -> void:
 		for hand in 2:
 			(_rigs[hand]["root"] as Node3D).visible = hand in live_hands
 		for hand in live_hands:
-			var tracker := XRServer.get_tracker("/user/hand_tracker/%s" % ("left" if hand == 0 else "right")) as XRHandTracker
+			var tracker := XRHandTrackerResolver.get_tracker(hand)
 			if tracker == null or not tracker.has_tracking_data:
 				continue
 			var wrist_inverse := tracker.get_hand_joint_transform(XRHandTracker.HAND_JOINT_WRIST).affine_inverse()

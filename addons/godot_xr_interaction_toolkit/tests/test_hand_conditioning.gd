@@ -20,6 +20,9 @@ func _init() -> void:
 	_test_publisher_republish_cache(failures)
 	_test_publisher_tracker_registration(failures)
 	_test_publisher_null_contract(failures)
+	_test_resolver_conditioned_routing(failures)
+	_test_resolver_toggle_resets_chain(failures)
+	_test_pose_source_reads_raw_across_frames(failures)
 	if failures.is_empty():
 		print("XR hand conditioning: PASS")
 		quit(0)
@@ -821,3 +824,179 @@ func _test_publisher_null_contract(failures: Array[String]) -> void:
 	XRConditionedHandPublisher._frames[hand] = null
 	XRConditionedHandPublisher._published_frame[hand] = -1
 	XRConditionedHandPublisher._last_tracked[hand] = false
+
+## Registers a raw hand tracker under the canonical path with joints the
+## resolver will actually score as valid. The resolver only counts a joint when
+## POSITION_VALID is set AND the origin is off the world origin, so degenerate
+## zero transforms would score 0 and resolve to null.
+func _make_raw_tracker(hand: int) -> XRHandTracker:
+	var tracker := XRHandTracker.new()
+	tracker.name = XRConditionedHandPublisher._RAW_NAMES[hand]
+	tracker.hand = XRPositionalTracker.TRACKER_HAND_LEFT if hand == 0 else XRPositionalTracker.TRACKER_HAND_RIGHT
+	tracker.has_tracking_data = true
+	for joint in range(XRHandTracker.HAND_JOINT_MAX):
+		tracker.set_hand_joint_transform(joint, Transform3D(Basis(), Vector3(0.1 + 0.001 * joint, 0.2, -0.3)))
+		tracker.set_hand_joint_radius(joint, 0.01)
+		tracker.set_hand_joint_flags(joint,
+			XRHandTracker.HAND_JOINT_FLAG_POSITION_VALID | XRHandTracker.HAND_JOINT_FLAG_ORIENTATION_VALID)
+	XRServer.add_tracker(tracker)
+	return tracker
+
+func _clear_conditioning_state(hand: int) -> void:
+	XRConditionedHandPublisher._published_frame[hand] = -1
+	XRConditionedHandPublisher._last_tracked[hand] = false
+	XRConditionedHandPublisher._frames[hand] = null
+	var shadow := XRServer.get_tracker(XRConditionedHandPublisher.TRACKER_NAMES[hand])
+	if shadow != null:
+		XRServer.remove_tracker(shadow)
+	XRConditionedHandPublisher._trackers[hand] = null
+	XRHandTrackerResolver._cache_frame = -1
+
+func _test_resolver_conditioned_routing(failures: Array[String]) -> void:
+	# Task 9's whole claim in one test: a consumer calling get_tracker receives
+	# the CONDITIONED shadow tracker, while the conditioning chain itself still
+	# reads raw. If those two ever return the same object, the filter is
+	# consuming its own output and the conditioning is silently a no-op.
+	var hand := 0
+	var was_conditioned := XRHandTrackerResolver.is_conditioned()
+	var was_enabled := XRConditionedHandPublisher.is_enabled()
+	var raw := _make_raw_tracker(hand)
+	_clear_conditioning_state(hand)
+
+	XRHandTrackerResolver._conditioned = true
+	XRConditionedHandPublisher._enabled = true
+	XRHandTrackerResolver._cache_frame = -1
+
+	var resolved := XRHandTrackerResolver.get_tracker(hand)
+	var raw_path := XRHandTrackerResolver.resolve_raw(hand)
+
+	if raw_path != raw:
+		failures.append("resolve_raw did not return the registered raw tracker")
+	if resolved == null:
+		failures.append("get_tracker returned null while a raw tracker was live and conditioning was on")
+	elif resolved == raw:
+		failures.append("get_tracker returned the RAW tracker while conditioning was on -- conditioning never reaches consumers")
+	elif str(resolved.name) != str(XRConditionedHandPublisher.TRACKER_NAMES[hand]):
+		failures.append("get_tracker returned '%s', expected the conditioned shadow tracker" % resolved.name)
+
+	# Conditioning OFF must hand back the raw tracker -- this is the A/B leg,
+	# and it is what makes the toggle a real comparison rather than a label.
+	_clear_conditioning_state(hand)
+	XRHandTrackerResolver._conditioned = false
+	XRHandTrackerResolver._cache_frame = -1
+	var off := XRHandTrackerResolver.get_tracker(hand)
+	if off != raw:
+		failures.append("with conditioning off, get_tracker must return the raw tracker")
+
+	# Conditioning ON but the publisher yielding nothing must fall back to raw
+	# rather than to null: consumers keep working when the chain is disabled.
+	_clear_conditioning_state(hand)
+	XRHandTrackerResolver._conditioned = true
+	XRConditionedHandPublisher.set_enabled(false)
+	XRHandTrackerResolver._cache_frame = -1
+	var fallback := XRHandTrackerResolver.get_tracker(hand)
+	if fallback != raw:
+		failures.append("get_tracker must fall back to the raw tracker when the publisher yields nothing")
+
+	# NOTE: resolve_raw's _valid_hand guard is deliberately NOT asserted here.
+	# It is real and worth keeping -- it turns a bad hand id into a clean early
+	# return instead of an invalid-key fault on TRACKER_PATHS plus a pointless
+	# full-tracker scan -- but it is not observable through the return value:
+	# mutation-testing the guard away leaves resolve_raw(7) still resolving to
+	# null, just noisily. An assertion here would be one that cannot fail, so
+	# this is recorded as an untested property rather than faked coverage.
+
+	XRConditionedHandPublisher.set_enabled(was_enabled)
+	XRHandTrackerResolver._conditioned = was_conditioned
+	_clear_conditioning_state(hand)
+	XRServer.remove_tracker(raw)
+
+func _test_resolver_toggle_resets_chain(failures: Array[String]) -> void:
+	# Carry-over from the Task 8 review. The chain only runs while conditioning
+	# is ON, so across an off-leg the filter's timestamp and dedup wrist age by
+	# the entire length of that leg. Without a reset, the first frame back
+	# computes dt against the stale stamp, and the dedup shortcut can replay a
+	# seconds-old output frame without even updating the timestamp.
+	var hand := 0
+	var was_conditioned := XRHandTrackerResolver.is_conditioned()
+	var filter := XRConditionedHandPublisher.filter()
+
+	XRHandTrackerResolver._conditioned = true
+	filter._last_timestamp[hand] = 123456
+	filter._has_output[hand] = true
+	XRConditionedHandPublisher._published_frame[hand] = 99
+	XRConditionedHandPublisher._last_tracked[hand] = true
+
+	XRHandTrackerResolver.set_conditioned(false)
+
+	if filter._last_timestamp[hand] != -1:
+		failures.append("toggling conditioning left the filter's stale timestamp in place")
+	if filter._has_output[hand]:
+		failures.append("toggling conditioning left the filter's dedup output live")
+	if XRConditionedHandPublisher._published_frame[hand] != -1:
+		failures.append("toggling conditioning left the publisher's per-frame memo set")
+	if XRConditionedHandPublisher._last_tracked[hand]:
+		failures.append("toggling conditioning left the publisher's last-tracked flag set")
+
+	# Idempotence matters: set_conditioned is a plain setter a caller may well
+	# drive every frame from a UI toggle. Repeating the SAME value must not
+	# reset, or the filter would be wiped every frame and never accumulate.
+	filter._last_timestamp[hand] = 777
+	XRHandTrackerResolver.set_conditioned(false)
+	if filter._last_timestamp[hand] != 777:
+		failures.append("set_conditioned reset the chain on a no-op repeat of the same value")
+
+	XRHandTrackerResolver._conditioned = was_conditioned
+	_clear_conditioning_state(hand)
+
+func _test_pose_source_reads_raw_across_frames(failures: Array[String]) -> void:
+	# The feedback loop this guards against does NOT show up on the first
+	# publish: _last_tracked is still false then, so a re-entrant get_conditioned
+	# returns null and falls back to raw by accident. It only bites from the
+	# SECOND frame, once _last_tracked is true and the re-entrant call hands back
+	# the shadow tracker -- at which point the filter is reading its own previous
+	# output. So drive two frames and MOVE the raw pose between them: reading raw
+	# tracks the move, consuming its own output cannot.
+	var hand := 0
+	var was_conditioned := XRHandTrackerResolver.is_conditioned()
+	var was_enabled := XRConditionedHandPublisher.is_enabled()
+	var wrist := XRHandTracker.HAND_JOINT_WRIST
+	var raw := _make_raw_tracker(hand)
+	_clear_conditioning_state(hand)
+	XRHandTrackerResolver._conditioned = true
+	XRConditionedHandPublisher._enabled = true
+
+	# Frame 1: seeds the filter and, crucially, sets _last_tracked.
+	XRConditionedHandPublisher._published_frame[hand] = -1
+	XRHandTrackerResolver._cache_frame = -1
+	var shadow := XRConditionedHandPublisher.get_conditioned(hand)
+	if shadow == null:
+		failures.append("frame 1 published nothing, so the two-frame feedback check cannot run")
+		XRConditionedHandPublisher.set_enabled(was_enabled)
+		XRHandTrackerResolver._conditioned = was_conditioned
+		_clear_conditioning_state(hand)
+		XRServer.remove_tracker(raw)
+		return
+	var after_first := shadow.get_hand_joint_transform(wrist).origin
+
+	# Move the raw hand well clear of where it was.
+	for joint in range(XRHandTracker.HAND_JOINT_MAX):
+		var moved := raw.get_hand_joint_transform(joint)
+		moved.origin += Vector3(0.25, 0.0, 0.0)
+		raw.set_hand_joint_transform(joint, moved)
+
+	# Frame 2: the frame that exposes the loop.
+	XRConditionedHandPublisher._published_frame[hand] = -1
+	XRHandTrackerResolver._cache_frame = -1
+	XRConditionedHandPublisher.get_conditioned(hand)
+	var after_second := shadow.get_hand_joint_transform(wrist).origin
+
+	if after_second.distance_to(after_first) <= 0.0001:
+		failures.append(
+			"conditioned wrist did not move (%.5f m) after the raw hand moved 0.25 m -- " % after_second.distance_to(after_first)
+			+ "the pose source is reading the conditioned tracker, so the filter is consuming its own output")
+
+	XRConditionedHandPublisher.set_enabled(was_enabled)
+	XRHandTrackerResolver._conditioned = was_conditioned
+	_clear_conditioning_state(hand)
+	XRServer.remove_tracker(raw)

@@ -28,6 +28,7 @@ signal snap_turned(degrees: float)
 const _LINE_MATERIAL := preload("res://addons/godot_xr_interaction_toolkit/runtime/xr_line_material.tres")
 const _RETICLE_MATERIAL := preload("res://addons/godot_xr_interaction_toolkit/runtime/xr_reticle_material.tres")
 const XRHandGestureProvider := preload("res://addons/godot_xr_interaction_toolkit/runtime/input/xr_hand_gesture_provider.gd")
+const XRHandTrackerResolver := preload("res://addons/godot_xr_interaction_toolkit/runtime/input/xr_hand_tracker_resolver.gd")
 
 ## Group external drivers use to find the locomotion system.
 const GROUP := "xr_locomotion"
@@ -279,7 +280,7 @@ func _project_intent_arc(hand: int) -> void:
 	if controller and controller.get_is_active() and controller.get_has_tracking_data():
 		_project_arc(controller)
 		return
-	var tracker := XRServer.get_tracker("/user/hand_tracker/%s" % ("left" if hand == 0 else "right")) as XRHandTracker
+	var tracker := XRHandTrackerResolver.get_tracker(hand)
 	var local_ray := XRHandGestureProvider.get_hand_ray_pose(tracker)
 	if local_ray.is_empty():
 		_hide_visuals()

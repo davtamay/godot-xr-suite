@@ -33,6 +33,24 @@ const JOINTS_TO_SCORE := [
 static var _cache := {}
 static var _cache_frame := -1
 
+## Conditioning is on by default. Flip at runtime for A/B comparison.
+static var _conditioned := true
+
+
+static func set_conditioned(value: bool) -> void:
+    if _conditioned == value:
+        return
+    _conditioned = value
+    _cache_frame = -1  # drop the frame cache so the switch takes effect now
+    # The chain only runs while conditioning is on, so across an A/B leg the
+    # filter's timestamp and wrist history age by the length of that leg.
+    # Seed fresh on the way back in rather than blending against them.
+    XRConditionedHandPublisher.reset_chain()
+
+
+static func is_conditioned() -> bool:
+    return _conditioned
+
 
 static func get_tracker(hand_id: int) -> XRHandTracker:
     if not _valid_hand(hand_id):
@@ -44,12 +62,24 @@ static func get_tracker(hand_id: int) -> XRHandTracker:
         _cache.clear()
     if _cache.has(hand_id):
         return _cache[hand_id]
-    var tracker := _resolve_tracker(hand_id)
+
+    var tracker: XRHandTracker = null
+    if _conditioned:
+        tracker = XRConditionedHandPublisher.get_conditioned(hand_id)
+    if tracker == null:
+        tracker = resolve_raw(hand_id)
     _cache[hand_id] = tracker
     return tracker
 
 
-static func _resolve_tracker(hand_id: int) -> XRHandTracker:
+## The unconditioned tracker, scored and resolved. Used by the conditioning
+## chain itself; everything else should call get_tracker.
+static func resolve_raw(hand_id: int) -> XRHandTracker:
+    # get_tracker used to gate this; now that callers reach it directly, the
+    # guard has to live here or TRACKER_PATHS[hand_id] faults on a bad hand.
+    if not _valid_hand(hand_id):
+        return null
+
     var expected_hand := _expected_tracker_hand(hand_id)
     var side_text := _side_text(hand_id)
     var best_tracker := XRServer.get_tracker(TRACKER_PATHS[hand_id]) as XRHandTracker

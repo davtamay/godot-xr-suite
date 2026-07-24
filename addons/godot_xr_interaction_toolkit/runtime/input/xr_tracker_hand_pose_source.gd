@@ -12,7 +12,10 @@ func capture(hand: int, timestamp_usec: int, target: XRHandFrame) -> bool:
     _sequence += 1
     target.begin_capture(hand, timestamp_usec, _sequence)
 
-    var tracker := XRHandTrackerResolver.get_tracker(hand)
+    # Deliberately the RAW path: this source feeds the conditioning chain, and
+    # get_tracker returns the conditioned result. Calling it here would make
+    # the filter consume its own output.
+    var tracker := XRHandTrackerResolver.resolve_raw(hand)
     if tracker == null or not tracker.has_tracking_data:
         return false
 

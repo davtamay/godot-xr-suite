@@ -62,6 +62,40 @@ Task 7: complete (commits 7133cdd..7b0be31, review clean both verdicts; reviewer
   - Gap closed with an isolated fresh-gate block; proven by mutation (FAIL then
     PASS). A bonus mutation (fires every frame) is also now caught.
 
+Task 9: implemented, mutation-tested, review pending.
+  - Resolver gained _conditioned + set_conditioned/is_conditioned; get_tracker
+    now prefers the publisher and falls back to raw. _resolve_tracker is public
+    resolve_raw, which XRTrackerHandPoseSource calls so the chain cannot consume
+    its own output. All 8 bypassing call sites unified. provides += hand_input.
+  - CARRY-NOTE RESOLVED: the enabled-toggle hazard DOES reach set_conditioned,
+    by a route the reviewer did not predict. Nothing drives the filter while
+    conditioning is off, so _last_timestamp and the dedup wrist age by the whole
+    off-leg. Added XRConditionedHandPublisher.reset_chain(), called from
+    set_conditioned, guarded on an actual value change (an unguarded setter
+    driven every frame from a UI toggle would wipe the filter every frame).
+  - The plan prescribed NO new tests for Task 9. Added five assertions; 8 of 9
+    mutations caught.
+  - The first version of the feedback-loop test DID NOT BITE. Reverting the pose
+    source to get_tracker still passed, because on the FIRST publish
+    _last_tracked is false, so the re-entrant get_conditioned returns null and
+    falls back to raw by accident. The loop only bites from the SECOND frame.
+    Fixed with _test_pose_source_reads_raw_across_frames: two frames, raw pose
+    moved 0.25 m between them. Mutant now measures exactly 0.00000 m of movement
+    (the dedup shortcut replaying its own previous output). Same shape as the
+    Task 6 lesson: a static fixture cannot expose a feed-forward bug.
+  - Plan defect: Step 4's verification grep cannot produce its own stated
+    expectation. "XRServer.get_tracker(.*hand_tracker" only matches the inline
+    string form, but both files it says to expect (modality manager, simulator)
+    use a _HAND_TRACKER_NAMES constant, so they never matched. Post-change it
+    returns empty, which reads as a stronger pass than it is. Re-verified with
+    an unfiltered sweep of every XRServer.get_tracker call instead.
+  - Untested property: resolve_raw's _valid_hand guard. Mutating it away leaves
+    resolve_raw(7) still returning null (the invalid TRACKER_PATHS key faults
+    and resolves to null anyway), so no return-value assertion can separate the
+    two. Guard kept -- it turns a fault plus a pointless full-tracker scan into
+    a clean early return -- but deliberately NOT asserted rather than shipping a
+    test that cannot fail.
+
 ## OUTSTANDING
 Task 8: complete (commits df7c4d8..13d28a4, reviewed; two fix rounds).
   - Round 1 gap: the per-render-frame cache had ZERO coverage (both "always
@@ -80,18 +114,23 @@ Task 8: complete (commits df7c4d8..13d28a4, reviewed; two fix rounds).
     have XRServer; use it.
 
 ## NEXT ACTIONS, in order
-1. Task 9: resolver conditioned mode + unify the 8 bypassing call sites +
-   xr_package.cfg provides += hand_input. Watch the XRHandFilter enabled-toggle
-   note above.
+1. Task 9: REVIEW PENDING. Implemented and mutation-tested; no independent
+   reviewer has looked at it yet. Every prior task's Critical/Important defects
+   came from that review pass, so treat Task 9 as unreviewed, not as done.
 2. Task 10: baseline traces, tuning, WEB frame-cost measurement, on-device
    earn-in. REQUIRES DAVID IN A HEADSET. A/B on the WebGL path, not WebGPU. Task 10 requires David in a headset; 7-9 automatable.
 
-CARRY INTO TASK 9 (A/B toggle): reviewer found XRHandFilter does not reset
-_last_timestamp / _has_output when `enabled` flips false->true, so the first
-frame after re-enabling can compute dt against a stale timestamp or hit the
-dedup shortcut against a stale wrist. Task 9's A/B toggle switches the RESOLVER
-(set_conditioned), not filter.enabled, so it may not hit this -- but verify, and
-reset filter state on the toggle if it does.
+CARRY INTO TASK 10 (A/B measurement): the toggle is
+XRHandTrackerResolver.set_conditioned(bool), and it resets the whole chain on
+every real value change. That is correct for fidelity but it means an A/B
+comparison must DISCARD the first frame or two after each flip -- the filter is
+re-seeding, not converged. Do not read lag numbers across a flip boundary.
+
+CARRY INTO FINAL REVIEW: filter.enabled still has the original unreset hazard.
+Task 9 routed around it (set_conditioned resets the chain rather than touching
+filter.enabled), so nothing in the suite flips filter.enabled at runtime today
+-- but the field is @export and a user CAN flip it from the inspector, and that
+path is still unreset and untested.
 
 DISPATCH LESSON: every task where mutation testing was explicitly requested found
 a real defect; the two where it was not requested shipped tests that could not

@@ -5,6 +5,7 @@ extends Node
 
 const XRHandFeatureExtractor := preload("res://addons/godot_xr_hands/runtime/gesture_studio/xr_hand_feature_extractor.gd")
 const _DebugPanel := preload("res://addons/godot_xr_hands/runtime/gesture_studio/xr_gesture_debug_panel.gd")
+const XRHandTrackerResolver := preload("res://addons/godot_xr_interaction_toolkit/runtime/input/xr_hand_tracker_resolver.gd")
 
 ## Drop-in hand gesture recognition: assign XRHandGesture resources (or use
 ## the presets in runtime/gestures/presets/) and connect to the signals. Both
@@ -63,7 +64,7 @@ func _process(delta: float) -> void:
 		return
 	_resolve_scene_refs()
 	for hand in 2:
-		var tracker := XRServer.get_tracker("/user/hand_tracker/%s" % ("left" if hand == 0 else "right")) as XRHandTracker
+		var tracker := XRHandTrackerResolver.get_tracker(hand)
 		var origin_xf := _origin.global_transform if _origin else Transform3D.IDENTITY
 		var head: Variant = _camera.global_transform if _camera else null
 		_features[hand] = XRHandFeatureExtractor.extract(tracker, hand, origin_xf, head)

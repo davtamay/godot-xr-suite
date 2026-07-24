@@ -41,6 +41,19 @@ static func filter() -> XRHandFilter:
 	_ensure_chain()
 	return _filter
 
+## Drops the per-frame memo and the filter's history so the next access re-runs
+## the chain and SEEDS rather than blending. The A/B toggle needs this: while
+## conditioning is off nothing drives the filter, so _last_timestamp and the
+## dedup wrist age by the whole length of the off-leg. Without the reset the
+## first frame back computes dt against that stale stamp, and the dedup
+## shortcut can replay a seconds-old output frame.
+static func reset_chain() -> void:
+	_ensure_chain()
+	for hand in range(_HANDS):
+		_published_frame[hand] = -1
+		_last_tracked[hand] = false
+		_filter.reset(hand)
+
 ## Runs the chain at most once per rendered frame per hand and returns the
 ## shadow tracker, or null when nothing is being tracked.
 static func get_conditioned(hand: int) -> XRHandTracker:
