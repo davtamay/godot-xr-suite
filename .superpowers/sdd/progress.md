@@ -30,6 +30,12 @@ Task 4: complete (commits bc26b14..5377e76, review clean after one Critical fix)
     Fail-then-pass proof reproduced by the re-reviewer.
   - Also found: ResourceLoader.load's type_hint does not resolve GDScript
     class_name globals; dropped. Plan corrected.
+Task 5: complete (commit 20fdd7d, review clean both verdicts)
+  - Implementer mutation-tested all three metrics (stub each to return 0.0,
+    confirm real failure). Reviewer independently re-derived the math: rest_jitter
+    population RMS correct, motion_lag indexing has no off-by-one and normalises
+    the window so shift search is unbiased, bone_length_deviation is population
+    stdev and skips invalid joints.
 
 ## Minor findings for final-review triage
 - workshop_station.gd:11 hard-preloads godot_webxr_kit (pre-existing DAG break in
@@ -42,3 +48,7 @@ Task 4: complete (commits bc26b14..5377e76, review clean after one Critical fix)
   POLLED" -- both behave identically on a single duplicate pair. Needs 3+ samples
   with non-transitive near-equality (A~B~C, A!~C). Implementation is correct by
   inspection (state updates only on return true); coverage gap, not a live bug.
+- Task 5 (Minor, reviewer): bone_length_deviation's stretching-case test only
+  asserts > 0.0, not an exact value, so it would not catch a population-vs-sample
+  denominator bug. Inherited from the plan's prescribed test, not an implementer
+  choice.
