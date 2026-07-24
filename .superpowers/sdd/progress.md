@@ -13,7 +13,8 @@ Pre-flight decisions (David):
   hangs forever on OpenXR init. Baseline test_gesture_foundation.gd = PASS.
 
 ## Task status
-(pending)
+Task 1: complete (commits f096ac4..8314241, review clean both verdicts)
 
 ## Minor findings for final-review triage
-(none yet)
+- workshop_station.gd:11 hard-preloads godot_webxr_kit (pre-existing DAG break in
+  samples/, not runtime/). Spawned as separate task task_b6249a4f. Out of scope here.
