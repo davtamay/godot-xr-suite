@@ -181,13 +181,27 @@ func _test_rotation_filter(failures: Array[String]) -> void:
 	if not seeded.is_equal_approx(start):
 		failures.append("rotation filter must seed on the first sample")
 
-	# Hemisphere correction: a negated quaternion is the SAME rotation, so the
-	# filter must not travel the long way around to reach it.
+	# Double cover: a negated quaternion is the SAME rotation, so filtering
+	# toward -target must converge to the same rotation as filtering toward
+	# target. Compare with angle_to (not raw components) since the two
+	# results may legitimately differ in sign while representing the same
+	# rotation.
 	var target := Quaternion(Vector3.UP, 0.2)
 	var negated := -target
-	var out := filter.filter(0, negated, dt)
-	if out.angle_to(start) > deg_to_rad(90.0):
-		failures.append("rotation filter took the long path across the hemisphere boundary")
+	var filter_pos := XROneEuroRotationFilter.new()
+	filter_pos.resize(1)
+	filter_pos.filter(0, start, dt)
+	var filter_neg := XROneEuroRotationFilter.new()
+	filter_neg.resize(1)
+	filter_neg.filter(0, start, dt)
+	var out_pos := Quaternion.IDENTITY
+	var out_neg := Quaternion.IDENTITY
+	for step in range(5):
+		out_pos = filter_pos.filter(0, target, dt)
+		out_neg = filter_neg.filter(0, negated, dt)
+	var out := out_pos
+	if out_pos.angle_to(out_neg) > deg_to_rad(0.01):
+		failures.append("filtering toward target and -target diverged: angle_to = %.6f deg" % rad_to_deg(out_pos.angle_to(out_neg)))
 
 	# Output stays normalized.
 	var settle := Quaternion(Vector3.RIGHT, 1.0).normalized()

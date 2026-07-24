@@ -48,10 +48,11 @@ func filter(channel: int, value: Quaternion, dt: float) -> Quaternion:
 		return normalized
 
 	var previous: Quaternion = _value[channel]
-	# q and -q are the same rotation. Without this, slerp can travel the long
-	# way around and the hand snaps through a full turn.
-	if previous.dot(normalized) < 0.0:
-		normalized = -normalized
+	# No manual hemisphere correction here: Godot's Quaternion.slerp and
+	# angle_to are already double-cover invariant (slerp(a, b, t) ==
+	# slerp(a, -b, t), angle_to(a, b) == angle_to(a, -b)), so negating toward
+	# the same hemisphere as `previous` would be a no-op. slerpni exists as
+	# the explicit opt-out if non-inverting behaviour is ever wanted.
 
 	var raw_speed := previous.angle_to(normalized) / step
 	var smooth_speed := lerpf(_speed[channel], raw_speed, XROneEuroFilter.alpha(d_cutoff, step))
