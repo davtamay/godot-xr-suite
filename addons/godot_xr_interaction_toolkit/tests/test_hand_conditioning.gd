@@ -15,6 +15,7 @@ func _init() -> void:
 	_test_trace_metrics(failures)
 	_test_hand_filter(failures)
 	_test_hand_filter_dedup(failures)
+	_test_confidence_gate(failures)
 	if failures.is_empty():
 		print("XR hand conditioning: PASS")
 		quit(0)
@@ -590,3 +591,66 @@ func _dedup_probe_frame(wrist_x: float, tip_z: float, step: int) -> XRHandFrame:
 		0.008, XRHandTracker.HAND_JOINT_FLAG_POSITION_VALID)
 	frame.tracking_valid = true
 	return frame
+
+## Pose source emitting a scripted validity pattern: `pattern[i]` true = tracked.
+class _ScriptedSource extends XRHandPoseSource:
+	var pattern: Array = []
+	var index := 0
+	var step_usec := 13888
+
+	func capture(hand: int, _timestamp_usec: int, target: XRHandFrame) -> bool:
+		if index >= pattern.size():
+			return false
+		var valid: bool = pattern[index]
+		target.begin_capture(hand, index * step_usec, index)
+		index += 1
+		if valid:
+			target.set_joint(
+				XRHandTracker.HAND_JOINT_WRIST,
+				Transform3D(Basis.IDENTITY, Vector3(0.5, 0, 0)),
+				0.01, XRHandTracker.HAND_JOINT_FLAG_POSITION_VALID)
+			target.tracking_valid = true
+			return true
+		target.tracking_valid = false
+		return false
+
+func _test_confidence_gate(failures: Array[String]) -> void:
+	var source := _ScriptedSource.new()
+	# tracked, tracked, LOST, LOST, tracked
+	source.pattern = [true, true, false, false, true]
+
+	var gate := XRHandConfidenceGate.new(source)
+	gate.hold_duration_sec = 0.25   # ~18 frames at 72 Hz, so both gaps are held
+	var frame := XRHandFrame.new()
+
+	if not gate.capture(1, 0, frame):
+		failures.append("gate rejected a tracked frame")
+	gate.capture(1, 0, frame)
+
+	# During the dropout the gate must hold the last good pose, not vanish.
+	if not gate.capture(1, 0, frame):
+		failures.append("gate did not hold the last good frame through a dropout")
+	if not frame.joint_transforms[XRHandTracker.HAND_JOINT_WRIST].origin.is_equal_approx(Vector3(0.5, 0, 0)):
+		failures.append("held frame did not carry the last good pose")
+	gate.capture(1, 0, frame)
+
+	# Reacquisition must raise a discontinuity exactly once.
+	gate.capture(1, 0, frame)
+	if not gate.consume_discontinuity(1):
+		failures.append("gate did not raise a discontinuity on reacquisition")
+	if gate.consume_discontinuity(1):
+		failures.append("discontinuity was not cleared after being consumed")
+
+	# Past the hold window the gate must report invalid rather than hold forever.
+	var expiring_source := _ScriptedSource.new()
+	expiring_source.pattern = [true, false, false, false, false, false]
+	var expiring := XRHandConfidenceGate.new(expiring_source)
+	expiring.hold_duration_sec = 0.02   # ~1.4 frames at 72 Hz
+	var expiring_frame := XRHandFrame.new()
+	expiring.capture(1, 0, expiring_frame)
+	expiring.capture(1, 0, expiring_frame)
+	var still_valid := true
+	for step in range(4):
+		still_valid = expiring.capture(1, 0, expiring_frame)
+	if still_valid:
+		failures.append("gate held past hold_duration_sec instead of reporting invalid")
