@@ -46,10 +46,22 @@ static func get_conditioned(hand: int) -> XRHandTracker:
 	if not _enabled or hand < 0 or hand >= _HANDS:
 		return null
 	var frame_number := Engine.get_process_frames()
-	if _published_frame[hand] == frame_number:
+	if not _should_republish(hand, frame_number):
 		return _trackers[hand]
-	_published_frame[hand] = frame_number
 	return publish(hand)
+
+## Frame-keyed memoization decision, pulled out of get_conditioned so it can
+## be unit-tested without XRServer. True (and records `frame_number` as seen)
+## the first time this frame number is asked about for `hand`; false on every
+## later call with the same frame number. This is the guarantee that makes
+## staleness structurally impossible -- access is what triggers a run -- and
+## that stops a second consumer in the same render frame from re-driving the
+## One Euro filter and corrupting its derivative estimate.
+static func _should_republish(hand: int, frame_number: int) -> bool:
+	if _published_frame[hand] == frame_number:
+		return false
+	_published_frame[hand] = frame_number
+	return true
 
 static func publish(hand: int) -> XRHandTracker:
 	_ensure_chain()

@@ -17,6 +17,7 @@ func _init() -> void:
 	_test_hand_filter_dedup(failures)
 	_test_confidence_gate(failures)
 	_test_publisher(failures)
+	_test_publisher_republish_cache(failures)
 	if failures.is_empty():
 		print("XR hand conditioning: PASS")
 		quit(0)
@@ -712,3 +713,26 @@ func _test_publisher(failures: Array[String]) -> void:
 	XRConditionedHandPublisher.write_frame_to_tracker(lost, tracker, XRHandTracker.HAND_TRACKING_SOURCE_UNKNOWN)
 	if tracker.has_tracking_data:
 		failures.append("publisher left has_tracking_data set after an invalid frame")
+
+func _test_publisher_republish_cache(failures: Array[String]) -> void:
+	# Regression for get_conditioned's per-render-frame memoization. That gate
+	# is load-bearing, not incidental: it is what makes stale data structurally
+	# impossible (access is what triggers a run) and what stops a second
+	# consumer in the same render frame from re-driving the One Euro filter a
+	# second time, which would corrupt its derivative estimate. get_conditioned
+	# itself needs a live XRServer, which this headless suite has none of, so
+	# drive the decision through _should_republish directly -- same shape as
+	# XRHandTraceRecorder._should_record and XRHandConfidenceGate.consume_discontinuity.
+	if not XRConditionedHandPublisher._should_republish(0, 100):
+		failures.append("first call for a new frame number must republish")
+	if XRConditionedHandPublisher._should_republish(0, 100):
+		failures.append("second call with the same frame number must be suppressed")
+	if not XRConditionedHandPublisher._should_republish(0, 101):
+		failures.append("a new frame number must republish again")
+
+	# The two hands cache independently: hand 1 must not be blocked by hand
+	# 0's cached frame number, and must be suppressed by its own.
+	if not XRConditionedHandPublisher._should_republish(1, 101):
+		failures.append("hand 1 must not be blocked by hand 0's cached frame")
+	if XRConditionedHandPublisher._should_republish(1, 101):
+		failures.append("hand 1's second call with the same frame number must be suppressed")
