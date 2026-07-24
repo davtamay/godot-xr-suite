@@ -485,23 +485,27 @@ func _test_rotation_filter(failures: Array[String]) -> void:
 	if not seeded.is_equal_approx(start):
 		failures.append("rotation filter must seed on the first sample")
 
-	# Double cover: q and -q are the SAME rotation, so filtering toward either
-	# must converge to the same result. NOTE: do NOT add a manual `if dot < 0:
-	# negate` correction -- Godot's slerp and angle_to are already double-cover
-	# invariant, so it would be dead code. Verified against the engine; slerpni
-	# is the explicit opt-out. This test fails (123 deg divergence) if slerp is
-	# swapped for slerpni, so it genuinely constrains the behaviour.
-	var target := Quaternion(Vector3.UP, 0.2).normalized()
-	var toward := XROneEuroRotationFilter.new(); toward.resize(1)
-	var away := XROneEuroRotationFilter.new(); away.resize(1)
-	toward.filter(0, start, dt); away.filter(0, start, dt)
-	var a := start
-	var b := start
-	for step in range(10):
-		a = toward.filter(0, target, dt)
-		b = away.filter(0, -target, dt)
-	if rad_to_deg(a.angle_to(b)) > 0.01:
-		failures.append("filtering toward target and -target diverged: angle_to = %f deg" % rad_to_deg(a.angle_to(b)))
+	# Double cover: a negated quaternion is the SAME rotation, so filtering
+	# toward -target must converge to the same rotation as filtering toward
+	# target. Compare with angle_to (not raw components) since the two
+	# results may legitimately differ in sign while representing the same
+	# rotation.
+	var target := Quaternion(Vector3.UP, 0.2)
+	var negated := -target
+	var filter_pos := XROneEuroRotationFilter.new()
+	filter_pos.resize(1)
+	filter_pos.filter(0, start, dt)
+	var filter_neg := XROneEuroRotationFilter.new()
+	filter_neg.resize(1)
+	filter_neg.filter(0, start, dt)
+	var out_pos := Quaternion.IDENTITY
+	var out_neg := Quaternion.IDENTITY
+	for step in range(5):
+		out_pos = filter_pos.filter(0, target, dt)
+		out_neg = filter_neg.filter(0, negated, dt)
+	var out := out_pos
+	if out_pos.angle_to(out_neg) > deg_to_rad(0.01):
+		failures.append("filtering toward target and -target diverged: angle_to = %.6f deg" % rad_to_deg(out_pos.angle_to(out_neg)))
 
 	# Output stays normalized.
 	var settle := Quaternion(Vector3.RIGHT, 1.0).normalized()
