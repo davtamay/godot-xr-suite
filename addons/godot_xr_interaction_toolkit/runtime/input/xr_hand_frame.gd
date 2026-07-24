@@ -52,3 +52,10 @@ func has_joint(joint: int) -> bool:
 
 func joint_position(joint: int) -> Vector3:
     return joint_transforms[joint].origin if has_joint(joint) else Vector3.ZERO
+
+## Copies this frame's full contents into another frame.
+func copy_into(target: XRHandFrame) -> void:
+    target.begin_capture(hand, timestamp_usec, sequence)
+    for joint in range(JOINT_COUNT):
+        target.set_joint(joint, joint_transforms[joint], joint_radii[joint], joint_flags[joint])
+    target.tracking_valid = tracking_valid

@@ -18,8 +18,6 @@ addons/godot_xr_hands/
   plugin.cfg / plugin.gd
   runtime/
     hand_visualizer.gd                 # presentation only
-    data/xr_hand_frame.gd              # immutable-by-convention snapshot
-    input/                              # acquisition seam + tracker source
     features/                           # palm-local normalized features
     gestures/                           # Resource definitions and conditions
     recognition/                       # canonical events + lifecycle/scheduler
