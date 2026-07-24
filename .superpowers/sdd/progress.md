@@ -52,8 +52,8 @@ Task 6: complete (commits cbf4529..5e668a4, review clean both verdicts; reviewer
     undetectable. It only looked that way because the old test data never MOVED --
     with a static hand, filtered ~= raw and there is nothing to lag behind.
 
-Task 7: IMPLEMENTED + test gap closed (commits 7133cdd..ff946c7). NOT yet run
-  through a task reviewer -- that is the next action.
+Task 7: complete (commits 7133cdd..7b0be31, review clean both verdicts; reviewer
+  independently re-ran all five mutations).
   - Mutation testing caught (a) latching discontinuity, (b) no hold on loss,
     (c) hold never expires. Mutation (d), dropping the FIRST-ACQUISITION
     discontinuity, was NOT caught: the test never consumed the flag right after
@@ -63,7 +63,7 @@ Task 7: IMPLEMENTED + test gap closed (commits 7133cdd..ff946c7). NOT yet run
     PASS). A bonus mutation (fires every frame) is also now caught.
 
 ## OUTSTANDING
-Next action: task-reviewer pass on Task 7 (base 7133cdd). Then Tasks 8, 9, 10. Task 10 requires David in a headset; 7-9 automatable.
+Next action: Task 8 (shadow-tracker publisher), base 7b0be31. Then Tasks 9, 10. Task 10 requires David in a headset; 7-9 automatable.
 
 CARRY INTO TASK 9 (A/B toggle): reviewer found XRHandFilter does not reset
 _last_timestamp / _has_output when `enabled` flips false->true, so the first
@@ -91,3 +91,6 @@ fail. Always request it.
   asserts > 0.0, not an exact value, so it would not catch a population-vs-sample
   denominator bug. Inherited from the plan's prescribed test, not an implementer
   choice.
+- Task 7 (Minor, reviewer): min_valid_joints has zero test coverage. Reviewer
+  verified the gating logic is correct via a standalone scratch script, so this is
+  an untested property, not a defect.
