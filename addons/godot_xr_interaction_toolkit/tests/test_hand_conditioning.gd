@@ -11,6 +11,7 @@ func _init() -> void:
 	_test_one_euro_robustness(failures)
 	_test_rotation_filter(failures)
 	_test_trace_round_trip(failures)
+	_test_recorder_dedup_guard(failures)
 	if failures.is_empty():
 		print("XR hand conditioning: PASS")
 		quit(0)
@@ -227,29 +228,63 @@ func _test_trace_round_trip(failures: Array[String]) -> void:
 	if trace.size() != 5:
 		failures.append("trace recorded %d frames, expected 5" % trace.size())
 
+	# Everything below touches a temp file on disk. Nest instead of early-
+	# returning on failure so cleanup at the bottom always runs, even when a
+	# save/reload/replay step fails.
 	var path := "user://test_hand_trace.res"
 	if trace.save(path) != OK:
 		failures.append("failed to save the trace")
-		return
+	else:
+		var loaded := XRHandTrace.load_trace(path)
+		if loaded == null or loaded.size() != 5:
+			failures.append("failed to reload the trace")
+		else:
+			# Replay it through the pose-source seam.
+			var player := XRHandTracePlayer.new(loaded)
+			var target := XRHandFrame.new()
+			var positions: Array[float] = []
+			while player.remaining() > 0:
+				if player.capture(0, 0, target):
+					positions.append(target.joint_transforms[XRHandTracker.HAND_JOINT_WRIST].origin.x)
 
-	var loaded := XRHandTrace.load_trace(path)
-	if loaded == null or loaded.size() != 5:
-		failures.append("failed to reload the trace")
-		return
-
-	# Replay it through the pose-source seam.
-	var player := XRHandTracePlayer.new(loaded)
-	var target := XRHandFrame.new()
-	var positions: Array[float] = []
-	while player.remaining() > 0:
-		if player.capture(0, 0, target):
-			positions.append(target.joint_transforms[XRHandTracker.HAND_JOINT_WRIST].origin.x)
-
-	if positions.size() != 5:
-		failures.append("replayed %d frames, expected 5" % positions.size())
-		return
-	for step in range(5):
-		if not is_equal_approx(positions[step], 0.01 * step):
-			failures.append("replayed frame %d had x=%.5f, expected %.5f" % [step, positions[step], 0.01 * step])
+			if positions.size() != 5:
+				failures.append("replayed %d frames, expected 5" % positions.size())
+			else:
+				for step in range(5):
+					if not is_equal_approx(positions[step], 0.01 * step):
+						failures.append("replayed frame %d had x=%.5f, expected %.5f" % [step, positions[step], 0.01 * step])
 
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+
+func _test_recorder_dedup_guard(failures: Array[String]) -> void:
+	# Regression for the recorder's duplicate-frame guard: it must dedup on
+	# the raw wrist transform, not the frame timestamp (the timestamp is
+	# stamped fresh by the caller on every _process tick, so comparing it
+	# can never detect a repeated tracker sample). Drive the decision
+	# through _should_record directly so this does not need a live tracker
+	# or a running _process loop.
+	var recorder := XRHandTraceRecorder.new()
+	recorder.start()
+
+	var kept := 0
+	if recorder._should_record(_wrist_frame(0.0)):
+		kept += 1
+	if recorder._should_record(_wrist_frame(0.0)):  # unchanged: must be dropped
+		kept += 1
+	if recorder._should_record(_wrist_frame(0.01)):  # changed: must be kept
+		kept += 1
+	recorder.free()
+
+	if kept != 2:
+		failures.append("recorder dedup guard kept %d frames for [same, same, changed], expected 2" % kept)
+
+func _wrist_frame(wrist_x: float) -> XRHandFrame:
+	var frame := XRHandFrame.new()
+	frame.begin_capture(0, Time.get_ticks_usec(), 0)
+	frame.set_joint(
+		XRHandTracker.HAND_JOINT_WRIST,
+		Transform3D(Basis.IDENTITY, Vector3(wrist_x, 0, 0)),
+		0.01,
+		XRHandTracker.HAND_JOINT_FLAG_POSITION_VALID)
+	frame.tracking_valid = true
+	return frame
