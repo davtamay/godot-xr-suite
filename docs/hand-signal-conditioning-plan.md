@@ -17,8 +17,10 @@
 - **Tests run from the DEMO project**, not the suite — `godot-xr-suite` has no `project.godot`. Project path is `C:\Users\davta\Repos\Godot_WebXR_gh\demo`, whose `addons/` are symlinks into the suite working tree. Editing the suite changes what the demo runs.
 - **Test pattern:** `extends SceneTree`, a `_init()` that appends to `var failures: Array[String]`, prints `PASS`/`FAIL (n)`, and calls `quit(0)` or `quit(1)`. Follow `addons/godot_xr_hands/tests/test_gesture_foundation.gd` exactly.
 - **Test command shape:**
-  `<godot> --headless --path C:/Users/davta/Repos/Godot_WebXR_gh/demo --script res://addons/<path>/tests/<file>.gd`
-  The first run after adding files performs an import pass and can take several minutes. Subsequent runs are seconds.
+  `<godot> --headless --xr-mode off --path C:/Users/davta/Repos/Godot_WebXR_gh/demo --script res://addons/<path>/tests/<file>.gd`
+- **`--xr-mode off` is mandatory and verified.** Without it the process hangs indefinitely and prints nothing: the demo project enables OpenXR, and headless initialisation blocks with no runtime present. This is not a slow test — it never returns. A bare project without OpenXR runs the identical script instantly, which is how the cause was isolated. If a test appears to hang, check this flag first.
+- **First run after adding files** performs an import pass and can take several minutes; subsequent runs are seconds. Never run two Godot instances against the demo project at once — they contend and both stall. If that happens: `taskkill //F //IM godot.windows.editor.x86_64.console.exe`.
+- **Verified baseline:** `test_gesture_foundation.gd` prints `XR gesture foundation: PASS` and exits 0 under the command above. If it does not before you change anything, stop and report.
 - **No ISDK code.** Meta's Interaction SDK is under the Oculus SDK License and is incompatible. Implement from published literature. The One Euro filter is Casiez, Roussel & Vogel, *1€ Filter*, CHI 2012.
 - **DAG rule:** `godot_xr_interaction_toolkit` must keep `requires=PackedStringArray()` in its `xr_package.cfg` and must never `preload` from `godot_xr_hands` or `godot_webxr_kit`. Cross-addon access uses group lookup with a graceful fallback.
 - **Break and fix forward.** Conditioning is on by default. No compatibility shims.
@@ -47,7 +49,7 @@ Rationale is in the spec's *Preserving the dependency DAG* section — condition
 ```bash
 cd "C:/Users/davta/Repos/Godot_WebXR_gh/demo"
 "C:/Users/davta/Documents/Godot_WebGPU/bin/godot.windows.editor.x86_64.console.exe" \
-  --headless --path . \
+  --headless --xr-mode off --path . \
   --script res://addons/godot_xr_hands/tests/test_gesture_foundation.gd
 ```
 
@@ -88,6 +90,19 @@ func consume_discontinuity(_hand: int) -> bool:
 	return false
 ```
 
+Then add the frame copy to `XRHandFrame` itself. Every decorator in the chain needs to copy a frame, and copying a frame is the frame's own business — defining it once here keeps the decorators free of a duplicated block.
+
+In `addons/godot_xr_interaction_toolkit/runtime/input/xr_hand_frame.gd`, append:
+
+```gdscript
+## Copies this frame's full contents into another frame.
+func copy_into(target: XRHandFrame) -> void:
+	target.begin_capture(hand, timestamp_usec, sequence)
+	for joint in range(JOINT_COUNT):
+		target.set_joint(joint, joint_transforms[joint], joint_radii[joint], joint_flags[joint])
+	target.tracking_valid = tracking_valid
+```
+
 - [ ] **Step 4: Find any other path-based references to the moved files**
 
 ```bash
@@ -102,7 +117,7 @@ Expected: only `README.md` hits. Update the tree diagram in `addons/godot_xr_han
 ```bash
 cd "C:/Users/davta/Repos/Godot_WebXR_gh/demo"
 "C:/Users/davta/Documents/Godot_WebGPU/bin/godot.windows.editor.x86_64.console.exe" \
-  --headless --path . \
+  --headless --xr-mode off --path . \
   --script res://addons/godot_xr_hands/tests/test_gesture_foundation.gd
 ```
 
@@ -111,7 +126,7 @@ Expected: `XR gesture foundation: PASS`, exit 0. Class names are globally regist
 If you get `hides a global script class` or an unresolved-class error, the `.godot` class cache is stale. Rescan once and retry:
 
 ```bash
-"C:/Users/davta/Documents/Godot_WebGPU/bin/godot.windows.editor.x86_64.console.exe" --editor --headless --path . --quit
+"C:/Users/davta/Documents/Godot_WebGPU/bin/godot.windows.editor.x86_64.console.exe" --editor --headless --xr-mode off --path . --quit
 ```
 
 - [ ] **Step 6: Verify the DAG is intact**
@@ -228,7 +243,7 @@ func _test_joint_hierarchy(failures: Array[String]) -> void:
 ```bash
 cd "C:/Users/davta/Repos/Godot_WebXR_gh/demo"
 "C:/Users/davta/Documents/Godot_WebGPU/bin/godot.windows.editor.x86_64.console.exe" \
-  --headless --path . \
+  --headless --xr-mode off --path . \
   --script res://addons/godot_xr_interaction_toolkit/tests/test_hand_conditioning.gd
 ```
 
@@ -301,7 +316,7 @@ static func _build_order() -> PackedInt32Array:
 ```bash
 cd "C:/Users/davta/Repos/Godot_WebXR_gh/demo"
 "C:/Users/davta/Documents/Godot_WebGPU/bin/godot.windows.editor.x86_64.console.exe" \
-  --headless --path . \
+  --headless --xr-mode off --path . \
   --script res://addons/godot_xr_interaction_toolkit/tests/test_hand_conditioning.gd
 ```
 
@@ -490,7 +505,7 @@ func _test_rotation_filter(failures: Array[String]) -> void:
 ```bash
 cd "C:/Users/davta/Repos/Godot_WebXR_gh/demo"
 "C:/Users/davta/Documents/Godot_WebGPU/bin/godot.windows.editor.x86_64.console.exe" \
-  --headless --path . \
+  --headless --xr-mode off --path . \
   --script res://addons/godot_xr_interaction_toolkit/tests/test_hand_conditioning.gd
 ```
 
@@ -656,7 +671,7 @@ func filter(channel: int, value: Quaternion, dt: float) -> Quaternion:
 ```bash
 cd "C:/Users/davta/Repos/Godot_WebXR_gh/demo"
 "C:/Users/davta/Documents/Godot_WebGPU/bin/godot.windows.editor.x86_64.console.exe" \
-  --headless --path . \
+  --headless --xr-mode off --path . \
   --script res://addons/godot_xr_interaction_toolkit/tests/test_hand_conditioning.gd
 ```
 
@@ -760,7 +775,7 @@ func _test_trace_round_trip(failures: Array[String]) -> void:
 ```bash
 cd "C:/Users/davta/Repos/Godot_WebXR_gh/demo"
 "C:/Users/davta/Documents/Godot_WebGPU/bin/godot.windows.editor.x86_64.console.exe" \
-  --headless --path . \
+  --headless --xr-mode off --path . \
   --script res://addons/godot_xr_interaction_toolkit/tests/test_hand_conditioning.gd
 ```
 
@@ -925,7 +940,7 @@ func _process(_delta: float) -> void:
 ```bash
 cd "C:/Users/davta/Repos/Godot_WebXR_gh/demo"
 "C:/Users/davta/Documents/Godot_WebGPU/bin/godot.windows.editor.x86_64.console.exe" \
-  --headless --path . \
+  --headless --xr-mode off --path . \
   --script res://addons/godot_xr_interaction_toolkit/tests/test_hand_conditioning.gd
 ```
 
@@ -1031,7 +1046,7 @@ func _bone_frames(lengths: Array) -> Array:
 ```bash
 cd "C:/Users/davta/Repos/Godot_WebXR_gh/demo"
 "C:/Users/davta/Documents/Godot_WebGPU/bin/godot.windows.editor.x86_64.console.exe" \
-  --headless --path . \
+  --headless --xr-mode off --path . \
   --script res://addons/godot_xr_interaction_toolkit/tests/test_hand_conditioning.gd
 ```
 
@@ -1121,7 +1136,7 @@ static func bone_length_deviation(frames: Array, joint: int) -> float:
 ```bash
 cd "C:/Users/davta/Repos/Godot_WebXR_gh/demo"
 "C:/Users/davta/Documents/Godot_WebGPU/bin/godot.windows.editor.x86_64.console.exe" \
-  --headless --path . \
+  --headless --xr-mode off --path . \
   --script res://addons/godot_xr_interaction_toolkit/tests/test_hand_conditioning.gd
 ```
 
@@ -1252,7 +1267,7 @@ func _test_hand_filter(failures: Array[String]) -> void:
 ```bash
 cd "C:/Users/davta/Repos/Godot_WebXR_gh/demo"
 "C:/Users/davta/Documents/Godot_WebGPU/bin/godot.windows.editor.x86_64.console.exe" \
-  --headless --path . \
+  --headless --xr-mode off --path . \
   --script res://addons/godot_xr_interaction_toolkit/tests/test_hand_conditioning.gd
 ```
 
@@ -1383,7 +1398,7 @@ func capture(hand: int, timestamp_usec: int, target: XRHandFrame) -> bool:
 		reset(hand)
 
 	if not enabled or hand < 0 or hand >= _HANDS:
-		_copy_frame(_raw, target)
+		_raw.copy_into(target)
 		return _raw.tracking_valid
 
 	# The render rate often exceeds the hand-tracking rate. If the runtime has
@@ -1392,7 +1407,7 @@ func capture(hand: int, timestamp_usec: int, target: XRHandFrame) -> bool:
 	# makes the filter over-smooth. Replay the previous output instead.
 	var wrist_raw := _raw.joint_transforms[XRHandTracker.HAND_JOINT_WRIST]
 	if _has_output[hand] and wrist_raw.is_equal_approx(_last_raw_wrist[hand]):
-		_copy_frame(_output[hand], target)
+		_output[hand].copy_into(target)
 		return _output[hand].tracking_valid
 	_last_raw_wrist[hand] = wrist_raw
 
@@ -1402,7 +1417,7 @@ func capture(hand: int, timestamp_usec: int, target: XRHandFrame) -> bool:
 		dt = float(_raw.timestamp_usec - previous) / 1_000_000.0
 	_last_timestamp[hand] = _raw.timestamp_usec
 
-	_copy_frame(_raw, target)
+	_raw.copy_into(target)
 
 	var wrist_id := XRHandTracker.HAND_JOINT_WRIST
 	var wrist := _raw.joint_transforms[wrist_id]
@@ -1436,15 +1451,9 @@ func capture(hand: int, timestamp_usec: int, target: XRHandFrame) -> bool:
 		world[joint] = world[parent_joint] * Transform3D(Basis(rotation), offset)
 		target.joint_transforms[joint] = world[joint]
 
-	_copy_frame(target, _output[hand])
+	target.copy_into(_output[hand])
 	_has_output[hand] = true
 	return target.tracking_valid
-
-func _copy_frame(source: XRHandFrame, target: XRHandFrame) -> void:
-	target.begin_capture(source.hand, source.timestamp_usec, source.sequence)
-	for joint in range(XRHandFrame.JOINT_COUNT):
-		target.set_joint(joint, source.joint_transforms[joint], source.joint_radii[joint], source.joint_flags[joint])
-	target.tracking_valid = source.tracking_valid
 ```
 
 - [ ] **Step 4: Run the tests to verify they pass**
@@ -1452,7 +1461,7 @@ func _copy_frame(source: XRHandFrame, target: XRHandFrame) -> void:
 ```bash
 cd "C:/Users/davta/Repos/Godot_WebXR_gh/demo"
 "C:/Users/davta/Documents/Godot_WebGPU/bin/godot.windows.editor.x86_64.console.exe" \
-  --headless --path . \
+  --headless --xr-mode off --path . \
   --script res://addons/godot_xr_interaction_toolkit/tests/test_hand_conditioning.gd
 ```
 
@@ -1572,7 +1581,7 @@ func _test_confidence_gate(failures: Array[String]) -> void:
 ```bash
 cd "C:/Users/davta/Repos/Godot_WebXR_gh/demo"
 "C:/Users/davta/Documents/Godot_WebGPU/bin/godot.windows.editor.x86_64.console.exe" \
-  --headless --path . \
+  --headless --xr-mode off --path . \
   --script res://addons/godot_xr_interaction_toolkit/tests/test_hand_conditioning.gd
 ```
 
@@ -1636,12 +1645,12 @@ func capture(hand: int, timestamp_usec: int, target: XRHandFrame) -> bool:
 			_discontinuity[hand] = true
 		_lost_since_usec[hand] = -1
 		_has_good[hand] = true
-		_copy_frame(_raw, _last_good[hand])
-		_copy_frame(_raw, target)
+		_raw.copy_into(_last_good[hand])
+		_raw.copy_into(target)
 		return true
 
 	if not _has_good[hand]:
-		_copy_frame(_raw, target)
+		_raw.copy_into(target)
 		target.tracking_valid = false
 		return false
 
@@ -1650,19 +1659,13 @@ func capture(hand: int, timestamp_usec: int, target: XRHandFrame) -> bool:
 
 	var held_for := float(now - _lost_since_usec[hand]) / 1_000_000.0
 	if held_for > hold_duration_sec:
-		_copy_frame(_raw, target)
+		_raw.copy_into(target)
 		target.tracking_valid = false
 		return false
 
-	_copy_frame(_last_good[hand], target)
+	_last_good[hand].copy_into(target)
 	target.timestamp_usec = now
 	return true
-
-func _copy_frame(source: XRHandFrame, target: XRHandFrame) -> void:
-	target.begin_capture(source.hand, source.timestamp_usec, source.sequence)
-	for joint in range(XRHandFrame.JOINT_COUNT):
-		target.set_joint(joint, source.joint_transforms[joint], source.joint_radii[joint], source.joint_flags[joint])
-	target.tracking_valid = source.tracking_valid
 ```
 
 - [ ] **Step 4: Run the tests to verify they pass**
@@ -1670,7 +1673,7 @@ func _copy_frame(source: XRHandFrame, target: XRHandFrame) -> void:
 ```bash
 cd "C:/Users/davta/Repos/Godot_WebXR_gh/demo"
 "C:/Users/davta/Documents/Godot_WebGPU/bin/godot.windows.editor.x86_64.console.exe" \
-  --headless --path . \
+  --headless --xr-mode off --path . \
   --script res://addons/godot_xr_interaction_toolkit/tests/test_hand_conditioning.gd
 ```
 
@@ -1755,7 +1758,7 @@ func _test_publisher(failures: Array[String]) -> void:
 ```bash
 cd "C:/Users/davta/Repos/Godot_WebXR_gh/demo"
 "C:/Users/davta/Documents/Godot_WebGPU/bin/godot.windows.editor.x86_64.console.exe" \
-  --headless --path . \
+  --headless --xr-mode off --path . \
   --script res://addons/godot_xr_interaction_toolkit/tests/test_hand_conditioning.gd
 ```
 
@@ -1891,7 +1894,7 @@ The chain composes as `XRTrackerHandPoseSource → XRHandConfidenceGate → XRHa
 ```bash
 cd "C:/Users/davta/Repos/Godot_WebXR_gh/demo"
 "C:/Users/davta/Documents/Godot_WebGPU/bin/godot.windows.editor.x86_64.console.exe" \
-  --headless --path . \
+  --headless --xr-mode off --path . \
   --script res://addons/godot_xr_interaction_toolkit/tests/test_hand_conditioning.gd
 ```
 
@@ -2058,8 +2061,8 @@ Leave `requires=PackedStringArray()` and `layer="foundation"` untouched — keep
 ```bash
 cd "C:/Users/davta/Repos/Godot_WebXR_gh/demo"
 G="C:/Users/davta/Documents/Godot_WebGPU/bin/godot.windows.editor.x86_64.console.exe"
-"$G" --headless --path . --script res://addons/godot_xr_interaction_toolkit/tests/test_hand_conditioning.gd
-"$G" --headless --path . --script res://addons/godot_xr_hands/tests/test_gesture_foundation.gd
+"$G" --headless --xr-mode off --path . --script res://addons/godot_xr_interaction_toolkit/tests/test_hand_conditioning.gd
+"$G" --headless --xr-mode off --path . --script res://addons/godot_xr_hands/tests/test_gesture_foundation.gd
 ```
 
 Expected: `XR hand conditioning: PASS` and `XR gesture foundation: PASS`, both exit 0.
@@ -2069,7 +2072,7 @@ Expected: `XR hand conditioning: PASS` and `XR gesture foundation: PASS`, both e
 ```bash
 cd "C:/Users/davta/Repos/Godot_WebXR_gh/demo"
 "C:/Users/davta/Documents/Godot_WebGPU/bin/godot.windows.editor.x86_64.console.exe" \
-  --headless --path . --quit-after 120
+  --headless --xr-mode off --path . --quit-after 120
 ```
 
 Expected: exit 0, no `SCRIPT ERROR` lines mentioning the hand or conditioning classes.
@@ -2201,7 +2204,7 @@ These are the baseline. Record them **before** touching any parameters.
 ```bash
 cd "C:/Users/davta/Repos/Godot_WebXR_gh/demo"
 "C:/Users/davta/Documents/Godot_WebGPU/bin/godot.windows.editor.x86_64.console.exe" \
-  --headless --path . \
+  --headless --xr-mode off --path . \
   --script res://addons/godot_xr_interaction_toolkit/tools/trace/measure_traces.gd \
   -- res://hand_traces/rest.res
 ```
