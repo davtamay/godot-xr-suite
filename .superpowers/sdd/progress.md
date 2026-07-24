@@ -52,8 +52,18 @@ Task 6: complete (commits cbf4529..5e668a4, review clean both verdicts; reviewer
     undetectable. It only looked that way because the old test data never MOVED --
     with a static hand, filtered ~= raw and there is nothing to lag behind.
 
+Task 7: IMPLEMENTED + test gap closed (commits 7133cdd..ff946c7). NOT yet run
+  through a task reviewer -- that is the next action.
+  - Mutation testing caught (a) latching discontinuity, (b) no hold on loss,
+    (c) hold never expires. Mutation (d), dropping the FIRST-ACQUISITION
+    discontinuity, was NOT caught: the test never consumed the flag right after
+    the first capture, so a later recovery masked it. First acquisition must
+    raise it because the filter has no history and must SEED, not blend.
+  - Gap closed with an isolated fresh-gate block; proven by mutation (FAIL then
+    PASS). A bonus mutation (fires every frame) is also now caught.
+
 ## OUTSTANDING
-Tasks 7-10 not started. Task 10 requires David in a headset; 7-9 automatable.
+Next action: task-reviewer pass on Task 7 (base 7133cdd). Then Tasks 8, 9, 10. Task 10 requires David in a headset; 7-9 automatable.
 
 CARRY INTO TASK 9 (A/B toggle): reviewer found XRHandFilter does not reset
 _last_timestamp / _has_output when `enabled` flips false->true, so the first
