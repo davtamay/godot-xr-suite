@@ -169,8 +169,11 @@ framerate moves. `dt` comes from `Time.get_ticks_usec()` deltas.
 ### Rotation filtering
 
 Same adaptive cutoff, with speed measured as angular distance per second and
-applied via a single `slerp`. Includes hemisphere correction (negate when
-`dot < 0`) so the filter never takes the long way around.
+applied via a single `slerp`. No manual hemisphere correction is needed:
+Godot's `Quaternion.slerp` and `angle_to` are already double-cover invariant
+(`slerpni` is the explicit non-inverting opt-out). Verified against the engine
+-- an earlier draft of this spec specified a manual `dot < 0` negation, which
+turned out to be dead code.
 
 Fingertip joints are **position-only** — they have no children, and their
 rotation is unused by poke and pinch — so they skip rotation filtering
@@ -468,7 +471,7 @@ justification.
 **Unit**
 - One Euro step response matches the published formulation for known inputs.
 - Adaptive cutoff increases monotonically with input speed.
-- Quaternion filter takes the short path across the hemisphere boundary.
+- Quaternion filter converges identically toward `q` and `-q` (double cover).
 - NaN / Inf / zero-dt inputs reset cleanly rather than poisoning state.
 - Joint hierarchy: every joint reaches `WRIST`; no cycles; all 26 covered.
 
