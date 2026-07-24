@@ -130,17 +130,20 @@ Task 8: complete (commits df7c4d8..13d28a4, reviewed; two fix rounds).
     which is exactly where the Critical bug lived. A headless --script run DOES
     have XRServer; use it.
 
+DECIDED (David, 2026-07-24) -- Task 9 review Important #2: Option A. On gate
+rejection consumers see the UNTRACKED shadow (has_tracking_data false, joint
+flags scrubbed), not the raw fallback; raw fallback is reserved for the
+conditioned-off / publisher-disabled states. Implementing it surfaced a LATENT
+TASK 8 BUG: a failed filter capture returns without writing the reused frame,
+so publish republished the last tracked pose as live -- the shadow claimed
+tracking data through every dropout, unobservable until something consumed the
+shadow on the untracked path. Fixed in publish; write_frame_to_tracker's
+untracked path now scrubs joint flags too (consumers gate on
+joint_position_valid, not has_tracking_data). All four Option A mutations
+killed, incl. get_shadow ignoring _enabled and the flag scrub removed.
+
 ## NEXT ACTIONS, in order
-1. DECISION PENDING (David), from the Task 9 review, Important #2: after the
-   gate's hold expires, get_tracker's raw fallback hands consumers the garbage
-   joints the gate exists to suppress (raw scores 130 with has_tracking_data
-   and zero valid joints). Plan-prescribed semantics, matches pre-Task-9
-   behaviour, but it voids "tracking-loss policy in one place" on exactly the
-   worst frames. Option A: while conditioning is on and the publisher enabled,
-   return the shadow even when untracked (it carries has_tracking_data=false;
-   every converted call site checks it). Option B: keep as-is, record in the
-   decision log. Must be decided BEFORE Task 10 tunes against it.
-2. Task 10: baseline traces, tuning, WEB frame-cost measurement, on-device
+1. Task 10: baseline traces, tuning, WEB frame-cost measurement, on-device
    earn-in. REQUIRES DAVID IN A HEADSET. A/B on the WebGL path, not WebGPU. Task 10 requires David in a headset; 7-9 automatable.
 
 CARRY INTO TASK 10 (trace coverage): the defect class that keeps recurring is

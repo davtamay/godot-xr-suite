@@ -65,7 +65,11 @@ static func get_tracker(hand_id: int) -> XRHandTracker:
 
     var tracker: XRHandTracker = null
     if _conditioned:
-        tracker = XRConditionedHandPublisher.get_conditioned(hand_id)
+        # get_shadow, not get_conditioned: on gate rejection consumers must
+        # see the UNTRACKED shadow, not fall through to the raw tracker whose
+        # garbage joints the gate exists to suppress. The raw fallback below
+        # is for the conditioned-off / publisher-disabled states only.
+        tracker = XRConditionedHandPublisher.get_shadow(hand_id)
     if tracker == null:
         tracker = resolve_raw(hand_id)
     _cache[hand_id] = tracker

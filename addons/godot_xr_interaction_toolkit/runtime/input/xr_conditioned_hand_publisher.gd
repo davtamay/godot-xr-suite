@@ -57,7 +57,22 @@ static func reset_chain() -> void:
 		# joints, and a stale shadow that still claims tracking data would leak
 		# conditioned output into the raw A/B leg for anything reading it.
 		if _trackers[hand] != null:
-			_trackers[hand].has_tracking_data = false
+			_scrub_tracker(_trackers[hand])
+
+## Runs the chain like get_conditioned, but returns the shadow even when the
+## hand is untracked -- it then carries has_tracking_data = false and no valid
+## joint flags, so consumers observe a clean dropout instead of whatever the
+## raw tracker holds. Null only when disabled or the hand id is invalid.
+## David's decision, 2026-07-24 (Task 9 review, Important #2): on gate
+## rejection consumers see the untracked shadow, keeping the tracking-loss
+## policy in the gate instead of leaking raw garbage through the resolver's
+## fallback.
+static func get_shadow(hand: int) -> XRHandTracker:
+	if not _enabled or hand < 0 or hand >= _HANDS:
+		return null
+	if _should_republish(hand, Engine.get_process_frames()):
+		publish(hand)
+	return _trackers[hand]
 
 ## Runs the chain at most once per rendered frame per hand and returns the
 ## shadow tracker, or null when nothing is being tracked.
@@ -98,6 +113,14 @@ static func publish(hand: int) -> XRHandTracker:
 	# discontinuity internally, so the reset lands before the frame is
 	# conditioned rather than after.
 	var tracked := _filter.capture(hand, Time.get_ticks_usec(), frame)
+	if not tracked:
+		# A failed capture returns without writing the frame, and the frame is
+		# reused across publishes -- so it still holds the last tracked pose,
+		# tracking_valid and all. Mark it invalid or write_frame_to_tracker
+		# republishes the stale pose as live. Latent since Task 8: the shadow
+		# claimed tracking data throughout every dropout, unobservable only
+		# because nothing consumed the shadow on the untracked path until now.
+		frame.tracking_valid = false
 
 	var tracker := _ensure_tracker(hand)
 	write_frame_to_tracker(frame, tracker, _raw_source(hand))
@@ -109,13 +132,22 @@ static func publish(hand: int) -> XRHandTracker:
 static func write_frame_to_tracker(frame: XRHandFrame, tracker: XRHandTracker, source: int) -> void:
 	tracker.hand_tracking_source = source
 	if not frame.tracking_valid:
-		tracker.has_tracking_data = false
+		_scrub_tracker(tracker)
 		return
 	for joint in range(XRHandFrame.JOINT_COUNT):
 		tracker.set_hand_joint_transform(joint, frame.joint_transforms[joint])
 		tracker.set_hand_joint_radius(joint, frame.joint_radii[joint])
 		tracker.set_hand_joint_flags(joint, frame.joint_flags[joint])
 	tracker.has_tracking_data = true
+
+## An untracked shadow must carry NO usable data: has_tracking_data false AND
+## every joint flag cleared. Several consumers (grip curl, pinch, hand rays)
+## gate on joint_position_valid rather than has_tracking_data, and the joints
+## left behind by the last tracked publish would still read as valid.
+static func _scrub_tracker(tracker: XRHandTracker) -> void:
+	for joint in range(XRHandFrame.JOINT_COUNT):
+		tracker.set_hand_joint_flags(joint, 0)
+	tracker.has_tracking_data = false
 
 static func _ensure_chain() -> void:
 	if _gate != null:

@@ -25,6 +25,7 @@ func _init() -> void:
 	_test_pose_source_reads_raw_across_frames(failures)
 	_test_resolver_scan_excludes_shadow(failures)
 	_test_toggle_invalidates_frame_cache(failures)
+	_test_gate_rejection_yields_untracked_shadow(failures)
 	if failures.is_empty():
 		print("XR hand conditioning: PASS")
 		quit(0)
@@ -720,6 +721,8 @@ func _test_publisher(failures: Array[String]) -> void:
 	XRConditionedHandPublisher.write_frame_to_tracker(lost, tracker, XRHandTracker.HAND_TRACKING_SOURCE_UNKNOWN)
 	if tracker.has_tracking_data:
 		failures.append("publisher left has_tracking_data set after an invalid frame")
+	if (tracker.get_hand_joint_flags(XRHandTracker.HAND_JOINT_WRIST) & XRHandTracker.HAND_JOINT_FLAG_POSITION_VALID) != 0:
+		failures.append("publisher left stale joint flags valid after an invalid frame -- consumers gating on joint_position_valid would read the stale pose")
 
 func _test_publisher_republish_cache(failures: Array[String]) -> void:
 	# Regression for get_conditioned's per-render-frame memoization. That gate
@@ -1085,6 +1088,58 @@ func _test_toggle_invalidates_frame_cache(failures: Array[String]) -> void:
 			failures.append("get_tracker served the conditioned tracker from the frame cache after set_conditioned(false)")
 
 	XRServer.remove_tracker(raw)
+	XRConditionedHandPublisher.set_enabled(was_enabled)
+	XRHandTrackerResolver._conditioned = was_conditioned
+	_clear_conditioning_state(hand)
+
+func _test_gate_rejection_yields_untracked_shadow(failures: Array[String]) -> void:
+	# David's decision (2026-07-24), resolving the Task 9 review's Important #2:
+	# when the gate rejects a hand post-hold, consumers must see the UNTRACKED
+	# shadow -- has_tracking_data false, no valid joint flags -- rather than
+	# falling through to the raw tracker whose garbage joints the gate exists
+	# to suppress. Drives the real chain through the real hold window: publish
+	# tracked, drop raw, publish again (the gate starts its hold on the first
+	# capture AFTER loss, not at loss), wait out the hold, publish once more.
+	var hand := 0
+	var was_conditioned := XRHandTrackerResolver.is_conditioned()
+	var was_enabled := XRConditionedHandPublisher.is_enabled()
+	var raw := _make_raw_tracker(hand)
+	_clear_conditioning_state(hand)
+	XRHandTrackerResolver._conditioned = true
+	XRConditionedHandPublisher._enabled = true
+
+	XRConditionedHandPublisher._published_frame[hand] = -1
+	var shadow := XRConditionedHandPublisher.get_conditioned(hand)
+	if shadow == null:
+		failures.append("arming publish failed; the gate-rejection contract cannot be checked")
+	else:
+		raw.has_tracking_data = false
+
+		# The hold leg: the gate must still report the held pose as tracked.
+		XRConditionedHandPublisher._published_frame[hand] = -1
+		XRHandTrackerResolver._cache_frame = -1
+		var held := XRHandTrackerResolver.get_tracker(hand)
+		if held != shadow or not shadow.has_tracking_data:
+			failures.append("during the gate's hold window consumers must still see the tracked shadow holding the last good pose")
+
+		# Wait out the hold (publish stamps the real clock).
+		OS.delay_msec(400)
+		XRConditionedHandPublisher._published_frame[hand] = -1
+		XRHandTrackerResolver._cache_frame = -1
+		var resolved := XRHandTrackerResolver.get_tracker(hand)
+
+		if resolved == raw:
+			failures.append("post-hold gate rejection fell back to the raw tracker -- the tracking-loss policy is bypassed on exactly the frames the gate exists for")
+		elif resolved != shadow:
+			failures.append("expected the untracked shadow after gate rejection, got %s" % ("null" if resolved == null else str(resolved.name)))
+		else:
+			if resolved.has_tracking_data:
+				failures.append("gate-rejected shadow still claims tracking data")
+			if XRHandTrackerResolver.joint_position_valid(resolved, XRHandTracker.HAND_JOINT_WRIST):
+				failures.append("gate-rejected shadow still exposes valid joints -- grip curl, pinch and hand rays gate on joint_position_valid and would read the stale pose")
+
+	if XRServer.get_tracker(str(raw.name)) != null:
+		XRServer.remove_tracker(raw)
 	XRConditionedHandPublisher.set_enabled(was_enabled)
 	XRHandTrackerResolver._conditioned = was_conditioned
 	_clear_conditioning_state(hand)
