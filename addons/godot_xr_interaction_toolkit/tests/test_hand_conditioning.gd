@@ -18,6 +18,8 @@ func _init() -> void:
 	_test_confidence_gate(failures)
 	_test_publisher(failures)
 	_test_publisher_republish_cache(failures)
+	_test_publisher_tracker_registration(failures)
+	_test_publisher_null_contract(failures)
 	if failures.is_empty():
 		print("XR hand conditioning: PASS")
 		quit(0)
@@ -736,3 +738,86 @@ func _test_publisher_republish_cache(failures: Array[String]) -> void:
 		failures.append("hand 1 must not be blocked by hand 0's cached frame")
 	if XRConditionedHandPublisher._should_republish(1, 101):
 		failures.append("hand 1's second call with the same frame number must be suppressed")
+
+func _test_publisher_tracker_registration(failures: Array[String]) -> void:
+	# Regression for the missing tracker.name: unnamed shadow trackers all
+	# default to "Unknown", collide inside XRServer's registry (publishing
+	# hand 1 silently overwrites hand 0's entry), and are unreachable via the
+	# documented TRACKER_NAMES contract that consumers rely on. Go through
+	# XRServer.get_tracker by the documented name -- the exact path a
+	# consumer would use -- rather than trusting the return value alone.
+	var left: XRHandTracker = XRConditionedHandPublisher._ensure_tracker(0)
+	var right: XRHandTracker = XRConditionedHandPublisher._ensure_tracker(1)
+
+	var looked_up_left := XRServer.get_tracker(XRConditionedHandPublisher.TRACKER_NAMES[0])
+	var looked_up_right := XRServer.get_tracker(XRConditionedHandPublisher.TRACKER_NAMES[1])
+
+	if looked_up_left == null:
+		failures.append("XRServer.get_tracker found no left conditioned tracker by name")
+	if looked_up_right == null:
+		failures.append("XRServer.get_tracker found no right conditioned tracker by name")
+	if looked_up_left != null and looked_up_right != null and looked_up_left == looked_up_right:
+		failures.append("left and right conditioned trackers collided into the same XRServer entry")
+	if looked_up_left != left:
+		failures.append("XRServer's left lookup did not match the tracker _ensure_tracker returned")
+	if looked_up_right != right:
+		failures.append("XRServer's right lookup did not match the tracker _ensure_tracker returned")
+	if left != null and left.hand != XRPositionalTracker.TRACKER_HAND_LEFT:
+		failures.append("left conditioned tracker has the wrong hand chirality")
+	if right != null and right.hand != XRPositionalTracker.TRACKER_HAND_RIGHT:
+		failures.append("right conditioned tracker has the wrong hand chirality")
+
+	# Clean up: unregister from XRServer and reset the publisher's static
+	# cache so this test leaves no global state behind and is safe to run
+	# again in the same process.
+	if XRServer.get_tracker(XRConditionedHandPublisher.TRACKER_NAMES[0]) != null:
+		XRServer.remove_tracker(left)
+	if XRServer.get_tracker(XRConditionedHandPublisher.TRACKER_NAMES[1]) != null:
+		XRServer.remove_tracker(right)
+	XRConditionedHandPublisher._trackers[0] = null
+	XRConditionedHandPublisher._trackers[1] = null
+
+func _test_publisher_null_contract(failures: Array[String]) -> void:
+	# Regression: get_conditioned's cache-hit path used to return whatever
+	# object sat in _trackers[hand], even when the publish() that cached it
+	# was untracked. A consumer got null on a miss and a live tracker on the
+	# very next call in the same render frame, purely depending on call
+	# order. Reset the relevant static state first so this does not depend
+	# on what earlier tests left behind and is safe to run twice.
+	var hand := 0
+	XRConditionedHandPublisher._published_frame[hand] = -1
+	XRConditionedHandPublisher._last_tracked[hand] = false
+	XRConditionedHandPublisher._trackers[hand] = null
+	XRConditionedHandPublisher._frames[hand] = null
+
+	# No raw hand tracker is registered anywhere in this headless run, so the
+	# pose-source chain reports untracked. The first call is a genuine cache
+	# MISS (it drives publish()); the second call, same process frame, is a
+	# genuine cache HIT. Both go through the real get_conditioned code path.
+	var miss_result := XRConditionedHandPublisher.get_conditioned(hand)
+	var hit_result := XRConditionedHandPublisher.get_conditioned(hand)
+
+	if miss_result != null:
+		failures.append("expected an untracked cache miss to return null")
+	if hit_result != null:
+		failures.append("cache hit returned a tracker even though the publish that filled the cache was untracked")
+
+	# Force a tracked outcome into the cache directly, through the same seam
+	# get_conditioned itself reads, and confirm a hit then returns the
+	# tracker rather than null -- proving the fix is a real per-hand
+	# decision, not "always return null."
+	XRConditionedHandPublisher._last_tracked[hand] = true
+	XRConditionedHandPublisher._trackers[hand] = XRHandTracker.new()
+	var tracked_hit := XRConditionedHandPublisher.get_conditioned(hand)
+	if tracked_hit == null:
+		failures.append("cache hit returned null even though the last publish was tracked")
+
+	# Clean up: unregister whatever publish() actually added to XRServer and
+	# reset static state so this test leaves no global state behind.
+	var registered := XRServer.get_tracker(XRConditionedHandPublisher.TRACKER_NAMES[hand])
+	if registered != null:
+		XRServer.remove_tracker(registered)
+	XRConditionedHandPublisher._trackers[hand] = null
+	XRConditionedHandPublisher._frames[hand] = null
+	XRConditionedHandPublisher._published_frame[hand] = -1
+	XRConditionedHandPublisher._last_tracked[hand] = false

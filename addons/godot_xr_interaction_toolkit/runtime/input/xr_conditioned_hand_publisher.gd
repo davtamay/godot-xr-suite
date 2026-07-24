@@ -29,6 +29,7 @@ static var _frames := [null, null]
 static var _gate: XRHandConfidenceGate = null
 static var _filter: XRHandFilter = null
 static var _published_frame := [-1, -1]
+static var _last_tracked := [false, false]
 
 static func set_enabled(value: bool) -> void:
 	_enabled = value
@@ -47,7 +48,7 @@ static func get_conditioned(hand: int) -> XRHandTracker:
 		return null
 	var frame_number := Engine.get_process_frames()
 	if not _should_republish(hand, frame_number):
-		return _trackers[hand]
+		return _trackers[hand] if _last_tracked[hand] else null
 	return publish(hand)
 
 ## Frame-keyed memoization decision, pulled out of get_conditioned so it can
@@ -82,6 +83,7 @@ static func publish(hand: int) -> XRHandTracker:
 
 	var tracker := _ensure_tracker(hand)
 	write_frame_to_tracker(frame, tracker, _raw_source(hand))
+	_last_tracked[hand] = tracked
 	return tracker if tracked else null
 
 ## Copies a conditioned frame into a tracker. Static and dependency-free so it
@@ -109,6 +111,7 @@ static func _ensure_tracker(hand: int) -> XRHandTracker:
 	if _trackers[hand] != null:
 		return _trackers[hand]
 	var tracker := XRHandTracker.new()
+	tracker.name = TRACKER_NAMES[hand]
 	tracker.hand = XRPositionalTracker.TRACKER_HAND_LEFT if hand == 0 else XRPositionalTracker.TRACKER_HAND_RIGHT
 	XRServer.add_tracker(tracker)
 	_trackers[hand] = tracker
