@@ -10,6 +10,7 @@ func _init() -> void:
 	_test_one_euro_behaviour(failures)
 	_test_one_euro_robustness(failures)
 	_test_rotation_filter(failures)
+	_test_trace_round_trip(failures)
 	if failures.is_empty():
 		print("XR hand conditioning: PASS")
 		quit(0)
@@ -209,3 +210,46 @@ func _test_rotation_filter(failures: Array[String]) -> void:
 		out = filter.filter(0, settle, dt)
 	if not is_equal_approx(out.length(), 1.0):
 		failures.append("rotation filter output drifted off unit length: %.6f" % out.length())
+
+func _test_trace_round_trip(failures: Array[String]) -> void:
+	var trace := XRHandTrace.new()
+	for step in range(5):
+		var frame := XRHandFrame.new()
+		frame.begin_capture(0, 1000 * step, step)
+		frame.set_joint(
+			XRHandTracker.HAND_JOINT_WRIST,
+			Transform3D(Basis.IDENTITY, Vector3(0.01 * step, 0, 0)),
+			0.01,
+			XRHandTracker.HAND_JOINT_FLAG_POSITION_VALID)
+		frame.tracking_valid = true
+		trace.append_frame(frame)
+
+	if trace.size() != 5:
+		failures.append("trace recorded %d frames, expected 5" % trace.size())
+
+	var path := "user://test_hand_trace.res"
+	if trace.save(path) != OK:
+		failures.append("failed to save the trace")
+		return
+
+	var loaded := XRHandTrace.load_trace(path)
+	if loaded == null or loaded.size() != 5:
+		failures.append("failed to reload the trace")
+		return
+
+	# Replay it through the pose-source seam.
+	var player := XRHandTracePlayer.new(loaded)
+	var target := XRHandFrame.new()
+	var positions: Array[float] = []
+	while player.remaining() > 0:
+		if player.capture(0, 0, target):
+			positions.append(target.joint_transforms[XRHandTracker.HAND_JOINT_WRIST].origin.x)
+
+	if positions.size() != 5:
+		failures.append("replayed %d frames, expected 5" % positions.size())
+		return
+	for step in range(5):
+		if not is_equal_approx(positions[step], 0.01 * step):
+			failures.append("replayed frame %d had x=%.5f, expected %.5f" % [step, positions[step], 0.01 * step])
+
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
