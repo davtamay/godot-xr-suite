@@ -832,7 +832,11 @@ func save(path: String) -> Error:
 static func load_trace(path: String) -> XRHandTrace:
 	if not ResourceLoader.exists(path):
 		return null
-	return ResourceLoader.load(path, "XRHandTrace", ResourceLoader.CACHE_MODE_IGNORE) as XRHandTrace
+	# No type hint: ResourceLoader's type_hint matches ClassDB/recognized-extension
+	# types, not GDScript "class_name" globals -- passing "XRHandTrace" here makes
+	# the loader report the file as not found even though it exists and loads fine
+	# untyped. The cast below still gives static callers a typed result.
+	return ResourceLoader.load(path, "", ResourceLoader.CACHE_MODE_IGNORE) as XRHandTrace
 ```
 
 - [ ] **Step 4: Implement the player**
