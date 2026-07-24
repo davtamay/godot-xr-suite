@@ -87,6 +87,13 @@ static func resolve_raw(hand_id: int) -> XRHandTracker:
 
     var trackers := XRServer.get_trackers(XRServer.TRACKER_HAND)
     for tracker_name in trackers.keys():
+        # Never score the conditioning layer's own shadow trackers. Their name
+        # and hand match like any real tracker, and after a raw dropout they
+        # still hold last frame's fully-valid joints -- so they would outrank
+        # the degraded raw tracker, feed the filter its own previous output,
+        # and hold the "valid" hand frozen past the gate's dropout window.
+        if tracker_name in XRConditionedHandPublisher.TRACKER_NAMES:
+            continue
         var tracker := trackers[tracker_name] as XRHandTracker
         var score := _score_tracker(tracker, expected_hand, side_text, str(tracker_name))
         if score > best_score:

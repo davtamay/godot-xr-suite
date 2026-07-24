@@ -62,7 +62,24 @@ Task 7: complete (commits 7133cdd..7b0be31, review clean both verdicts; reviewer
   - Gap closed with an isolated fresh-gate block; proven by mutation (FAIL then
     PASS). A bonus mutation (fires every frame) is also now caught.
 
-Task 9: implemented, mutation-tested, review pending.
+Task 9: complete (commits cbcaee7.., reviewed; one Critical fix round).
+  - Review round, CRITICAL (reviewer, proven by probe): the publisher's shadow
+    trackers scored like real trackers in resolve_raw's scan (name contains
+    left/right, hand matches). Steady state masked it -- strict > tie-break
+    with raw seeded first -- but on any raw degradation the shadow, holding
+    last frame's fully-valid joints, OUTRANKED raw. The pose source then fed
+    the filter its own output and the gate's 0.25 s dropout hold never fired:
+    hand frozen mid-air until full reacquisition. Also polluted the raw A/B
+    leg. Fixed: scan excludes TRACKER_NAMES; reset_chain also invalidates
+    shadows. Regression test proves FAIL(2) then PASS.
+  - Attribution: plan defect, not implementer error -- Task 8's plan put the
+    shadows in XRServer, Task 9's plan reused the scan as "the raw path", and
+    nothing reconciled the two.
+  - DEFECT CLASS, third occurrence: "fixture never degrades" (Task 6 static
+    hand, Task 9 implementer's never-degrading raw tracker, now this). The
+    implementer's own mutation testing structurally cannot see it because the
+    tests share the fixture. Reviewer killed the surviving _cache_frame mutant
+    and the test-state leak (777 timestamp) in the same round.
   - Resolver gained _conditioned + set_conditioned/is_conditioned; get_tracker
     now prefers the publisher and falls back to raw. _resolve_tracker is public
     resolve_raw, which XRTrackerHandPoseSource calls so the chain cannot consume
@@ -114,11 +131,23 @@ Task 8: complete (commits df7c4d8..13d28a4, reviewed; two fix rounds).
     have XRServer; use it.
 
 ## NEXT ACTIONS, in order
-1. Task 9: REVIEW PENDING. Implemented and mutation-tested; no independent
-   reviewer has looked at it yet. Every prior task's Critical/Important defects
-   came from that review pass, so treat Task 9 as unreviewed, not as done.
+1. DECISION PENDING (David), from the Task 9 review, Important #2: after the
+   gate's hold expires, get_tracker's raw fallback hands consumers the garbage
+   joints the gate exists to suppress (raw scores 130 with has_tracking_data
+   and zero valid joints). Plan-prescribed semantics, matches pre-Task-9
+   behaviour, but it voids "tracking-loss policy in one place" on exactly the
+   worst frames. Option A: while conditioning is on and the publisher enabled,
+   return the shadow even when untracked (it carries has_tracking_data=false;
+   every converted call site checks it). Option B: keep as-is, record in the
+   decision log. Must be decided BEFORE Task 10 tunes against it.
 2. Task 10: baseline traces, tuning, WEB frame-cost measurement, on-device
    earn-in. REQUIRES DAVID IN A HEADSET. A/B on the WebGL path, not WebGPU. Task 10 requires David in a headset; 7-9 automatable.
+
+CARRY INTO TASK 10 (trace coverage): the defect class that keeps recurring is
+"fixture never degrades". The trace harness and the recorded traces MUST
+include a tracking-loss segment (the plan's "dropout" trace), and the metrics
+should be checked on it -- a rest+motion-only tuning pass would have the same
+blind spot the Task 9 tests had.
 
 CARRY INTO TASK 10 (A/B measurement): the toggle is
 XRHandTrackerResolver.set_conditioned(bool), and it resets the whole chain on

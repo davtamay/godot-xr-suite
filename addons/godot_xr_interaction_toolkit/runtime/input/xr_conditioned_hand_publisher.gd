@@ -53,6 +53,11 @@ static func reset_chain() -> void:
 		_published_frame[hand] = -1
 		_last_tracked[hand] = false
 		_filter.reset(hand)
+		# Invalidate any registered shadow as well: it holds the last published
+		# joints, and a stale shadow that still claims tracking data would leak
+		# conditioned output into the raw A/B leg for anything reading it.
+		if _trackers[hand] != null:
+			_trackers[hand].has_tracking_data = false
 
 ## Runs the chain at most once per rendered frame per hand and returns the
 ## shadow tracker, or null when nothing is being tracked.

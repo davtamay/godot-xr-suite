@@ -23,6 +23,8 @@ func _init() -> void:
 	_test_resolver_conditioned_routing(failures)
 	_test_resolver_toggle_resets_chain(failures)
 	_test_pose_source_reads_raw_across_frames(failures)
+	_test_resolver_scan_excludes_shadow(failures)
+	_test_toggle_invalidates_frame_cache(failures)
 	if failures.is_empty():
 		print("XR hand conditioning: PASS")
 		quit(0)
@@ -946,6 +948,9 @@ func _test_resolver_toggle_resets_chain(failures: Array[String]) -> void:
 	if filter._last_timestamp[hand] != 777:
 		failures.append("set_conditioned reset the chain on a no-op repeat of the same value")
 
+	# Teardown resets the filter too: without this the 777 timestamp planted
+	# above leaks into whatever test runs next (reviewer, Task 9 Minor #4).
+	XRConditionedHandPublisher.reset_chain()
 	XRHandTrackerResolver._conditioned = was_conditioned
 	_clear_conditioning_state(hand)
 
@@ -1000,3 +1005,86 @@ func _test_pose_source_reads_raw_across_frames(failures: Array[String]) -> void:
 	XRHandTrackerResolver._conditioned = was_conditioned
 	_clear_conditioning_state(hand)
 	XRServer.remove_tracker(raw)
+
+func _test_resolver_scan_excludes_shadow(failures: Array[String]) -> void:
+	# Reviewer-proven feedback loop (Task 9 review, Critical #1). The shadow
+	# tracker's name contains "left"/"right" and its hand matches, so the scan
+	# scored it like a real tracker. In steady state the strict > tie-break
+	# kept raw -- which is why every earlier test passed -- but the moment raw
+	# degraded, the shadow still holding last frame's fully-valid joints
+	# outranked it. The pose source then fed the filter its own previous
+	# output, the gate saw a "valid" hand forever, and its dropout hold never
+	# fired: the hand froze mid-air until full raw reacquisition.
+	var hand := 0
+	var was_conditioned := XRHandTrackerResolver.is_conditioned()
+	var was_enabled := XRConditionedHandPublisher.is_enabled()
+	var raw := _make_raw_tracker(hand)
+	_clear_conditioning_state(hand)
+	XRHandTrackerResolver._conditioned = true
+	XRConditionedHandPublisher._enabled = true
+
+	# One tracked publish arms the trap: the shadow now holds valid joints.
+	XRConditionedHandPublisher._published_frame[hand] = -1
+	var shadow := XRConditionedHandPublisher.get_conditioned(hand)
+	if shadow == null:
+		failures.append("arming publish failed; the scan-exclusion check cannot run")
+	else:
+		# A real dropout: the runtime clears has_tracking_data but the joint
+		# data (and its valid flags) go stale in place rather than vanishing.
+		raw.has_tracking_data = false
+
+		var resolved := XRHandTrackerResolver.resolve_raw(hand)
+		if resolved == shadow:
+			failures.append("resolve_raw returned the conditioned shadow after a raw dropout -- the filter would consume its own output and the hand would freeze")
+		elif resolved != raw:
+			failures.append("resolve_raw returned neither the degraded raw tracker nor the shadow; expected raw")
+
+		# With no raw tracker at all, only the shadow is registered -- and it
+		# must be invisible to the raw path.
+		XRServer.remove_tracker(raw)
+		var orphaned := XRHandTrackerResolver.resolve_raw(hand)
+		if orphaned != null:
+			failures.append("resolve_raw resolved '%s' when only the shadow existed -- the shadow must never be scanned" % orphaned.name)
+
+		# reset_chain must also invalidate the shadow, or a stale shadow that
+		# still claims tracking data leaks conditioned output into the raw
+		# A/B leg for anything reading XRServer directly.
+		shadow.has_tracking_data = true
+		XRConditionedHandPublisher.reset_chain()
+		if shadow.has_tracking_data:
+			failures.append("reset_chain left the shadow claiming tracking data")
+
+	if XRServer.get_tracker(str(raw.name)) != null:
+		XRServer.remove_tracker(raw)
+	XRConditionedHandPublisher.set_enabled(was_enabled)
+	XRHandTrackerResolver._conditioned = was_conditioned
+	_clear_conditioning_state(hand)
+
+func _test_toggle_invalidates_frame_cache(failures: Array[String]) -> void:
+	# Kills the reviewer's surviving mutant (Task 9 review, Minor #3): every
+	# earlier test reset _cache_frame by hand, so dropping the cache
+	# invalidation from set_conditioned passed the whole suite. Prime the
+	# cache through get_tracker itself, toggle within the same engine frame,
+	# and the next get_tracker must serve the new mode, not the cached one.
+	var hand := 0
+	var was_conditioned := XRHandTrackerResolver.is_conditioned()
+	var was_enabled := XRConditionedHandPublisher.is_enabled()
+	var raw := _make_raw_tracker(hand)
+	_clear_conditioning_state(hand)
+	XRHandTrackerResolver._conditioned = true
+	XRConditionedHandPublisher._enabled = true
+	XRConditionedHandPublisher._published_frame[hand] = -1
+
+	var before := XRHandTrackerResolver.get_tracker(hand)
+	if before == raw or before == null:
+		failures.append("priming call did not return the conditioned tracker; the cache cannot be exercised across the toggle")
+	else:
+		XRHandTrackerResolver.set_conditioned(false)
+		var after := XRHandTrackerResolver.get_tracker(hand)
+		if after != raw:
+			failures.append("get_tracker served the conditioned tracker from the frame cache after set_conditioned(false)")
+
+	XRServer.remove_tracker(raw)
+	XRConditionedHandPublisher.set_enabled(was_enabled)
+	XRHandTrackerResolver._conditioned = was_conditioned
+	_clear_conditioning_state(hand)
