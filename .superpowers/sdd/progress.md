@@ -15,6 +15,12 @@ Pre-flight decisions (David):
 ## Task status
 Task 1: complete (commits f096ac4..8314241, review clean both verdicts)
 Task 2: complete (commit 5eb8e10, review clean both verdicts)
+Task 3: complete (commits 9f42c8a..63238f9, review clean after one Important fix)
+  - Reviewer found the plan-mandated quaternion hemisphere correction was DEAD
+    CODE: Godot's slerp/angle_to are already double-cover invariant (slerpni is
+    the opt-out). Verified independently against the engine. David chose remove
+    + comment-why. Replacement test proven non-vacuous (slerp->slerpni = FAIL,
+    123 deg divergence), reproduced by the re-reviewer. Plan and spec corrected.
 
 ## Minor findings for final-review triage
 - workshop_station.gd:11 hard-preloads godot_webxr_kit (pre-existing DAG break in
