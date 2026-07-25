@@ -617,3 +617,29 @@ approved cce374f) -> writing-plans -> subagent execution. David's cost note:
 run this one with fewer, larger tasks than grab-feel; a spend limit was hit
 mid-branch, and five task-reviews plus a whole-branch review was the expensive
 part. Keep the whole-branch review -- it found all three Criticals.
+
+# Interaction Arbitration (branch agent/interaction-arbitration, plan
+# docs/interaction-arbitration-plan.md, design cce374f). Execution: hybrid --
+# implemented inline, one whole-branch review at the end (David's call, after
+# a spend limit ended the all-subagent approach mid grab-feel).
+IA Task 1: complete. XRInteractionArbiter + static resolve_mode + 5 tests.
+  - Planning found the arbiter needs NO proximity query of its own:
+    XRDirectInteractor already sphere-queries at the grip pose every frame
+    with a tuned hover_radius, so the arbiter reads get_hovered()/
+    get_selected() instead. No second radius to drift from an earned value.
+  - The cross-frame flicker test CAUGHT A REAL BUG on its first run, which is
+    exactly why it was written that way. The dwell measured TIME IN MODE, but
+    a candidate flickering at the sphere edge never changes the mode, so that
+    clock ran out anyway and dropped to FAR mid-flicker -- the strobing the
+    dwell exists to prevent. Now measures TIME SINCE THE CANDIDATE WAS LAST
+    SEEN (reset on sight, accumulate on absence). Ninth occurrence of the
+    class, and the first time the fixture caught it before review did.
+  - A held object counts as a near candidate even when carried outside the
+    hover sphere, or the far ray would reappear mid-grab.
+  - Mutations, all FAIL-then-PASS: teleport checked after proximity (4),
+    dwell ignored (4), dwell applied on entry (2), tracking check dropped
+    (2), teleport latched once entered (2).
+  - PROCESS NOTE: the first mutation run reported 4 of 5 "PASS" because shell
+    escaping mangled the patterns and nothing was actually mutated. A
+    pattern-miss is not a result. Re-run from a script file with an explicit
+    PATTERN-MISS guard.
