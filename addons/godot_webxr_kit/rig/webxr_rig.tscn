@@ -28,12 +28,14 @@ script = ExtResource("8_flatcam")
 
 [node name="WebXRInputAdapter" type="Node" parent="."]
 script = ExtResource("2_adapter")
+stabilize_hand_select = true
 xr_origin_path = NodePath("../XROrigin3D")
 left_controller_path = NodePath("../XROrigin3D/LeftController")
 right_controller_path = NodePath("../XROrigin3D/RightController")
 
 [node name="OpenXRInputAdapter" type="Node" parent="."]
 script = ExtResource("9_openxr")
+stabilize_hand_select = true
 xr_origin_path = NodePath("../XROrigin3D")
 left_controller_path = NodePath("../XROrigin3D/LeftController")
 right_controller_path = NodePath("../XROrigin3D/RightController")

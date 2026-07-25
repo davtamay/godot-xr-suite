@@ -791,3 +791,30 @@ microgesture_driver=1 locomotion=1 arbiter=1 poke=1.
      TIMER cannot see it (0 either way); the observable difference is that a
      stale pose gets captured. Assertion moved to _settle_pose. Thirteenth
      occurrence of asserting the wrong observable.
+
+## On-device round 2: pinch stabilization was ALREADY BUILT (2026-07-25)
+David: cursor still moves while pinching. My first fix was a bounded latch on
+the ray at select start -- and it was BOTH a duplicate and too late:
+  - DUPLICATE: XRControllerHandAdapter already had `stabilize_hand_select`,
+    written, complete, marked Experimental and defaulted FALSE. Second time in
+    one session I built something that already existed. Mine is deleted.
+  - TOO LATE: latching at select start cannot help, because the hand drifts
+    WHILE the fingers are closing, before the pinch threshold trips. The
+    existing feature anchors to `_last_free_hand_pose` -- the last frame the
+    hand was NOT selecting, i.e. the PRE-pinch aim -- which is exactly right,
+    and then translates that anchor by palm movement so dragging still works.
+    Strictly better than what I wrote on both counts.
+  - Enabled on both adapters in webxr_rig.tscn; doc comment updated from
+    "Experimental" to record why it is now on. Needs David's on-device verdict.
+LESSON, stated plainly: search the existing code for the CONCEPT before
+building it. Grep for the symptom's domain words (here "stabiliz") not just
+the exact name. Two duplicates in one session, both found by David, not me.
+
+## Menu control was invisible in XR (David, 2026-07-25)
+BackToMenuButton was a CanvasLayer holding a 2D Button, which renders to the
+flat window only -- so in a headset there was no way back to the launcher
+without taking the headset off, and only galaxy.tscn even referenced it. It
+now also builds a WORLD-SPACE XRPokeButton that follows the active camera, and
+XRSceneRouter INJECTS it into every scene it opens (skipping the launcher
+itself), so every showcase is reachable and exitable in-headset without
+editing any scene file.

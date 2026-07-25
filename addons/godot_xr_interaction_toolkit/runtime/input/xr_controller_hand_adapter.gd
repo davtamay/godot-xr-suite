@@ -31,9 +31,14 @@ const SYNTHETIC_SELECT := "synthetic"
 @export_range(0.001, 0.2, 0.001, "or_greater") var pinch_end_distance := 0.055
 
 @export_group("Select Stabilization")
-## Experimental: keeps a hand ray from jumping when thumb/index pinch geometry
-## changes. While selected, the cached pre-select ray translates with the palm
-## but keeps its aim direction stable until release.
+## Keeps a hand ray from jumping when thumb/index pinch geometry changes.
+## Anchors to the last pose from a frame the hand was NOT selecting -- the
+## PRE-pinch aim -- because the hand drifts while the fingers are closing, well
+## before the pinch threshold trips. That anchor then translates with the palm,
+## so dragging still follows the hand while the aim direction stays put.
+##
+## Enabled in the shipped rig as of 2026-07-25 (David reported the cursor
+## moving during the pinch). Still exported so a project can turn it off.
 @export var stabilize_hand_select := false
 
 var _origin: Node3D
