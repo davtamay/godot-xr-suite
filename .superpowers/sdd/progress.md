@@ -62,7 +62,8 @@ Task 2: complete (commit dd0114d, review clean both verdicts, no Critical or
     the specific trap this task carried, since XRPokeProfile's defaults
     deliberately match XRPokeEvaluator's.
 
-Task 3: IN PROGRESS (implementer commit b96cea5; fix pass 1 in flight)
+Task 3: complete (commits b96cea5..3a506b6, review clean both verdicts after
+  two fix passes). 20 tests pass, output pristine.
   - PRE-EXISTING BUG FOUND, and it is a real one. xr_pokeable.gd's
     _local_normal() has its two Z arms inverted: Godot's Vector3.BACK is
     (0,0,+1), not (0,0,-1) as its trailing comments claim, so Z_PLUS returned
@@ -79,6 +80,28 @@ Task 3: IN PROGRESS (implementer commit b96cea5; fix pass 1 in flight)
     add a non-Z-face test, which is the assertion that would have caught it.
   - Plan deviation authorised by controller: the brief said preserve
     _local_normal byte-for-byte. That rested on the function being correct.
+  - Fixed properly in e6c326e (Z_PLUS -> BACK, Z_MINUS -> FORWARD, comments
+    corrected, negation removed). Mutation evidence decouples the two bugs:
+    re-applying the global negation fails BOTH the Z and the new X_PLUS tests,
+    while reverting only the Z arm fails the Z tests and leaves X_PLUS green.
+  - 7c29ad7 tracks the three .uid files Godot generated for the new scripts.
+    All three implementers had left them untracked; this repo tracks .uid
+    alongside every .gd, and without them the next machine to open the project
+    mints fresh UIDs and breaks any uid:// reference to these scripts.
+  - Review found two more Important items, both fixed in 3a506b6:
+    * the pin round-trip test was VACUOUS for the u/v half - u_axis and v_axis
+      are perpendicular to normal by construction, so on an identity transform
+      pin.z depends only on normal.z * pinned.z and a u/v swap could not fail
+      it. Now asserted on a translated AND rotated body.
+    * get_poke_pin returned a pin for points OFF the face: poke_update wrote
+      _pins before knowing the verdict, so a fingertip beside a button but
+      deeper than its face would have snapped the Task 6 marker onto the
+      button's plane. Both evaluator exit paths now return Vector3.INF.
+      Controller authorised the evaluator edit, scoped to those exit paths -
+      TWO logical paths, THREE lines, because the bounds rectangle is checked
+      per-axis. Re-reviewer verified no other line in evaluate() moved.
+    * a third test was written this pass because the band-exit path had no
+      coverage at all - the mutation for it would otherwise have passed.
 
 ### Minor findings deferred to the final whole-branch review
 - Task 1: is_pressed() / is_source_pressed() are only exercised indirectly
@@ -89,6 +112,12 @@ Task 3: IN PROGRESS (implementer commit b96cea5; fix pass 1 in flight)
   XRPokeProfile - weaker typing than necessary now the concrete class exists.
 - Task 2: XRPokeProfile reuses xr_poke_interactor.svg as its @icon (specified
   by the plan). Reads as a copy-paste leftover if a profile icon ever lands.
+- Task 3: _plane_u's near-parallel-to-UP fallback branch fires only for
+  Y_PLUS/Y_MINUS faces and no test exercises it.
+- Task 3: X_MINUS, Y_PLUS and Y_MINUS have no pokeable-level fixture; X_PLUS
+  is the single representative non-Z face. The four arms share no branching
+  logic, so the risk is low, but the Y faces are the ones that reach the
+  _plane_u branch above.
 
 ### Corrections to the PLAN found during execution (plan was wrong, code was not)
 - Mutation 5 (`max_approach_angle` default 180) does not loosen the gate:
@@ -97,3 +126,11 @@ Task 3: IN PROGRESS (implementer commit b96cea5; fix pass 1 in flight)
 - Mutation 6 (`or` -> `and`) fails the slow-creep test too, not only the two
   rescue cases. The slow-creep fixture deliberately has in_front false, so
   AND rejects it. The plan's "and nothing else" was wrong.
+
+### Carried into Task 4 (plan amendment, controller)
+Task 3's fix changed the evaluator: `pinned_point` is now `Vector3.INF` on BOTH
+exit paths, not a clamped point. The Task 4 brief predates that and stores the
+pin unconditionally (`_poke_pins[source_id] = global_transform * pinned`). The
+canvas must apply the same INF handling XRPokeable now uses - erase the entry
+rather than store INF - or `get_poke_pin` will hand Task 6's marker an infinite
+world position.
