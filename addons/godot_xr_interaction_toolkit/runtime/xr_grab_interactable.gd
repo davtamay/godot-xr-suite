@@ -93,6 +93,9 @@ var _throw_angular_velocity := Vector3.ZERO
 var _throw_linear_samples: Array[Vector3] = []
 var _throw_angular_samples: Array[Vector3] = []
 var _has_throw_sample := false
+var _transit_time_left := 0.0
+var _transit_duration := 0.0
+var _transit_from := Transform3D.IDENTITY
 
 func get_target() -> Node3D:
 	if target_path.is_empty():
@@ -117,6 +120,7 @@ func _notify_select_entered(interactor) -> void:
 		_two_hand_active = false
 		_set_body_frozen(true)
 		_reset_throw_sample(_attach_pose_for(interactor))
+		_arm_transit(interactor)
 		grabbed.emit(interactor)
 	elif _grabbers.size() == 2:
 		_begin_two_hand_grab()
@@ -133,13 +137,27 @@ func _notify_select_exited(interactor) -> void:
 		_two_hand_active = false
 		_has_throw_sample = false
 		_point_grab = false
+		_transit_duration = 0.0
+		_transit_time_left = 0.0
 		released.emit(interactor)
 		return
 
+	# Two-hand -> one-hand handoff: _grab_offset is about to be recomputed
+	# against the remaining interactor's CURRENT pose and the object's
+	# CURRENT (post-two-hand) transform. A transit left in flight from before
+	# the two-hand grab began would blend from a STALE _transit_from (its
+	# scale/position captured long before the two-hand session moved/scaled
+	# the object) toward a target built from the new offset -- transit_blend's
+	# exactness at alpha=1 depends on `from`/`to` sharing the same object
+	# scale, which a stale `from` cannot guarantee. Re-arm (not just clear):
+	# authored/snap grabs are meant to tween, and a hand-count change is
+	# exactly the kind of pose discontinuity the transit phase exists to
+	# smooth over, rather than pop through in one instant frame.
 	_grabbing = _grabbers[0]
 	_grab_offset = _compute_grab_offset(_grabbing)
 	_two_hand_active = false
 	_reset_throw_sample(_attach_pose_for(_grabbing))
+	_arm_transit(_grabbing)
 
 func _physics_process(delta: float) -> void:
 	if _grabbers.is_empty():
@@ -164,10 +182,40 @@ func _physics_process(delta: float) -> void:
 	var attach_pose := _attach_pose_for(_grabbing)
 	var desired: Transform3D = attach_pose * _grab_offset
 	var follow_rotation := track_rotation or _point_grab
-	_apply_movement(target, desired, delta, follow_rotation, track_position or _point_grab)
+	if _transit_time_left > 0.0:
+		_transit_time_left = maxf(0.0, _transit_time_left - delta)
+		var alpha := 1.0 - (_transit_time_left / _transit_duration)
+		var blended := transit_blend(_transit_from, desired, alpha)
+		target.global_transform = blended
+	else:
+		_apply_movement(target, desired, delta, follow_rotation, track_position or _point_grab)
 	if not follow_rotation:
 		attach_pose.basis = _last_throw_pose.basis
 	_sample_throw_velocity(attach_pose, delta)
+
+## Whether the target is currently mid-tween from its pre-grab pose onto the
+## live attach target (authored grips / snap_to_attach only; observability
+## for tests and any UI that wants to know the object isn't "settled" yet).
+func in_transit() -> bool:
+	return _transit_time_left > 0.0
+
+## Arms a transit for authored grips (point grabs) and snap_to_attach offsets
+## only; free grabs hold wherever they were grabbed (no transit). Called on
+## every path that recomputes `_grab_offset` -- a fresh single-hand grab and
+## a two-hand -> one-hand handoff -- so a transit is always measured against
+## the offset that is actually in effect afterward, never a stale one.
+func _arm_transit(interactor) -> void:
+	_transit_duration = 0.0
+	_transit_time_left = 0.0
+	if not (_point_grab or (snap_to_attach and _grab_points.is_empty())):
+		return
+	var target_node := get_target()
+	if target_node == null:
+		return
+	var desired := _attach_pose_for(interactor) * _grab_offset
+	_transit_from = target_node.global_transform
+	_transit_duration = transit_duration(_transit_from, desired, transit_speed)
+	_transit_time_left = _transit_duration
 
 func _compute_grab_offset(interactor) -> Transform3D:
 	var target := get_target()
@@ -234,6 +282,16 @@ func _best_grab_point(interactor) -> Node3D:
 	return best
 
 func _begin_two_hand_grab() -> void:
+	# A second hand joining recomputes how the object is tracked entirely
+	# (midpoint/rotation/scale instead of a single-hand _grab_offset); any
+	# transit armed during the single-hand phase is no longer measuring
+	# anything meaningful and must not survive into two-hand tracking.
+	# Cleared unconditionally, before the distance/grabber-count guards below,
+	# so a degenerate two-hand attempt (hands coincident) can't leave it
+	# armed-but-frozen while _physics_process's two-hand branch skips the
+	# code that would otherwise decrement it.
+	_transit_duration = 0.0
+	_transit_time_left = 0.0
 	var target := get_target()
 	if target == null or _grabbers.size() < 2:
 		_two_hand_active = false

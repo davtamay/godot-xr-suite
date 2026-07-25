@@ -6,6 +6,15 @@ extends SceneTree
 const XRControllerHandAdapter := preload("res://addons/godot_xr_interaction_toolkit/runtime/input/xr_controller_hand_adapter.gd")
 const XRSimulator := preload("res://addons/godot_webxr_kit/runtime/xr_simulator.gd")
 
+## Minimal interactor stub for transit-phase tests: only needs to answer
+## get_attach_pose() with a pose the test can move frame-to-frame, so the
+## transit target is LIVE rather than a static fixture (Task-9 lesson).
+class StubInteractor:
+	extends Node
+	var pose := Transform3D.IDENTITY
+	func get_attach_pose() -> Transform3D:
+		return pose
+
 var _failures: Array[String] = []
 
 func _init() -> void:
@@ -15,13 +24,16 @@ func _init() -> void:
 	_test_throw_consensus(_failures)
 	_test_transit_timing(_failures)
 	_test_transit_blend(_failures)
-	# _test_grip_pose_stays_on_palm_with_full_hand needs a live Node3D.global_transform,
+	# _test_grip_pose_stays_on_palm_with_full_hand, _test_transit_phase, and
+	# _test_transit_survives_handoff all need a live Node3D.global_transform,
 	# which asserts "!is_inside_tree()" if read this early: a node added to
 	# get_root() during _init() is not yet inside the tree (confirmed empirically -
 	# tree membership only propagates by the first _process). Deferred there.
 
 func _process(_delta: float) -> bool:
 	_test_grip_pose_stays_on_palm_with_full_hand(_failures)
+	_test_transit_phase(_failures)
+	_test_transit_survives_handoff(_failures)
 	if _failures.is_empty():
 		print("XR grab feel: PASS")
 		quit(0)
@@ -261,3 +273,206 @@ func _test_transit_blend(failures: Array[String]) -> void:
 	var midway := XRGrabInteractable.transit_blend(scaled_from, scaled_to, 0.5).basis
 	if absf(midway.determinant() - object_scale.determinant()) > 0.001:
 		failures.append("transit must not change object volume mid-tween: %f vs %f" % [midway.determinant(), object_scale.determinant()])
+
+## Encodes the Task-9 lesson (static fixtures cannot expose feed-forward /
+## handoff bugs): drives _physics_process directly with a stub interactor
+## whose pose MOVES every frame, so transit must converge onto a LIVE target,
+## not a snapshot taken at grab time. Also proves free grabs (no grab point,
+## no snap_to_attach) never transit -- hold-where-grabbed, offset exact.
+func _test_transit_phase(failures: Array[String]) -> void:
+	var grab := XRGrabInteractable.new()
+	var body := Node3D.new()
+	grab.add_child(body)
+	get_root().add_child(grab)
+	grab.target_path = grab.get_path_to(body)
+	grab.snap_to_attach = true      # authored-grip style: transit arms
+	grab.track_rotation = true
+	grab.transit_speed = 1.5
+	var interactor := StubInteractor.new()
+	get_root().add_child(interactor)
+	interactor.pose = Transform3D(Basis.IDENTITY, Vector3(0.3, 1.0, 0.0))
+	body.global_position = Vector3.ZERO  # 0.3+ m from grip -> real transit
+
+	grab._notify_select_entered(interactor)
+	if not grab.in_transit():
+		failures.append("snap grab 0.3 m away must enter transit")
+	# Simulate 60 physics frames while the HAND MOVES; transit target is live.
+	# Fast enough (1.2 m/s) that a "captured at grab time" target would land
+	# ~0.24 m away from the live one by the time the ~0.2 s transit ends --
+	# large enough that a mutant blending toward a frozen target instead of
+	# the live one produces either a wrong landing spot or a visible pop when
+	# the post-transit INSTANT catch-up re-syncs to the live pose (a 60-frame
+	# "did it eventually arrive" check alone cannot see that pop: the coast
+	# phase papers over it, confirmed empirically -- see mutation (a) log).
+	var previous_position := body.global_position
+	var max_frame_jump := 0.0
+	for frame in range(60):
+		interactor.pose.origin += Vector3(0.0, 0.0, -0.02)
+		grab._physics_process(1.0 / 60.0)
+		var jump := body.global_position.distance_to(previous_position)
+		max_frame_jump = maxf(max_frame_jump, jump)
+		previous_position = body.global_position
+	if grab.in_transit():
+		failures.append("transit must have ended (duration ~0.2 s < 1 s simulated)")
+	if not body.global_position.is_equal_approx(interactor.pose.origin):
+		failures.append("after transit the object must sit exactly on the LIVE attach pose, got %s vs %s" % [body.global_position, interactor.pose.origin])
+	if max_frame_jump > 0.15:
+		failures.append("transit must track the LIVE attach pose smoothly, no frame may pop >0.15 m; worst single-frame jump was %.3f m" % max_frame_jump)
+
+	# Free grab (no snap, no grab point): NEVER transits, offset exact.
+	var free := XRGrabInteractable.new()
+	var free_body := Node3D.new()
+	free.add_child(free_body)
+	get_root().add_child(free)
+	free.target_path = free.get_path_to(free_body)
+	free_body.global_position = Vector3(0.05, 0.9, -0.1)
+	var free_interactor := StubInteractor.new()
+	get_root().add_child(free_interactor)
+	free_interactor.pose = Transform3D(Basis.IDENTITY, Vector3(0.0, 1.0, 0.0))
+	var relative := free_body.global_position - free_interactor.pose.origin
+	free._notify_select_entered(free_interactor)
+	if free.in_transit():
+		failures.append("free grab must not transit")
+	free_interactor.pose.origin += Vector3(0.2, 0.1, 0.0)
+	free._physics_process(1.0 / 60.0)
+	var new_relative := free_body.global_position - free_interactor.pose.origin
+	if not new_relative.is_equal_approx(relative):
+		failures.append("hold-where-grabbed offset drifted: %s -> %s" % [relative, new_relative])
+
+	# The "free grab must not transit" check above is NOT, by itself, a
+	# mutation-discriminating test: a true free grab's offset is computed as
+	# `interactor.get_attach_pose().affine_inverse() * target.global_transform`,
+	# so `desired == _attach_pose_for(interactor) * _grab_offset` reduces
+	# algebraically to `target.global_transform` exactly -- `_transit_from`
+	# and `desired` are the SAME transform by construction, so
+	# transit_duration is ~0 REGARDLESS of whether the arming guard runs
+	# (confirmed empirically: forcing the guard open on the free-grab object
+	# above still left in_transit() false and the offset check passing).
+	# This snap_to_attach case is NOT tautological -- its offset comes from
+	# an attach node / IDENTITY fallback, independent of the interactor's
+	# live pose -- so it is where a dropped guard is actually observable.
+	# It also exercises a real edge in the brief's stated arming condition:
+	# `_grab_points.is_empty()` means "the object has NO grab points
+	# registered anywhere", not "no point matched THIS interactor". An
+	# object with an authored point for the OTHER hand only denies transit
+	# to a snap_to_attach grab on THIS hand even though this grab is not
+	# using the free/hold-where-grabbed offset formula. Implemented exactly
+	# per the brief's given condition (an interface contract, not something
+	# to silently rewrite); flagged here and in the report rather than
+	# changed unilaterally.
+	var gated := XRGrabInteractable.new()
+	var gated_body := Node3D.new()
+	gated.add_child(gated_body)
+	get_root().add_child(gated)
+	gated.target_path = gated.get_path_to(gated_body)
+	gated.snap_to_attach = true
+	gated_body.global_position = Vector3(2.0, 2.0, 2.0)  # far from the interactor: nonzero offset IF armed
+	var phantom_point := Node3D.new()  # registered, never added to the tree -> never matches any hand, but keeps _grab_points non-empty
+	gated.register_grab_point(phantom_point)
+	var gated_interactor := StubInteractor.new()
+	get_root().add_child(gated_interactor)
+	gated_interactor.pose = Transform3D(Basis.IDENTITY, Vector3(0.0, 1.0, 0.0))
+	gated._notify_select_entered(gated_interactor)
+	if gated.in_transit():
+		failures.append("snap_to_attach grab must not transit while an unrelated grab point keeps _grab_points non-empty (arming guard bypassed)")
+
+	grab.queue_free(); interactor.queue_free(); free.queue_free(); free_interactor.queue_free()
+	gated.queue_free(); gated_interactor.queue_free(); phantom_point.queue_free()
+
+## LOAD-BEARING regression: transit_blend's exactness at alpha=1 depends on
+## `from` and `to` carrying the SAME object scale/pose lineage. That breaks
+## whenever `_grab_offset` is recomputed with a different grab point/attach
+## pose mid-transit -- which a two-hand -> one-hand handoff does in
+## _notify_select_exited. Drives that exact sequence: single-hand snap grab
+## arms a transit, a second hand joins (must clear the leftover transit --
+## two-hand tracking doesn't touch _grab_offset at all), the two-hand session
+## moves the object well away from where the stale single-hand _transit_from
+## was captured, then the second hand releases (handoff recomputes
+## _grab_offset). If the handoff doesn't re-arm/clear, the next frame blends
+## from that STALE pre-two-hand transform toward the new live target and pops
+## the object backward -- a wrong-but-plausible position with no engine error.
+func _test_transit_survives_handoff(failures: Array[String]) -> void:
+	var grab := XRGrabInteractable.new()
+	var body := Node3D.new()
+	grab.add_child(body)
+	get_root().add_child(grab)
+	grab.target_path = grab.get_path_to(body)
+	grab.snap_to_attach = true
+	grab.two_hand_grab_enabled = true
+	grab.track_rotation = true
+	grab.transit_speed = 1.5
+	body.global_position = Vector3.ZERO
+
+	var hand_a := StubInteractor.new()
+	get_root().add_child(hand_a)
+	hand_a.pose = Transform3D(Basis.IDENTITY, Vector3(0.3, 1.0, 0.0))  # 0.3 m -> ~0.2 s transit @ speed 1.5
+
+	grab._notify_select_entered(hand_a)
+	if not grab.in_transit():
+		failures.append("handoff setup: single-hand snap grab 0.3 m away must arm transit")
+
+	# One frame in: the transit has barely progressed (1/60 s of a ~0.2 s transit).
+	grab._physics_process(1.0 / 60.0)
+	if not grab.in_transit():
+		failures.append("handoff setup: transit must still be in flight after 1 frame")
+
+	# Second hand joins well away from the first -> two-hand grab begins.
+	# Two-hand tracking never reads _grab_offset/_transit_*, so a leftover
+	# single-hand transit would otherwise sit frozen (armed but un-decremented)
+	# through the whole two-hand session.
+	var hand_b := StubInteractor.new()
+	get_root().add_child(hand_b)
+	hand_b.pose = Transform3D(Basis.IDENTITY, Vector3(0.9, 1.0, 0.0))
+	grab._notify_select_entered(hand_b)
+	if grab.in_transit():
+		failures.append("two-hand begin must clear any leftover single-hand transit")
+
+	# Two-hand session moves the object well away from the world-origin-ish
+	# pose the stale single-hand _transit_from was captured at.
+	for frame in range(10):
+		hand_a.pose.origin += Vector3(0.05, 0.0, 0.02)
+		hand_b.pose.origin += Vector3(0.05, 0.0, 0.02)
+		grab._physics_process(1.0 / 60.0)
+	var pos_before_handoff := body.global_position
+	if pos_before_handoff.distance_to(Vector3.ZERO) < 0.2:
+		failures.append("handoff setup: two-hand session must move the object well away from the stale pre-grab pose, got %s" % pos_before_handoff)
+
+	# Hand B releases: two-hand -> one-hand handoff recomputes _grab_offset
+	# against hand A's CURRENT pose and the object's CURRENT (moved) transform.
+	grab._notify_select_exited(hand_b)
+
+	# The very next frame is where a leftover/stale transit would pop the
+	# object backward toward the ORIGINAL pre-grab pose (near Vector3.ZERO)
+	# instead of continuing smoothly from where the two-hand grab left it.
+	hand_a.pose.origin += Vector3(0.01, 0.0, 0.0)
+	grab._physics_process(1.0 / 60.0)
+	var jump := body.global_position.distance_to(pos_before_handoff)
+	if jump > 0.05:
+		failures.append("handoff must not pop the object toward a stale pre-grab transit target: jumped %.3f m (pos %s, was %s)" % [jump, body.global_position, pos_before_handoff])
+	if body.global_position.distance_to(Vector3.ZERO) < pos_before_handoff.distance_to(Vector3.ZERO) * 0.5:
+		failures.append("handoff object landed suspiciously close to the STALE pre-grab origin: %s" % body.global_position)
+
+	# The handoff-re-armed transit is still genuinely mid-flight here (only
+	# 2 frames of its ~0.64 s duration have elapsed). Releasing entirely
+	# (grabbers empty) must clear it immediately, not leave in_transit()
+	# stuck true -- _physics_process returns early with no grabbers, so a
+	# leftover _transit_time_left would never get the chance to decrement
+	# on its own afterward.
+	if not grab.in_transit():
+		failures.append("handoff test setup: the re-armed transit must still be in flight before the release check")
+	grab._notify_select_exited(hand_a)
+	if grab.in_transit():
+		failures.append("releasing to zero grabbers must clear a still-armed transit, not leave in_transit() stuck true")
+
+	# Settle: re-grab and confirm single-hand tracking still converges exactly
+	# onto hand A's LIVE pose -- the release above must not have left any
+	# stale offset for the next grab to inherit. 60 frames comfortably clears
+	# a fresh transit at this distance and transit_speed.
+	grab._notify_select_entered(hand_a)
+	for frame in range(60):
+		hand_a.pose.origin += Vector3(0.0, 0.0, -0.001)
+		grab._physics_process(1.0 / 60.0)
+	if not body.global_position.is_equal_approx(hand_a.pose.origin):
+		failures.append("after handoff settle, object must sit exactly on hand A's live pose, got %s vs %s" % [body.global_position, hand_a.pose.origin])
+
+	grab.queue_free(); hand_a.queue_free(); hand_b.queue_free()
