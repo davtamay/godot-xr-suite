@@ -226,3 +226,92 @@ fail. Always request it.
 - Task 7 (Minor, reviewer): min_valid_joints has zero test coverage. Reviewer
   verified the gating logic is correct via a standalone scratch script, so this is
   an untested property, not a defect.
+
+---
+
+# Grab Feel — progress ledger
+
+Plan: docs/grab-feel-plan.md (design: docs/grab-feel-design.md)
+Branch: agent/grab-feel (godot-xr-suite)
+Tests: <godot> --headless --xr-mode off --path C:/Users/davta/Repos/Godot_WebXR_gh/demo --script res://<path>
+
+## Task 1: Diagnose and fix the wrist-yank (anchor + cube config)
+
+**Step 1 cube audit** (`grab_lab_station.tscn`): only `SnapGripCube` has
+`snap_to_attach=true` (attach_transform_path -> GripPoint); no `XRGrabPoint`
+nodes exist anywhere in the scene. That cube is explicitly labeled on-scene
+"SNAP-GRIP / jumps to a fixed grip" -- a deliberate demo of the snap-grip
+policy, not a misconfiguration. All five other cubes (Instant, Smooth,
+RotationCyl, LayerCube, Peg1, Peg2) are already free-grab. Verdict: suspect
+(a) as literally stated in the brief (accidental cube misconfig) is NOT
+live; Step 6's scene edit is a no-op and was skipped.
+
+**Suspect (b), expanded scope (David's call after review):** the joint
+*selection* extracted into `resolve_grip_anchor()` (palm-first, wrist only
+when palm invalid) was already correct in the pre-existing code -- verified
+by test and mutation. The real "pulled to the wrist" bug, matching
+grab-feel-design.md's precise wording ("palm valid, yet wrist chosen or
+wrist-offset pose produced"), was downstream in `_hand_grip_pose`: an origin
+override to the wrist<->middle-metacarpal midpoint that fired whenever all
+metacarpals were tracked (the normal case on real hardware), discarding the
+palm-first choice on effectively every real grab.
+
+That override was not an accident either -- commit `15d3783` ("Hands: anchor
+the runtime grip at the same palm midpoint as the preview", v1.43.0,
+2026-07-19) put it there deliberately, because the raw PALM joint didn't
+match the editor Preview Hand / pose-math convention at the time. Two
+on-device-informed decisions in direct conflict:
+- 2026-07-19 (15d3783): raw PALM is wrong: use the wrist<->metacarpal
+  midpoint.
+- 2026-07-24 (David, this plan's motivating feel-check): that midpoint is
+  what makes grabbed objects read as pulled to the wrist: anchor on PALM.
+
+**David's decision (2026-07-24):** reverse the 1.43.0 midpoint override,
+anchor on `resolve_grip_anchor()`'s PALM-first result instead, on the
+explicit understanding that Task 6 (David in-headset) is the verification
+gate for this reversal, and that authored grips (blaster/pen/spray) may
+shift and will be re-checked there. Recorded in-code as a two-decision
+history comment at the call site
+(`xr_controller_hand_adapter.gd::_hand_grip_pose`), not a silent revert.
+
+**What shipped:**
+- `static func resolve_grip_anchor(tracker: XRHandTracker) -> Transform3D`
+  on `XRControllerHandAdapter` (no `class_name`; preload in tests). Palm-first,
+  wrist-fallback, tracker-local space (no XROrigin transform -- callers
+  world-transform it). Routed both `_hand_grip_pose` and `_hand_anchor_global`
+  through it, removing the duplicated inline selection.
+- Removed the wrist<->middle-metacarpal midpoint origin override in
+  `_hand_grip_pose`; origin now stays on `resolve_grip_anchor()`'s result
+  through the metacarpal-valid branch. The basis/orientation math in that
+  branch is unaffected -- it never read the midpoint, only wrist/index/pinky
+  metacarpal positions.
+- `tests/test_grab_feel.gd` (new suite, harness pattern matches
+  `test_hand_conditioning.gd`): `_test_grip_anchor_prefers_palm` (brief's
+  verbatim test) plus `_test_grip_pose_stays_on_palm_with_full_hand`
+  (regression for the midpoint override, driven through the real call site
+  `get_grip_pose()` via a fully-tracked registered `XRHandTracker`, not just
+  the extracted selector -- the override lived downstream of the selector).
+
+**Harness note for later tasks:** `_test_grip_pose_stays_on_palm_with_full_hand`
+needs a live `Node3D.global_transform`, which asserts
+`"!is_inside_tree()"` if read during `_init()` -- a node added to
+`get_root()` there is not yet inside the tree (confirmed empirically: still
+false immediately after `add_child`, true by the first `_process`). Deferred
+that one test (and the suite's PASS/FAIL/quit) to `_process()`; the brief's
+tree-independent test still runs from `_init()`. Task 4's plan snippet
+(`get_root().add_child(grab)` then driving `_physics_process`/reading
+`global_transform` immediately) will likely hit the same issue and need the
+same fix.
+
+**Mutation log:**
+1. `resolve_grip_anchor`: swapped PALM/WRIST preference -> `_test_grip_anchor_prefers_palm`
+   FAILed (`grip anchor must sit on the PALM...got (0.0, 1.0, 0.0)`) -> reverted -> PASS.
+2. Origin-override reversal: restored the wrist<->metacarpal midpoint override ->
+   `_test_grip_pose_stays_on_palm_with_full_hand` FAILed both its
+   palm-match and midpoint-regression assertions (got `(0.0, 1.0075, -0.0175)`,
+   the exact midpoint) -> reverted -> PASS.
+
+**Suites:** `test_grab_feel.gd` PASS, `test_hand_conditioning.gd` PASS,
+`test_gesture_foundation.gd` PASS, all after the anchor-origin change.
+
+Status: complete. Commit: see task-1-report.md.

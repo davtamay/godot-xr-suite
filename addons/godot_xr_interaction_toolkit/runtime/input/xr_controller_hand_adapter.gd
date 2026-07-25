@@ -163,6 +163,19 @@ func _hand_aim_pose(hand_id: int) -> Dictionary:
 	}
 
 
+## Palm-first, wrist-fallback grip joint selection, in TRACKER-LOCAL space
+## (no XROrigin transform applied - callers world-transform the result
+## themselves). Static so it is testable headless without a live rig; see
+## tests/test_grab_feel.gd.
+static func resolve_grip_anchor(tracker: XRHandTracker) -> Transform3D:
+	if tracker == null:
+		return Transform3D.IDENTITY
+	var joint := XRHandTracker.HAND_JOINT_PALM
+	if not XRHandGestureProvider.joint_position_valid(tracker, joint):
+		joint = XRHandTracker.HAND_JOINT_WRIST
+	return tracker.get_hand_joint_transform(joint)
+
+
 func _hand_grip_pose(hand_id: int) -> Dictionary:
 	if not _valid_hand(hand_id) or _origin == null:
 		return {}
@@ -171,13 +184,11 @@ func _hand_grip_pose(hand_id: int) -> Dictionary:
 	if tracker == null:
 		return {}
 
-	var grip_joint := XRHandTracker.HAND_JOINT_PALM
-	if not XRHandGestureProvider.joint_position_valid(tracker, grip_joint):
-		grip_joint = XRHandTracker.HAND_JOINT_WRIST
-	if not XRHandGestureProvider.joint_position_valid(tracker, grip_joint):
+	if not XRHandGestureProvider.joint_position_valid(tracker, XRHandTracker.HAND_JOINT_PALM) \
+			and not XRHandGestureProvider.joint_position_valid(tracker, XRHandTracker.HAND_JOINT_WRIST):
 		return {}
 
-	var grip_transform := _origin.global_transform * tracker.get_hand_joint_transform(grip_joint)
+	var grip_transform := _origin.global_transform * resolve_grip_anchor(tracker)
 	var origin: Vector3 = grip_transform.origin
 
 	# Godot re-bases joint ORIENTATIONS into a humanoid convention (a held
@@ -199,13 +210,18 @@ func _hand_grip_pose(hand_id: int) -> Dictionary:
 		var wrist_p: Vector3 = (o * tracker.get_hand_joint_transform(wrist)).origin
 		var index_p: Vector3 = (o * tracker.get_hand_joint_transform(index)).origin
 		var pinky_p: Vector3 = (o * tracker.get_hand_joint_transform(pinky)).origin
-		# Grip ORIGIN = palm center, defined the SAME way as the pose math and the
-		# editor Preview Hand: halfway between the wrist and the middle metacarpal.
-		# The tracker's PALM joint sits elsewhere, which made the on-device hold
-		# offset from what the preview showed.
-		var middle := XRHandTracker.HAND_JOINT_MIDDLE_FINGER_METACARPAL
-		if XRHandGestureProvider.joint_position_valid(tracker, middle):
-			origin = (wrist_p + (o * tracker.get_hand_joint_transform(middle)).origin) * 0.5
+		# ANCHOR HISTORY (origin only - the basis math below is unaffected either
+		# way, it never read the midpoint):
+		# - 2026-07-19 (15d3783, v1.43.0): origin moved OFF the tracker's PALM
+		#   joint onto the wrist<->middle-metacarpal midpoint, to match the
+		#   editor Preview Hand / pose-math convention (raw PALM sat elsewhere).
+		# - 2026-07-24 (David, grab-feel design + on-device feel-check): that
+		#   midpoint is what made grabbed objects read as pulled to the wrist -
+		#   grip anchor is back on resolve_grip_anchor()'s PALM-first result
+		#   (computed above into `origin`); this block no longer overrides it.
+		#   Deliberate reversal, not a drive-by: authored grips (blaster/pen/
+		#   spray) may shift as a result and are re-verified on-device in the
+		#   grab-feel plan's Task 6 earn-in gate before this ships.
 		var forward := index_p - wrist_p
 		var across := pinky_p - index_p
 		if forward.length_squared() > 0.000001 and across.length_squared() > 0.000001:
@@ -282,13 +298,11 @@ func _hand_anchor_global(hand_id: int):
 	if tracker == null:
 		return null
 
-	var anchor_joint := XRHandTracker.HAND_JOINT_PALM
-	if not XRHandGestureProvider.joint_position_valid(tracker, anchor_joint):
-		anchor_joint = XRHandTracker.HAND_JOINT_WRIST
-	if not XRHandGestureProvider.joint_position_valid(tracker, anchor_joint):
+	if not XRHandGestureProvider.joint_position_valid(tracker, XRHandTracker.HAND_JOINT_PALM) \
+			and not XRHandGestureProvider.joint_position_valid(tracker, XRHandTracker.HAND_JOINT_WRIST):
 		return null
 
-	return _origin.global_transform * tracker.get_hand_joint_transform(anchor_joint).origin
+	return _origin.global_transform * resolve_grip_anchor(tracker).origin
 
 
 func _offset_pose_by_anchor_delta(pose: Dictionary, start_anchor: Vector3, current_anchor: Vector3) -> Dictionary:
