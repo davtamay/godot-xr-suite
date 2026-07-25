@@ -378,11 +378,16 @@ var _sources := {}
 ## Copy configuration from an XRPokeProfile. An assigned profile WINS; the
 ## adapter's own exports are the fallback (Godot cannot distinguish an export
 ## left at its default from one deliberately set to that value).
-func apply_profile(profile) -> void:
+##
+## include_depth = false takes ONLY the approach gate. XRPokeButton needs this:
+## a cap's throw is geometry (travel, press_fraction), not project feel, so a
+## shared profile must not overwrite it.
+func apply_profile(profile, include_depth := true) -> void:
 	if profile == null:
 		return
-	press_depth = profile.press_depth
-	release_depth = profile.release_depth
+	if include_depth:
+		press_depth = profile.press_depth
+		release_depth = profile.release_depth
 	require_entry_through_face = profile.require_entry_through_face
 	max_approach_angle = profile.max_approach_angle
 	min_approach_travel = profile.min_approach_travel
@@ -463,6 +468,15 @@ func is_pressed() -> bool:
 		if state["pressed"]:
 			return true
 	return false
+
+
+## True while THIS source is pressed. Adapters that drive per-source state -
+## the canvas pushing drag motion for one hand while the other is idle - must
+## use this, not is_pressed().
+func is_source_pressed(source_id: int) -> bool:
+	if not _sources.has(source_id):
+		return false
+	return bool(_sources[source_id]["pressed"])
 
 
 func _state_for(source_id: int) -> Dictionary:
@@ -1039,7 +1053,9 @@ func poke_update(source_id: int, world_point: Vector3) -> void:
 			_push_mouse_motion(_OFF_PANEL)
 			_push_mouse_button(_OFF_PANEL, false)
 		_:
-			if _poke_evaluator.is_pressed():
+			# Per SOURCE, not is_pressed(): with two hands on the panel, one
+			# pressed hand would otherwise drag the cursor for the idle one.
+			if _poke_evaluator.is_source_pressed(source_id):
 				_push_mouse_motion(pixels)  # Drag: sliders track the finger.
 				_last_pointer_position = pixels
 
@@ -1204,11 +1220,9 @@ func _sync_evaluator() -> void:
 	_evaluator.release_depth = canonical_release_depth()
 	_evaluator.half_size = Vector2.ZERO  # Round cap: the button bounds it below.
 	_evaluator.interpret_drag = false
-	_evaluator.apply_profile(poke_profile)
-	# The profile carries no cap geometry, so restore the derived depths after
-	# it has supplied the gate settings.
-	_evaluator.press_depth = canonical_press_depth()
-	_evaluator.release_depth = canonical_release_depth()
+	# Gate only: a cap's throw is geometry (travel, press_fraction), so a
+	# shared project profile must not overwrite the depths derived above.
+	_evaluator.apply_profile(poke_profile, false)
 
 
 ## One poke point, in world space, from one source. Public so the button can
@@ -1318,6 +1332,8 @@ git commit -m "feat: a fast poke bottoms the cap out instead of being dropped"
 - Consumes: `get_poke_pin(source_id) -> Vector3` from Tasks 3-5.
 - Produces: `XRPokeInteractor.get_marker_point(hand: int) -> Vector3` — the
   pinned point when any active target reports one, else the raw poke point.
+  **No test seam is added to production code**: GDScript's underscore is
+  convention, not privacy, so the test writes `_active` and `_points` directly.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1332,7 +1348,11 @@ func _test_marker_prefers_the_pinned_point(failures: Array[String]) -> void:
 	var pokeable := _make_pokeable()
 	pokeable.poke_update(0, Vector3(0.0, 0.0, 0.050))
 	pokeable.poke_update(0, Vector3(0.0, 0.0, -0.030))
-	interactor.set_active_targets_for_test(0, [pokeable], Vector3(0.0, 0.0, -0.030))
+	# GDScript has no true privacy - the underscore is convention - so the test
+	# sets the dispatch state directly rather than adding a test seam to
+	# production code.
+	interactor._active[0] = {pokeable: true}
+	interactor._points[0] = Vector3(0.0, 0.0, -0.030)
 	var marker: Vector3 = interactor.get_marker_point(0)
 	_check(failures, is_equal_approx(marker.z, 0.0),
 			"marker: expected the pinned point on the surface, got z=%f" % marker.z)
@@ -1346,8 +1366,7 @@ func _test_marker_prefers_the_pinned_point(failures: Array[String]) -> void:
 'C:\tmp\Godot47\Godot_v4.7-stable_win64_console.exe' --headless --xr-mode off --path 'C:\Users\davta\Repos\Godot_WebXR_gh\demo' --script 'res://addons/godot_xr_interaction_toolkit/tests/test_poke_fidelity.gd'
 ```
 
-Expected: FAIL — neither `get_marker_point` nor `set_active_targets_for_test`
-exists.
+Expected: FAIL — `get_marker_point` does not exist on `XRPokeInteractor`.
 
 - [ ] **Step 3: Add the pin preference**
 
@@ -1365,15 +1384,6 @@ func get_marker_point(hand: int) -> Vector3:
 			if pin != Vector3.INF:
 				return pin
 	return _points[hand]
-
-
-## Test seam: populate the dispatch state without a physics world.
-func set_active_targets_for_test(hand: int, targets: Array, point: Vector3) -> void:
-	var touched := {}
-	for target in targets:
-		touched[target] = true
-	_active[hand] = touched
-	_points[hand] = point
 ```
 
 In `_update_markers`, replace the final positioning line:
