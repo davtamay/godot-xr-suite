@@ -78,7 +78,10 @@ penetration past the press plane normalized to `press_depth`, clamped to
 units.
 
 **Canonical frame.** Adapters hand the evaluator points in one convention:
-**+Z is the outward normal, the press plane is z = 0**. `XRPokeable` folds its
+**+Z is the outward normal and z is distance IN FRONT of the surface**, so the
+surface is z = 0, a press fires at `z <= press_depth` and re-arms at
+`z > release_depth`. This is `XRPokeable`'s existing convention verbatim, which
+is why its thresholds carry over unchanged. `XRPokeable` folds its
 `poke_face` into that rotation, the canvas is already there, `XRPokeButton`
 maps +Y→+Z. The evaluator then has no concept of faces, panels or caps, which
 is what lets one implementation serve three call sites.
@@ -89,11 +92,26 @@ is what lets one implementation serve three call sites.
 | `XRUICanvasInteractable` | `local.z`, synthetic mouse, drag-as-motion | the press decision |
 | `XRPokeButton` | self-polling, cylinder test, cap animation | press/release threshold, approach gate |
 
-`XRPokeButton`'s units map onto the canonical frame rather than changing:
-its press plane is the cap's rest top, and its effective `press_depth` is
-`travel * press_fraction` with `release_depth` at half of that. Same numbers
-it uses today, expressed in the evaluator's terms, so the cap's feel is
-arithmetically unchanged.
+`XRPokeButton`'s units map onto the canonical frame rather than changing.
+Its surface is the BOTTOMED-OUT cap position, so with cap penetration
+`p = clamp(cap_rest_top - finger_bottom, 0, travel)` the canonical
+`z = travel - p`, and its thresholds become:
+
+```
+press_depth   = travel * (1.0 - press_fraction)
+release_depth = travel * (1.0 - press_fraction * 0.5)
+```
+
+At today's defaults (`travel` 0.022, `press_fraction` 0.7) that is 0.0066 and
+0.0143. These are algebraically the same firing points the button uses now —
+`p >= travel * press_fraction` to fire, `p <= travel * press_fraction * 0.5`
+to re-arm — so the cap's feel is arithmetically unchanged. (An earlier draft
+wrote `press_depth = travel * press_fraction`, which is the complement and
+would have fired the button roughly twice as early.)
+
+The button passes `half_size = Vector2.ZERO` (unbounded) and keeps its own
+cylinder test, calling `forget(source_id)` when the point leaves the cap
+radius. That is the per-adapter world→local work, not evaluator business.
 
 `XRPokeButton` keeps self-polling. Giving it a collider to unify dispatch
 changes physics layers on a path already earned in on device and buys nothing
