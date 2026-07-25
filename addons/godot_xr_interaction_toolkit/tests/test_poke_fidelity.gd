@@ -5,6 +5,16 @@ extends SceneTree
 
 const XRPokeEvaluator := preload("res://addons/godot_xr_interaction_toolkit/runtime/poke/xr_poke_evaluator.gd")
 
+## Stand-in for XRPokeProfile (Task 2, does not exist yet). Only the five
+## properties apply_profile() reads.
+class _StubPokeProfile:
+	extends RefCounted
+	var press_depth := 0.099
+	var release_depth := 0.077
+	var require_entry_through_face := false
+	var max_approach_angle := 12.0
+	var min_approach_travel := 0.009
+
 var _failures: Array[String] = []
 
 
@@ -20,6 +30,11 @@ func _init() -> void:
 	_test_drag_off_still_releases(_failures)
 	_test_steep_poke_rescued_by_entry(_failures)
 	_test_fast_diagonal_rescued_by_angle(_failures)
+	_test_forget_clears_history(_failures)
+	_test_forget_return_values(_failures)
+	_test_apply_profile_include_depth_true(_failures)
+	_test_apply_profile_include_depth_false(_failures)
+	_test_apply_profile_null_changes_nothing(_failures)
 	if _failures.is_empty():
 		print("XR poke fidelity: PASS")
 		quit(0)
@@ -234,3 +249,91 @@ func _test_fast_diagonal_rescued_by_angle(failures: Array[String]) -> void:
 	var blocked := _run(without_angle, points)
 	_check(failures, _count(blocked, XRPokeEvaluator.Event.PRESSED) == 0,
 			"fast diagonal: with the angle test closed there must be no press, got %s" % [blocked])
+
+
+## forget() is the ONLY path that clears history (the bounds/band exits keep
+## it). Reuses the fast-diagonal-rescue geometry from the test above: the
+## first sample lands outside the face, the second is the fast diagonal that
+## only the angle test can rescue. Calling forget() between the two must wipe
+## the first sample from history, leaving the second sample alone in the
+## window - too few points for the angle test, and in_front was never set, so
+## there must be no press. Without the forget() call (the test above) there
+## IS a press; that contrast is what proves history was actually cleared.
+func _test_forget_clears_history(failures: Array[String]) -> void:
+	var evaluator = _make()
+	evaluator.evaluate(0, Vector3(0.060, 0.0, 0.050))
+	evaluator.forget(0)
+	var result: Dictionary = evaluator.evaluate(0, Vector3(0.000, 0.0, -0.001))
+	_check(failures, result["event"] == XRPokeEvaluator.Event.NONE,
+			"forget: history must be cleared, expected NONE, got %s" % [result["event"]])
+
+
+func _test_forget_return_values(failures: Array[String]) -> void:
+	var evaluator = _make()
+	_check(failures, evaluator.forget(0) == XRPokeEvaluator.Event.NONE,
+			"forget: an unknown source must return NONE")
+
+	evaluator.evaluate(0, Vector3(0.0, 0.0, 0.050))
+	evaluator.evaluate(0, Vector3(0.0, 0.0, 0.008))
+	_check(failures, evaluator.is_source_pressed(0),
+			"forget: setup must be mid-press before forget is called")
+	_check(failures, evaluator.forget(0) == XRPokeEvaluator.Event.CANCELLED,
+			"forget: mid-press must return CANCELLED")
+	_check(failures, evaluator.forget(0) == XRPokeEvaluator.Event.NONE,
+			"forget: an idle known source must return NONE")
+
+
+## include_depth defaulting to true copies all five profile properties.
+func _test_apply_profile_include_depth_true(failures: Array[String]) -> void:
+	var evaluator = _make()
+	var profile := _StubPokeProfile.new()
+	evaluator.apply_profile(profile)
+	_check(failures, is_equal_approx(evaluator.press_depth, profile.press_depth),
+			"apply_profile: include_depth=true must copy press_depth")
+	_check(failures, is_equal_approx(evaluator.release_depth, profile.release_depth),
+			"apply_profile: include_depth=true must copy release_depth")
+	_check(failures, evaluator.require_entry_through_face == profile.require_entry_through_face,
+			"apply_profile: must copy require_entry_through_face")
+	_check(failures, is_equal_approx(evaluator.max_approach_angle, profile.max_approach_angle),
+			"apply_profile: must copy max_approach_angle")
+	_check(failures, is_equal_approx(evaluator.min_approach_travel, profile.min_approach_travel),
+			"apply_profile: must copy min_approach_travel")
+
+
+## include_depth=false copies only the three approach-gate fields; a button
+## cap's throw (press_depth/release_depth) is geometry, not project feel, and
+## a shared profile must not overwrite it.
+func _test_apply_profile_include_depth_false(failures: Array[String]) -> void:
+	var evaluator = _make()
+	var prior_press_depth: float = evaluator.press_depth
+	var prior_release_depth: float = evaluator.release_depth
+	var profile := _StubPokeProfile.new()
+	evaluator.apply_profile(profile, false)
+	_check(failures, is_equal_approx(evaluator.press_depth, prior_press_depth),
+			"apply_profile: include_depth=false must leave press_depth untouched")
+	_check(failures, is_equal_approx(evaluator.release_depth, prior_release_depth),
+			"apply_profile: include_depth=false must leave release_depth untouched")
+	_check(failures, evaluator.require_entry_through_face == profile.require_entry_through_face,
+			"apply_profile: include_depth=false must still copy require_entry_through_face")
+	_check(failures, is_equal_approx(evaluator.max_approach_angle, profile.max_approach_angle),
+			"apply_profile: include_depth=false must still copy max_approach_angle")
+	_check(failures, is_equal_approx(evaluator.min_approach_travel, profile.min_approach_travel),
+			"apply_profile: include_depth=false must still copy min_approach_travel")
+
+
+func _test_apply_profile_null_changes_nothing(failures: Array[String]) -> void:
+	var evaluator = _make()
+	var prior_press_depth: float = evaluator.press_depth
+	var prior_release_depth: float = evaluator.release_depth
+	var prior_require_entry: bool = evaluator.require_entry_through_face
+	var prior_max_angle: float = evaluator.max_approach_angle
+	var prior_min_travel: float = evaluator.min_approach_travel
+	evaluator.apply_profile(null)
+	var unchanged: bool = (
+			is_equal_approx(evaluator.press_depth, prior_press_depth)
+			and is_equal_approx(evaluator.release_depth, prior_release_depth)
+			and evaluator.require_entry_through_face == prior_require_entry
+			and is_equal_approx(evaluator.max_approach_angle, prior_max_angle)
+			and is_equal_approx(evaluator.min_approach_travel, prior_min_travel)
+	)
+	_check(failures, unchanged, "apply_profile: a null profile must change nothing")

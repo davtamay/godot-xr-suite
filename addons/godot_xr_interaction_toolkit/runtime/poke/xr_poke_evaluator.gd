@@ -88,10 +88,12 @@ func evaluate(source_id: int, point: Vector3) -> Dictionary:
 		history = history.slice(history.size() - _HISTORY_MAX)
 	state["history"] = history
 
-	if half_size.x > 0.0 or half_size.y > 0.0:
-		if absf(point.x) > half_size.x or absf(point.y) > half_size.y:
-			result["event"] = _exit(state, true)
-			return result
+	if half_size.x > 0.0 and absf(point.x) > half_size.x:
+		result["event"] = _exit(state, true)
+		return result
+	if half_size.y > 0.0 and absf(point.y) > half_size.y:
+		result["event"] = _exit(state, true)
+		return result
 
 	if point.z < -release_depth or point.z > release_depth * 6.0:
 		result["event"] = _exit(state, true)
