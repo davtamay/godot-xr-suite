@@ -204,3 +204,16 @@ func _test_throw_consensus(failures: Array[String]) -> void:
 		failures.append("short-buffer fallback broke: %s" % sv)
 	if XRGrabInteractable.throw_consensus([], 2, 0.35) != Vector3.ZERO:
 		failures.append("empty input must return ZERO")
+
+	# Dead-zone-decisive: a slowdown tail (fingers decelerating through
+	# release) forms the LARGER cluster, so consensus alone would pick it.
+	# Only the dead-zone dropping the 2 newest keeps the true velocity ahead:
+	# without it, tail cluster = 5 beats clean = 4; with it, 3 vs 4.
+	var decisive: Array[Vector3] = []
+	for i in range(4):
+		decisive.append(Vector3(2, 1, 0))
+	for i in range(5):
+		decisive.append(Vector3(0.1, 0.05, 0))
+	var dv := XRGrabInteractable.throw_consensus(decisive, 2, 0.35)
+	if dv.distance_to(Vector3(2, 1, 0)) > 0.05:
+		failures.append("dead-zone must keep the slowdown tail from winning consensus: %s" % dv)
