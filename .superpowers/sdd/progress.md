@@ -462,3 +462,37 @@ GF Task 5: complete (no code/scene changes -- audit found zero policy
   Status: GF Task 5 complete. Commit: chore: prefab grab-policy audit
   (ledger-only; no runtime/scene diffs -- the audit found nothing to fix).
   GF Task 6 (on-device earn-in) remains David-in-headset, not started.
+
+  **Coordinator-caught regression, fixed (commit 9b4ec79):** the
+  "tuned-value note" above should not have been waved off. Worked
+  arithmetic: throwable.tscn / throw_station.tscn's Block1-4 set
+  throw_sample_frames=3; GF Task 2's throw_consensus (unguarded) drops the
+  newest throw_deadzone_frames=2 samples FIRST, leaving 1 usable sample on
+  a 3-sample buffer -> the estimate becomes that single stale oldest
+  sample, not a mean. Pre-GF-Task-2 these prefabs averaged all 3. GF Task 2
+  silently made throw quality on these specific objects worse, and
+  throw_station.tscn is exactly where Task 6 tests throw accuracy.
+  - Fix: throw_consensus now shrinks the dead-zone when the buffer can't
+    afford it (`deadzone := mini(deadzone_frames, maxi(0, samples.size() -
+    3))`), keeping >=3 samples usable. Added
+    _test_throw_consensus_small_buffer_not_starved (2 clean + 1 different
+    newest sample, exact expected means differ: (2,1,0) starved vs (3,1,0)
+    guarded). Mutation-proven: reverted to the unguarded slice -> FAIL (2),
+    including the exact starved value in the error message -> restored ->
+    PASS.
+  - throw_sample_frames=3 overrides: DECIDED to leave unchanged. Traced the
+    value's origin (commit 2d489a0, 2026-07-19, "Punchier throws" --
+    explicit on-device rationale: 3-frame window makes a hard swing carry
+    further than a gentle toss). Confirmed on-device-tuned per CLAUDE.md's
+    earn-in corollary, not incidental. The guard alone fully restores
+    pre-branch behavior for these prefabs (3-sample buffer -> mean of all
+    3, consensus still doesn't engage below 4 usable -- byte-identical to
+    the old _average_throw_samples result). Raising to inherit the new
+    default of 10 would be an UNRELATED deliberate feel change (softer,
+    less punchy release), not part of this fix; not made.
+  - CARRY INTO TASK 6: throw-station blocks should feel exactly as punchy
+    as before this branch. If they feel smoothed/sluggish, that's a signal
+    to revisit the throw_sample_frames=3 decision above, not evidence the
+    dead-zone fix itself is wrong.
+  - Suites + demo boot re-verified green after the fix; git status clean
+    in both repos.
