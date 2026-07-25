@@ -26,5 +26,11 @@ func get_grip_pose(hand: int) -> Dictionary:
 func is_hand_active(hand: int) -> bool:
     return not get_aim_pose(hand).is_empty()
 
+## Whether a select is currently held for this hand. Interactors use it to
+## detect a WEDGED selection -- believing they hold something the input says
+## was already let go -- and recover instead of going deaf to hover and select.
+func is_select_down(_hand: int) -> bool:
+    return false
+
 func get_source_kind(_hand: int) -> int:
     return SourceKind.NONE

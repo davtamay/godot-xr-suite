@@ -41,6 +41,7 @@ func _process(_delta: float) -> bool:
 	_test_transit_phase(_failures)
 	_test_grab_swaps_between_hands(_failures)
 	_test_stabilization_is_bounded(_failures)
+	_test_ray_recovers_from_wedged_selection(_failures)
 	_test_use_axis(_failures)
 	_test_activator_publishes_use_value(_failures)
 	_test_transit_survives_handoff(_failures)
@@ -962,6 +963,7 @@ func _test_grab_swaps_between_hands(failures: Array[String]) -> void:
 	kept.free(); holder.free(); thief.free()
 
 const HandAdapter := preload("res://addons/godot_xr_interaction_toolkit/runtime/input/xr_controller_hand_adapter.gd")
+const RayInteractor := preload("res://addons/godot_xr_interaction_toolkit/runtime/xr_ray_interactor.gd")
 
 ## The stabilization anchor must cover the PINCH TRANSIENT and then let go.
 ## Holding it for the whole grab freezes the aim direction, so a far-held object
@@ -999,3 +1001,50 @@ func _test_stabilization_is_bounded(failures: Array[String]) -> void:
 		failures.append("0 must mean no bound, keeping the anchor for the whole hold")
 
 	adapter.free()
+
+## An adapter whose select state we control, to model the input having let go
+## while the interactor still believes it holds something.
+class WedgeAdapter:
+	extends Node
+	signal select_started(hand: int)
+	signal select_ended(hand: int)
+	var down := false
+	func is_select_down(_hand: int) -> bool:
+		return down
+	func get_aim_pose(_hand: int) -> Dictionary:
+		return {"origin": Vector3(0, 1.4, 0), "direction": Vector3(0, 0, -1), "basis": Basis.IDENTITY}
+	func get_grip_pose(_hand: int) -> Dictionary:
+		return {}
+	func get_source_kind(_hand: int) -> int:
+		return 0
+
+## The ray must not stay wedged holding something the input already released.
+## While _selected is set the ray skips hovering entirely, so a stale selection
+## makes it go completely deaf -- no hover, no select -- until some unrelated
+## release clears it. Reported on device as the right ray needing "random
+## pinching gestures" before it would work again.
+func _test_ray_recovers_from_wedged_selection(failures: Array[String]) -> void:
+	var host := Node3D.new()
+	get_root().add_child(host)
+	var ray := RayInteractor.new()
+	host.add_child(ray)
+	var adapter := WedgeAdapter.new()
+	host.add_child(adapter)
+	ray._adapter = adapter
+
+	# A selection the input still backs must be left alone.
+	var held := XRGrabInteractable.new()
+	host.add_child(held)
+	ray._selected = held
+	adapter.down = true
+	ray._update_ray(1.0 / 72.0)
+	if ray._selected == null:
+		failures.append("a selection the input still backs must NOT be torn down")
+
+	# The input lets go: the stale selection must be reconciled away.
+	adapter.down = false
+	ray._update_ray(1.0 / 72.0)
+	if ray._selected != null:
+		failures.append("a selection the input no longer backs must be released, or the ray goes deaf")
+
+	host.free()

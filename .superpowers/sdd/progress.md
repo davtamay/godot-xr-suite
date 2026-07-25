@@ -846,3 +846,15 @@ editing any scene file.
   Four mutations, all fatal after two rounds. S3 and S4 both survived first:
   S3 because the test only checked can_select and not the entry point, S4
   because the rigidity fix had NO adapter-level test at all.
+  3. LIKELY FIXED (round 4): the stuck ray was RIGHT-hand-specific and cleared
+     only after "random pinching gestures". That is the signature of a WEDGED
+     SELECTION: while _selected is non-null the ray skips hovering entirely and
+     runs its held-object branch, so it goes deaf to both hover and select
+     until some unrelated release happens to clear it -- which is what the
+     random pinching supplied. Rather than hunt the specific path that creates
+     the wedge (intermittent, not reproducible headless), the invariant is now
+     ENFORCED: adapters expose is_select_down(hand), and the ray reconciles
+     against it every frame, releasing a selection the input no longer backs.
+     Two mutations fatal (no self-heal; heals even while genuinely held).
+     Still unconfirmed on device -- if it recurs, the Feel Check mode readout
+     is the next probe.

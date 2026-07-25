@@ -135,6 +135,10 @@ func get_grip_pose(hand_id: int) -> Dictionary:
 	return hand_pose if not hand_pose.is_empty() else _controller_aim_pose(hand_id)
 
 
+func is_select_down(hand_id: int) -> bool:
+	return _valid_hand(hand_id) and _select_down.get(hand_id, false)
+
+
 func get_source_kind(hand_id: int) -> int:
 	if not _valid_hand(hand_id):
 		return SourceKind.NONE

@@ -113,6 +113,16 @@ func _suppressed_by_hand_pose() -> bool:
     return palm_facing.dot(to_head.normalized()) > aim_pose_palm_threshold
 
 func _update_ray(delta := 0.0) -> void:
+    # A selection the input no longer backs is STALE, and it is silently
+    # crippling: with _selected set, the ray skips hovering entirely and runs
+    # its held-object branch, so it stops responding to anything until some
+    # later release happens to clear it. Reconcile against the input instead of
+    # waiting for that -- David, on device: the right ray would not hover or
+    # select "until i do random pinching gestures and out of nowhere it starts
+    # working", which is that stray release arriving.
+    if _selected != null and _adapter != null and not _adapter.is_select_down(hand):
+        _release_select()
+
     var pose: Dictionary = _adapter.get_aim_pose(hand) if _adapter else {}
 
     if _selected == null and (_is_suppressed_by_linked_interactor() \
