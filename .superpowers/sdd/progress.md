@@ -665,3 +665,30 @@ IA Task 3: complete. Teleport exit coverage + earn-in dial.
   - The scene builds its own arbiter: it is opt-in, so the rig prefab does not
     carry one and the earn-in scene must supply it.
 READY FOR: whole-branch review (strongest model), then David's earn-in.
+IA REVIEW ROUND (whole-branch, strongest model). Verdict NO -- 3 Criticals.
+  C1 FIXED, would have ENDED the headset session: poke was gated on NEAR, but
+    NEAR derives from the GRAB interactor's hover and XRPokeButton has no
+    collider, so it can never be a hover candidate. Reviewer probed the real
+    scene: 5 poke buttons, 0 pokeables. Every button dead including the
+    arbiter's own OFF switch, no in-headset recovery. Poke now gates on
+    TELEPORT alone. LESSON: a mode DERIVED from one interactor cannot also
+    GATE a different one whose targets it cannot see.
+  C2 FIXED: _hand_tracked wanted a hand TRACKER, so a controller-driven hand
+    had none, sat in NONE forever, ray AND poke suppressed -- terminal state
+    on any controller rig, i.e. exactly how David tests over Link.
+  C3 FIXED: TEN of eleven mutants survived, including _physics_process
+    replaced by a bare return. The pure rule was tested, the node never was.
+    The flicker test re-implemented the accumulator INSIDE itself, so it
+    proved its own arithmetic -- the bug the ledger credited it with catching
+    could be restored and it still passed. Node-level tests added; all seven
+    re-run mutants now FAIL.
+  I1 RECONCILED, NOT FIXED: this branch does NOT fix the stuck arc. The
+    arbiter READS locomotion's aim state, never owns it, and a stuck aim is
+    now HARDER to recover from because poke also stands down. Design text
+    corrected; earn-in lists the arc as an OPEN BUG to observe.
+  I3/I4 FIXED: lazy rescan when _near_interactors is empty; resolution runs
+    while disabled and in _physics_process so the readout is truthful and the
+    dwell shares its consumers' clock. Test isolation: free() not queue_free.
+DEFECT CLASS, TENTH occurrence, one layer up -- the fixture was not too
+  benign, its SCOPE was. Mutating only what the tests already aim at proves
+  nothing.
