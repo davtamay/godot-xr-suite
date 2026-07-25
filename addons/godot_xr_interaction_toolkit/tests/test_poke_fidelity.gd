@@ -4,16 +4,7 @@ extends SceneTree
 ## Run: godot --headless --xr-mode off --path <demo> --script res://addons/godot_xr_interaction_toolkit/tests/test_poke_fidelity.gd
 
 const XRPokeEvaluator := preload("res://addons/godot_xr_interaction_toolkit/runtime/poke/xr_poke_evaluator.gd")
-
-## Stand-in for XRPokeProfile (Task 2, does not exist yet). Only the five
-## properties apply_profile() reads.
-class _StubPokeProfile:
-	extends RefCounted
-	var press_depth := 0.099
-	var release_depth := 0.077
-	var require_entry_through_face := false
-	var max_approach_angle := 12.0
-	var min_approach_travel := 0.009
+const XRPokeProfile := preload("res://addons/godot_xr_interaction_toolkit/runtime/poke/xr_poke_profile.gd")
 
 var _failures: Array[String] = []
 
@@ -53,6 +44,20 @@ func _make() -> RefCounted:
 	evaluator.release_depth = 0.04
 	evaluator.half_size = Vector2(0.05, 0.05)
 	return evaluator
+
+
+## A profile whose values are ALL distinct from XRPokeEvaluator's defaults
+## (and from XRPokeProfile's own defaults, which deliberately match them).
+## A default-valued profile would make the apply_profile tests pass whether
+## or not apply_profile does anything at all.
+func _make_profile() -> Resource:
+	var profile := XRPokeProfile.new()
+	profile.press_depth = 0.030
+	profile.release_depth = 0.060
+	profile.require_entry_through_face = false
+	profile.max_approach_angle = 80.0
+	profile.min_approach_travel = 0.001
+	return profile
 
 
 ## Feed a point sequence, collect the event per sample.
@@ -287,7 +292,7 @@ func _test_forget_return_values(failures: Array[String]) -> void:
 ## include_depth defaulting to true copies all five profile properties.
 func _test_apply_profile_include_depth_true(failures: Array[String]) -> void:
 	var evaluator = _make()
-	var profile := _StubPokeProfile.new()
+	var profile := _make_profile()
 	evaluator.apply_profile(profile)
 	_check(failures, is_equal_approx(evaluator.press_depth, profile.press_depth),
 			"apply_profile: include_depth=true must copy press_depth")
@@ -308,7 +313,7 @@ func _test_apply_profile_include_depth_false(failures: Array[String]) -> void:
 	var evaluator = _make()
 	var prior_press_depth: float = evaluator.press_depth
 	var prior_release_depth: float = evaluator.release_depth
-	var profile := _StubPokeProfile.new()
+	var profile := _make_profile()
 	evaluator.apply_profile(profile, false)
 	_check(failures, is_equal_approx(evaluator.press_depth, prior_press_depth),
 			"apply_profile: include_depth=false must leave press_depth untouched")
