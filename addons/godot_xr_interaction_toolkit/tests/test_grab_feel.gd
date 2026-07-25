@@ -27,6 +27,7 @@ func _init() -> void:
 	_test_angular_deadzone_not_starved(_failures)
 	_test_consensus_tolerance_scales_by_median(_failures)
 	_test_consensus_tie_prefers_recent(_failures)
+	_test_peak_bias_recovers_deadzone_loss(_failures)
 	_test_transit_timing(_failures)
 	_test_transit_blend(_failures)
 	# _test_grip_pose_stays_on_palm_with_full_hand, _test_transit_phase, and
@@ -676,3 +677,53 @@ func _test_grip_anchor_identity_when_nothing_valid(failures: Array[String]) -> v
 	var anchor := XRControllerHandAdapter.resolve_grip_anchor(tracker)
 	if not anchor.is_equal_approx(Transform3D.IDENTITY):
 		failures.append("no valid joint must yield identity, got %s" % anchor.origin)
+
+func _test_peak_bias_recovers_deadzone_loss(failures: Array[String]) -> void:
+	# The dead-zone drops the newest frames, which on an accelerating throw are
+	# the FASTEST -- so a pure mean systematically under-throws. Leaning toward
+	# the peak of the CLEAN samples recovers speed without readmitting the
+	# corrupted release frames.
+	var ramp: Array[Vector3] = []
+	for i in range(10):
+		ramp.append(Vector3(0.4 + 0.4 * float(i), 0, 0))
+	var mean_only := XRGrabInteractable.throw_consensus(ramp, 2, 0.35, 0.0)
+	var leaned := XRGrabInteractable.throw_consensus(ramp, 2, 0.35, 0.6)
+	if leaned.x <= mean_only.x:
+		failures.append("peak bias must speed up an accelerating throw: %.3f vs %.3f" % [leaned.x, mean_only.x])
+	var full := XRGrabInteractable.throw_consensus(ramp, 2, 0.35, 1.0)
+	if full.x <= leaned.x:
+		failures.append("bias 1.0 must reach further than 0.6")
+
+	# It must never exceed the fastest CLEAN sample -- the corrupted newest
+	# frames stay excluded no matter how hard the bias is turned up.
+	var clean_peak := ramp[ramp.size() - 3].x
+	if full.x > clean_peak + 0.001:
+		failures.append("peak bias must not reach past the dead-zone into the release frames: %.3f > %.3f" % [full.x, clean_peak])
+
+	# It must not RESURRECT a sample consensus already rejected. A mid-buffer
+	# tracking glitch survives the dead-zone (it is not among the newest
+	# frames) but loses consensus -- if the peak search ran over the whole
+	# post-dead-zone buffer instead of the winning cluster, that glitch would
+	# come back as the "peak" and fling the object.
+	var glitched: Array[Vector3] = []
+	for i in range(6):
+		glitched.append(Vector3(2.0, 0, 0))
+	glitched.insert(2, Vector3(40.0, 0, 0))
+	glitched.append(Vector3(2.0, 0, 0))
+	glitched.append(Vector3(2.0, 0, 0))
+	var guarded := XRGrabInteractable.throw_consensus(glitched, 2, 0.35, 1.0)
+	if guarded.x > 2.5:
+		failures.append("peak bias must search only the winning cluster, not resurrect a rejected glitch: %.3f" % guarded.x)
+
+	# It must not redirect a throw: the peak belongs to the same cluster, so
+	# direction is preserved.
+	var angled: Array[Vector3] = []
+	for i in range(8):
+		angled.append(Vector3(1.0 + 0.2 * float(i), 1.0 + 0.2 * float(i), 0))
+	var biased := XRGrabInteractable.throw_consensus(angled, 2, 0.35, 1.0)
+	if absf(biased.normalized().angle_to(Vector3(1, 1, 0).normalized())) > 0.01:
+		failures.append("peak bias must not change throw DIRECTION, got %s" % biased)
+
+	# Zero bias is exactly the previous behaviour.
+	if not XRGrabInteractable.throw_consensus(ramp, 2, 0.35, 0.0).is_equal_approx(XRGrabInteractable.throw_consensus(ramp, 2, 0.35)):
+		failures.append("default peak_bias must be 0 so existing callers are unchanged")

@@ -534,3 +534,42 @@ DEFECT CLASS, sixth and seventh occurrence: two of the fixes I wrote for this
   the mutant; the angular test exercised the helper rather than the release
   wiring the defect lives in). Both caught by running the mutations, not by
   reading. Never bank a test that has not been proven able to fail.
+
+## Throw power (David's request, post-final-review)
+Added throw_peak_bias: leans the estimate from the cluster MEAN toward the
+cluster's FASTEST sample. Rationale: the dead-zone drops the newest frames,
+which on an accelerating throw are the fastest, so a pure mean systematically
+under-throws. Measured on a 0.4->4.0 m/s ramp:
+  pre-branch (5-frame mean) 3.200 | bias 0.0 = 2.800 | 0.6 = 3.040
+  | 0.8 = 3.120 | 1.0 = 3.200 (exactly restores pre-branch)
+Default 0.8, not 1.0: at 1.0 a single sample sets the throw, so throws are
+less repeatable; 0.8 recovers most of the speed while still averaging.
+Safety properties, all mutation-proven: the bias can only speed a throw up,
+never redirect it (peak is a cluster member); it cannot reach past the
+dead-zone into the release frames; and it searches only the WINNING cluster,
+so a mid-buffer glitch consensus rejected cannot come back as the "peak".
+That last test initially did not bite -- the ramp fixture had no rejected
+outlier, so cluster-vs-usable were identical. Eighth occurrence of the class.
+feel_check.tscn now carries in-headset dials (- / + poke buttons) that apply
+throw_peak_bias to every grabbable live, so the value is settled by feel
+rather than chosen offline.
+
+## Microgestures: how Meta actually does it (evidenced, 2026-07-25)
+Meta's SDK contains NO microgesture recognition algorithm. OVRMicrogesture-
+EventSource.cs in the local ISDK checkout is 67 lines and its entire
+recognition is one call: _hand.GetMicrogestureType(), which forwards to the
+Quest system runtime via the XR_META_hand_tracking_microgestures OpenXR
+extension (five booleans per hand: thumb tap, swipe L/R/fwd/back; Quest
+2/Pro/3/3S only). Whether the runtime uses ML is undocumented by Meta and
+unknowable from anything we hold -- do NOT assert it.
+Consequence: there is nothing to port. Our xr_thumb_microgesture_recognizer.gd
+(183 lines, 17 tuned thresholds) does strictly more than Meta's SDK does,
+and works on any runtime exposing joints -- which is the whole point for
+WebXR. Three paths, not mutually exclusive: (a) delegate to the extension on
+Quest and fall back to ours elsewhere; (b) feed the recognizer CONDITIONED
+joints and retune -- nearly free now, and its known failure mode (arc "stuck
+on hand") is what jitter at a contact threshold produces; (c) train our own.
+Recommend (b) first, measurable offline against the recorded traces.
+UNVERIFIED: whether the recognizer's feature runtime already receives
+conditioned data after GF Task 9 unified the gesture call sites. Check before
+designing anything.
