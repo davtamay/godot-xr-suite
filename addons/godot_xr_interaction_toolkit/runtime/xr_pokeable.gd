@@ -100,11 +100,7 @@ func _get_configuration_warnings() -> PackedStringArray:
 func poke_update(hand: int, world_point: Vector3) -> void:
 	_sync_evaluator()
 	var local := global_transform.affine_inverse() * world_point
-	# _local_normal()'s Z_PLUS/Z_MINUS cases return the PRESS direction (see
-	# class doc: default faces -Z), the opposite sign convention from its own
-	# "outward normal" docstring and from the X/Y cases. The canonical frame
-	# needs the true outward direction (+Z = distance IN FRONT), so negate.
-	var normal := -_local_normal()
+	var normal := _local_normal()
 	var u_axis := _plane_u(normal)
 	var v_axis := _plane_v(normal)
 	var depth := local.dot(normal)
@@ -157,8 +153,8 @@ func _local_normal() -> Vector3:
 		Face.X_MINUS: return Vector3.LEFT
 		Face.Y_PLUS: return Vector3.UP
 		Face.Y_MINUS: return Vector3.DOWN
-		Face.Z_MINUS: return Vector3.BACK  # -Z
-		_: return Vector3.BACK * -1.0      # Z_PLUS = +Z
+		Face.Z_MINUS: return Vector3.FORWARD  # -Z
+		_: return Vector3.BACK                # Z_PLUS = +Z
 
 
 func _plane_u(normal: Vector3) -> Vector3:

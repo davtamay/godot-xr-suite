@@ -37,6 +37,8 @@ func _process(_delta: float) -> bool:
 	_tree_tests_done = true
 	_test_pokeable_emits_cancelled_on_slide_off(_failures)
 	_test_pokeable_reports_a_pin(_failures)
+	_test_pokeable_x_face_presses_and_cancels(_failures)
+	_test_pokeable_pin_is_inf_without_contact(_failures)
 	if _failures.is_empty():
 		print("XR poke fidelity: PASS")
 		quit(0)
@@ -48,13 +50,14 @@ func _process(_delta: float) -> bool:
 	return true
 
 
-## Build a pokeable at the origin, facing +Z, parented to a body so its
-## self-wiring finds one.
-func _make_pokeable() -> Node3D:
+## Build a pokeable at the origin, facing the given face (default +Z),
+## parented to a body so its self-wiring finds one.
+func _make_pokeable(face := XRPokeableScript.Face.Z_PLUS) -> Node3D:
 	var body := StaticBody3D.new()
 	get_root().add_child(body)
 	var pokeable := Node3D.new()
 	pokeable.set_script(XRPokeableScript)
+	pokeable.poke_face = face
 	body.add_child(pokeable)
 	return pokeable
 
@@ -87,6 +90,35 @@ func _test_pokeable_reports_a_pin(failures: Array[String]) -> void:
 			"pokeable: expected a pin while in contact")
 	_check(failures, is_equal_approx(pin.z, 0.0),
 			"pokeable: the pin must sit ON the surface, got z=%f" % pin.z)
+	pokeable.get_parent().queue_free()
+
+
+## A NON-default face. The default (Z_PLUS) fixture above cannot catch a bug
+## that globally inverts the normal for every face - X_PLUS and Z_PLUS need
+## OPPOSITE handling (see _local_normal's fix history), so a mistake that
+## flips all six faces the same way still passes the Z-only fixture while
+## breaking this one.
+func _test_pokeable_x_face_presses_and_cancels(failures: Array[String]) -> void:
+	var pokeable := _make_pokeable(XRPokeableScript.Face.X_PLUS)
+	var seen := {"pressed": 0, "cancelled": 0}
+	pokeable.pressed.connect(func(_hand): seen["pressed"] += 1)
+	pokeable.cancelled.connect(func(_hand): seen["cancelled"] += 1)
+	# Face normal is +X for this face, so world +X is "in front".
+	pokeable.poke_update(0, Vector3(0.050, 0.0, 0.0))
+	pokeable.poke_update(0, Vector3(0.008, 0.0, 0.0))
+	pokeable.poke_update(0, Vector3(0.008, 0.080, 0.0))
+	_check(failures, seen["pressed"] == 1,
+			"pokeable X_PLUS: expected 1 pressed, got %d" % seen["pressed"])
+	_check(failures, seen["cancelled"] == 1,
+			"pokeable X_PLUS: expected 1 cancelled, got %d" % seen["cancelled"])
+	pokeable.get_parent().queue_free()
+
+
+func _test_pokeable_pin_is_inf_without_contact(failures: Array[String]) -> void:
+	var pokeable := _make_pokeable()
+	var pin: Vector3 = pokeable.get_poke_pin(0)
+	_check(failures, pin == Vector3.INF,
+			"pokeable: expected Vector3.INF for a hand with no contact, got %s" % [pin])
 	pokeable.get_parent().queue_free()
 
 
