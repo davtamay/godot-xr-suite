@@ -1,0 +1,231 @@
+# Poke fidelity: one decision, three surfaces
+
+Status: approved design, 2026-07-25 (David). Implements item 6 of the ISDK
+inventory (`Godot_WebXR_gh/docs/INNOVATION_BACKLOG.md`, entry 2026-07-24),
+chosen after the poke path was read end to end.
+
+## Licensing boundary
+
+Technique implemented from the published description only. No ISDK code read
+for implementation, copied, or adapted (Oculus SDK License, incompatible).
+Any Meta constant is an order-of-magnitude sanity check, never a shipped
+value. The primary gate below is deliberately NOT Meta's technique — see
+"The gate is two tests".
+
+## What already exists (corrects the inventory)
+
+The inventory says `xr_pokeable.gd` has press/release depth only, and implies
+poke is one system. Both are wrong in ways that change the scope.
+
+There are **three independent poke implementations**:
+
+| | Depth source | Press / release | Driven by |
+|---|---|---|---|
+| `XRPokeable` | dot along chosen face normal | `press_depth` 0.012 / `release_depth` 0.04 | `poke_update` from the interactor |
+| `XRUICanvasInteractable` | `local.z` | same two, same defaults | `poke_update`, pushes synthetic mouse |
+| `XRPokeButton` | cylinder test, cap travel | `press_fraction` 0.7, re-arm at half | **self-polls the group**, bypasses `poke_update` |
+
+Consequences that scope this work:
+
+- **`XRPokeable` has zero consumers.** Not one sample scene, not one test,
+  despite being the block the dock advertises as "make ANY body pokeable". The
+  poke that has earned in on device is `XRPokeButton` + `XRUICanvasInteractable`
+  (`control_panel_demo`, `poke_playground_demo`, `XRPokeStation`). Evidence
+  about those two is not evidence about `XRPokeable`.
+- **Nothing anywhere tests approach direction.** All three test depth along an
+  axis. The interactor sphere-queries at `poke_reach = 0.12` and dispatches
+  `poke_update` to every target within 12 cm
+  (`xr_poke_interactor.gd:174`), so a hand sweeping laterally across a row of
+  buttons at surface depth presses each one in turn. This is the failure that
+  limits how densely buttons can be authored.
+- **Slide-off is indistinguishable from a deliberate release.**
+  `xr_pokeable.gd:74` — leaving `half_size` calls `poke_end`, which emits
+  `released`. Buttons conventionally fire on release, so an aborted press
+  ACTIVATES the button. There is no `cancelled`.
+- **`XRPokeButton` drops a genuinely fast poke.** `xr_poke_button.gd:66` —
+  `local.y < -0.01: continue` skips a fingertip that reached below the base
+  within one physics sample rather than clamping it to full travel. At 60 Hz a
+  1.5 m/s poke moves 25 mm against 22 mm of default travel, so this is
+  reachable. The other two are NOT affected: their valid bands are 52 mm and
+  72 mm, needing >3 m/s to skip. No fix is proposed for them.
+- **No visual pinning.** The marker dot passes through the surface.
+
+Two structural constraints found while designing:
+
+- `XRUICanvasInteractable extends XRBaseInteractable`, so a shared **base
+  class** for poke targets is impossible. Composition only.
+- `XRPokeButton` has **no collider at all**, which is why it self-polls; the
+  interactor's own comment records this (`xr_poke_interactor.gd:92`).
+  Unifying dispatch would mean adding an `Area3D` and putting it on
+  `poke_collision_mask`, a scene-visible change to an earned-in path.
+
+## Design
+
+**One evaluator, three thin adapters. Dispatch is unchanged.**
+
+New `runtime/poke/xr_poke_evaluator.gd`, a `RefCounted` — not a node. It owns
+the entire press decision and nothing else: per-source entry state, smoothed
+approach direction, depth band, hysteresis, bounds, cancel state, pinned
+contact point. One call:
+
+```
+evaluate(source_id, local_point, delta) -> { event, depth_ratio, pinned_point }
+```
+
+`event` is `NONE | PRESSED | RELEASED | CANCELLED | DRAG`. `depth_ratio` is
+penetration past the press plane normalized to `press_depth`, clamped to
+0..1 — so an adapter can drive an animation from it without knowing the
+units.
+
+**Canonical frame.** Adapters hand the evaluator points in one convention:
+**+Z is the outward normal, the press plane is z = 0**. `XRPokeable` folds its
+`poke_face` into that rotation, the canvas is already there, `XRPokeButton`
+maps +Y→+Z. The evaluator then has no concept of faces, panels or caps, which
+is what lets one implementation serve three call sites.
+
+| Adapter | Keeps | Delegates |
+|---|---|---|
+| `XRPokeable` | world→local along `poke_face`, signals | the press decision; gains `cancelled` |
+| `XRUICanvasInteractable` | `local.z`, synthetic mouse, drag-as-motion | the press decision |
+| `XRPokeButton` | self-polling, cylinder test, cap animation | press/release threshold, approach gate |
+
+`XRPokeButton`'s units map onto the canonical frame rather than changing:
+its press plane is the cap's rest top, and its effective `press_depth` is
+`travel * press_fraction` with `release_depth` at half of that. Same numbers
+it uses today, expressed in the evaluator's terms, so the cap's feel is
+arithmetically unchanged.
+
+`XRPokeButton` keeps self-polling. Giving it a collider to unify dispatch
+changes physics layers on a path already earned in on device and buys nothing
+the evaluator does not already give it. Lowest-risk layer that solves the
+problem.
+
+The one thing left duplicated by design is each adapter's world→local
+conversion, because each genuinely differs. That is ~5 lines each and it is
+the part that SHOULD differ.
+
+### The gate is two tests
+
+Meta's published technique is a minimum approach angle. Angle alone is the
+weaker half, so it is the secondary test here.
+
+1. **Entry-through-face (primary, stateful).** A source may only arm a press
+   if it was previously observed **in-bounds and in front of the press
+   plane**. A finger sliding in laterally at depth was never in front of the
+   face, so it never arms — the sweep case dies on a boolean, with no
+   trigonometry and no threshold to tune. It also fixes `XRPokeButton`'s
+   dropped fast poke for free: a source that WAS in front and is now below the
+   base is clamped to full travel instead of skipped, because we know it came
+   through the cap.
+
+2. **Approach angle (secondary, tunable).** At the moment of crossing the
+   press plane, require `dot(travel_dir, -Z) >= cos(max_approach_angle)` over
+   a short sample window, not a single frame. **With an abstain rule**: if
+   window displacement is under `min_approach_travel` (~3 mm), the gate passes
+   unconditionally. Without the abstain, a slow deliberate creep-in has a
+   noise-dominated direction vector and gets rejected — the worst available
+   failure, and the one that would make this feel broken.
+
+### Cancel
+
+While pressed: leaving bounds, or losing the source, emits `CANCELLED`.
+Retracting past `release_depth` while in bounds emits `RELEASED`. `XRPokeable`
+gains `cancelled(hand)`.
+
+The canvas maps `CANCELLED` to a motion event positioned OUTSIDE the panel
+followed by mouse-up, so Godot `Control` buttons clear their pressed state
+without emitting. That is the standard `Control` contract, not a workaround.
+
+### Drag versus press
+
+Opt-in, off by default: `interpret_drag := false`. When enabled, in-plane
+travel past `drag_threshold` while pressed emits `DRAG` carrying the planar
+delta, and suppresses the terminal `RELEASED` activation — so a target
+authored as a drag handle cannot also fire as a button on let-go. The canvas
+does not use this; it already gets drag free from mouse motion while pressed.
+
+### Pinning
+
+The evaluator returns `pinned_point`: the local point with z clamped to >= 0.
+Adapters expose `get_poke_pin(hand) -> Vector3` (`INF` when none) and
+`XRPokeInteractor` prefers it over the raw fingertip when drawing the marker.
+The dot then stops on the surface and press depth reads visually.
+
+The rendered HAND still passes through the surface. Posing it requires a
+runtime consumer for `xr_hand_pose_math.gd` — whose only callers today are
+`xr_simulator.gd:534` and `xr_grab_point.gd:220` (editor preview only) — and
+that is explicitly out of scope here.
+
+### Authoring surface
+
+Every evaluator parameter is exposed on all three adapters under a `Poke Feel`
+group with ranges and doc comments, AND a new `XRPokeProfile` **Resource**
+lets a project author one feel once and assign it to every poke target. This
+follows `XRFeedbackTheme`, the pattern the suite already establishes for
+scene-wide feel. Per-target exports override the profile.
+
+This is the part that has to beat parity rather than match it: a designer
+tunes press depth and gate angle in one `.tres` and the whole project moves.
+
+### Station extension
+
+`XRPokeStation` gains a dense button row that is only usable BECAUSE of the
+gate, a drag handle, and a slide-off-to-cancel target. These are the first
+`XRPokeable` consumers in the suite. `poke_playground_demo` picks them up
+through the station.
+
+## Testing
+
+Headless, mutation-proven FAIL-then-PASS, in `tests/test_poke_fidelity.gd`,
+driving the evaluator directly with synthetic point sequences:
+
+| Case | Expected |
+|---|---|
+| Normal approach through the face | `PRESSED` once |
+| Lateral sweep at press depth across bounds | no press, ever |
+| Slow creep-in under the abstain threshold | `PRESSED` (gate abstains) |
+| Slide off while pressed | `CANCELLED`, never `RELEASED` |
+| Jitter at the press plane | no chatter |
+| Fast pass-through in one sample | `PRESSED` once, depth clamped |
+| Pinned point | z clamped to 0 |
+| Drag past `drag_threshold` with `interpret_drag` on | `DRAG` deltas, no terminal `RELEASED` |
+| Same motion with `interpret_drag` off | no `DRAG`, normal `RELEASED` |
+
+Plus adapter-level signal-mapping tests with a fake target, confirming each
+adapter translates evaluator events to its own contract.
+
+Mutation runs that MUST fail the suite: invert `require_entry_through_face`;
+delete the abstain rule; emit `RELEASED` where `CANCELLED` is specified; widen
+`max_approach_angle` to 180°. A suite that passes against any of those is
+worse than none — this project has shipped two such suites and the mutation
+run caught both.
+
+Fixtures must move the point across frames. A fixture that teleports a point
+to its final position cannot detect a missing approach gate, because the gate
+reads travel direction — the failure this suite is most likely to miss.
+
+## Earn-in (gate)
+
+This changes on-device-tuned behaviour, so it does not merge on headless
+evidence.
+
+`control_panel_demo` and `poke_playground_demo` on Quest, before and after:
+the three `XRPokeButton`s and the `TouchPanel` must feel IDENTICAL. Then the
+new dense row for the sweep case, and the drag handle for the cancel case.
+
+Revert lever is one line: `max_approach_angle = 90` and
+`require_entry_through_face = false` restore today's behaviour exactly. Both
+defaults are shipped as authorable exports precisely so the revert needs no
+code change.
+
+## Out of scope
+
+- **Unifying dispatch.** The three dispatch paths stay three. This unifies the
+  DECISION, not the plumbing. Making `XRPokeButton` collider-driven is a
+  separate change with a physics-layer cost on a working path.
+- **Runtime hand posing.** The rendered hand continues to pass through
+  surfaces. Item 4 (synthetic/display hand) owns that, and it is larger.
+- **Fast-poke fixes for the canvas and `XRPokeable`.** Measured as not needed:
+  52 mm and 72 mm valid bands need >3 m/s to skip. Claiming a fix there would
+  be fixing an unmeasured problem.
+- Items 4, 5 and 8 of the inventory.
