@@ -89,13 +89,16 @@ func evaluate(source_id: int, point: Vector3) -> Dictionary:
 	state["history"] = history
 
 	if half_size.x > 0.0 and absf(point.x) > half_size.x:
+		result["pinned_point"] = Vector3.INF
 		result["event"] = _exit(state, true)
 		return result
 	if half_size.y > 0.0 and absf(point.y) > half_size.y:
+		result["pinned_point"] = Vector3.INF
 		result["event"] = _exit(state, true)
 		return result
 
 	if point.z < -release_depth or point.z > release_depth * 6.0:
+		result["pinned_point"] = Vector3.INF
 		result["event"] = _exit(state, true)
 		return result
 

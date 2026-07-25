@@ -109,7 +109,10 @@ func poke_update(hand: int, world_point: Vector3) -> void:
 	var canonical := Vector3(planar.dot(u_axis), planar.dot(v_axis), depth)
 	var result: Dictionary = _evaluator.evaluate(hand, canonical)
 	var pinned: Vector3 = result["pinned_point"]
-	_pins[hand] = global_transform * (u_axis * pinned.x + v_axis * pinned.y + normal * pinned.z)
+	if pinned == Vector3.INF:
+		_pins.erase(hand)
+	else:
+		_pins[hand] = global_transform * (u_axis * pinned.x + v_axis * pinned.y + normal * pinned.z)
 	_emit(hand, result)
 
 
@@ -127,8 +130,12 @@ func is_pressed() -> bool:
 	return _evaluator != null and _evaluator.is_pressed()
 
 
-## World-space point pinned to this face while the hand is in contact, so a
-## marker can stop ON the surface instead of sinking through it. INF = none.
+## The world-space point where the source currently registers on this face:
+## the raw point while the source is in front of the surface, clamped onto
+## the surface (z = 0) once the source pushes past it. Vector3.INF whenever
+## the source is off the face entirely - outside the bounds rectangle or
+## outside the working z-band - so a marker never snaps onto the face for a
+## point that is actually beside it.
 func get_poke_pin(hand: int) -> Vector3:
 	return _pins.get(hand, Vector3.INF)
 

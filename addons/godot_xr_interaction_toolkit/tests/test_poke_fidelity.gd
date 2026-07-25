@@ -39,6 +39,8 @@ func _process(_delta: float) -> bool:
 	_test_pokeable_reports_a_pin(_failures)
 	_test_pokeable_x_face_presses_and_cancels(_failures)
 	_test_pokeable_pin_is_inf_without_contact(_failures)
+	_test_pokeable_pin_is_inf_when_off_face(_failures)
+	_test_pokeable_pin_is_inf_when_beyond_band(_failures)
 	if _failures.is_empty():
 		print("XR poke fidelity: PASS")
 		quit(0)
@@ -81,15 +83,38 @@ func _test_pokeable_emits_cancelled_on_slide_off(failures: Array[String]) -> voi
 	pokeable.get_parent().queue_free()
 
 
+## The body sits on a transform with BOTH a translation and a rotation, so the
+## test pins down the WHOLE world-space formula, not just its z-component. A
+## default (Z_PLUS, identity-transform) fixture cannot distinguish u_axis from
+## v_axis: both are perpendicular to the normal, so world z depends only on
+## normal.z * pinned.z regardless of which of u_axis/v_axis carries pinned.x
+## vs pinned.y. Swap u_axis and v_axis in the round-trip line and a z-only
+## assertion still passes; a full world-space comparison does not.
+##
+## The expected value is derived WITHOUT using u_axis/v_axis at all: for the
+## default Z_PLUS face, the face plane IS the local z = 0 plane, so the
+## surface point pinned under a fingertip sits directly at that fingertip's
+## own local x/y, at local z = 0. That is independent geometric reasoning,
+## not a copy of the production round-trip line.
 func _test_pokeable_reports_a_pin(failures: Array[String]) -> void:
 	var pokeable := _make_pokeable()
-	pokeable.poke_update(0, Vector3(0.0, 0.0, 0.050))
-	pokeable.poke_update(0, Vector3(0.010, 0.0, -0.020))
+	var body: Node3D = pokeable.get_parent()
+	body.transform = Transform3D(
+			Basis.from_euler(Vector3(0.0, deg_to_rad(35.0), 0.0)),
+			Vector3(0.4, 0.2, -0.3))
+	# First sample well in front (arms the entry gate); second sample laterally
+	# off-center (x != y, so a u/v swap changes the result) and pushed past
+	# the surface (negative local z), so the pin clamps onto the face.
+	var local_front := Vector3(0.0, 0.0, 0.050)
+	var local_behind := Vector3(0.012, -0.006, -0.020)
+	pokeable.poke_update(0, body.transform * local_front)
+	pokeable.poke_update(0, body.transform * local_behind)
 	var pin: Vector3 = pokeable.get_poke_pin(0)
+	var expected: Vector3 = body.transform * Vector3(local_behind.x, local_behind.y, 0.0)
 	_check(failures, pin != Vector3.INF,
 			"pokeable: expected a pin while in contact")
-	_check(failures, is_equal_approx(pin.z, 0.0),
-			"pokeable: the pin must sit ON the surface, got z=%f" % pin.z)
+	_check(failures, pin.is_equal_approx(expected),
+			"pokeable: expected pin at %s, got %s" % [expected, pin])
 	pokeable.get_parent().queue_free()
 
 
@@ -119,6 +144,34 @@ func _test_pokeable_pin_is_inf_without_contact(failures: Array[String]) -> void:
 	var pin: Vector3 = pokeable.get_poke_pin(0)
 	_check(failures, pin == Vector3.INF,
 			"pokeable: expected Vector3.INF for a hand with no contact, got %s" % [pin])
+	pokeable.get_parent().queue_free()
+
+
+## The source is OUTSIDE the face rectangle (x beyond half_size) AND deeper
+## than the surface (negative z) - a fingertip beside the button, not over it.
+## A single sample is enough: this is the source's FIRST ever sample, so the
+## evaluator was never pressed and the exit path returns NONE (not
+## CANCELLED), meaning _emit's CANCELLED-branch erase never runs - the only
+## thing that can stop a stale pin here is the evaluator itself returning
+## Vector3.INF from the bounds-exit path.
+func _test_pokeable_pin_is_inf_when_off_face(failures: Array[String]) -> void:
+	var pokeable := _make_pokeable()
+	pokeable.poke_update(0, Vector3(0.080, 0.0, -0.005))
+	var pin: Vector3 = pokeable.get_poke_pin(0)
+	_check(failures, pin == Vector3.INF,
+			"pokeable: an off-face point behind the surface must not get a pin, got %s" % [pin])
+	pokeable.get_parent().queue_free()
+
+
+## The source is INSIDE the face rectangle but far outside the working
+## z-band (deeper than -release_depth) - isolates the band-exit path from the
+## bounds-exit path covered above.
+func _test_pokeable_pin_is_inf_when_beyond_band(failures: Array[String]) -> void:
+	var pokeable := _make_pokeable()
+	pokeable.poke_update(0, Vector3(0.010, 0.010, -0.500))
+	var pin: Vector3 = pokeable.get_poke_pin(0)
+	_check(failures, pin == Vector3.INF,
+			"pokeable: a point beyond the working z-band must not get a pin, got %s" % [pin])
 	pokeable.get_parent().queue_free()
 
 
