@@ -52,7 +52,10 @@ func uses_grip_grab() -> bool:
 ## hand rays. true: follow the attach pose's rotation too.
 @export var track_rotation := false
 @export_range(0.0, 100.0, 0.1, "or_greater") var max_tracked_speed := 20.0
-@export_range(0.1, 10.0, 0.1) var transit_speed := 1.5
+## Metres of PERCEIVED distance per second for the attach transit (rotation
+## counts toward that distance, so a flip and a comparable move take similar
+## time). 0 disables transit for this object: it snaps as it did before.
+@export_range(0.0, 10.0, 0.1) var transit_speed := 1.5
 
 @export_group("Throw")
 ## Applies the sampled attach-pose velocity to a RigidBody3D target when the
@@ -186,7 +189,7 @@ func _physics_process(delta: float) -> void:
 		_transit_time_left = maxf(0.0, _transit_time_left - delta)
 		var alpha := 1.0 - (_transit_time_left / _transit_duration)
 		var blended := transit_blend(_transit_from, desired, alpha)
-		target.global_transform = blended
+		_apply_movement(target, blended, delta, follow_rotation, track_position or _point_grab)
 	else:
 		_apply_movement(target, desired, delta, follow_rotation, track_position or _point_grab)
 	if not follow_rotation:
@@ -214,7 +217,14 @@ func _arm_transit(interactor) -> void:
 		return
 	var desired := _attach_pose_for(interactor) * _grab_offset
 	_transit_from = target_node.global_transform
-	_transit_duration = transit_duration(_transit_from, desired, transit_speed)
+	# When this grab does not follow rotation, _apply_movement discards the
+	# blended basis anyway -- so letting the rotation term set the pace would
+	# stretch the tween for a turn the object never makes. Time the travel the
+	# object will actually perform.
+	var timed_to := desired
+	if not (track_rotation or _point_grab):
+		timed_to.basis = _transit_from.basis
+	_transit_duration = transit_duration(_transit_from, timed_to, transit_speed)
 	_transit_time_left = _transit_duration
 
 func _compute_grab_offset(interactor) -> Transform3D:
@@ -442,8 +452,7 @@ func _apply_throw_on_release() -> void:
 
 	body.sleeping = false
 	var linear_vel := throw_consensus(_throw_linear_samples, throw_deadzone_frames, throw_consensus_tolerance)
-	var sliced_angular := _throw_angular_samples.slice(0, maxi(0, _throw_angular_samples.size() - throw_deadzone_frames))
-	var angular_vel := _average_throw_samples(sliced_angular)
+	var angular_vel := _average_throw_samples(_deadzone_slice(_throw_angular_samples, throw_deadzone_frames))
 	body.linear_velocity = (linear_vel * throw_velocity_scale).limit_length(max_throw_speed)
 	body.angular_velocity = (angular_vel * throw_angular_velocity_scale).limit_length(max_throw_angular_speed)
 	thrown.emit(body.linear_velocity, body.angular_velocity)
@@ -461,25 +470,39 @@ func _average_throw_samples(samples: Array[Vector3]) -> Vector3:
 		total += sample
 	return total / float(samples.size())
 
+## Drops the newest `deadzone_frames` samples -- the frames where the fingers
+## are peeling off and the tracked velocity is corrupted. A small buffer cannot
+## afford the full dead-zone: slicing blindly can leave a single stale sample,
+## or none at all, which is worse than the plain mean it replaced. So the
+## dead-zone shrinks to keep at least 3 samples, and never empties a non-empty
+## buffer. BOTH the linear and angular estimates go through here -- an earlier
+## revision guarded only the linear path, which silently starved the angular
+## estimate on any prefab shipping a short throw_sample_frames buffer.
+static func _deadzone_slice(samples: Array[Vector3], deadzone_frames: int) -> Array[Vector3]:
+	if samples.is_empty():
+		return []
+	var deadzone := mini(deadzone_frames, maxi(0, samples.size() - 3))
+	var usable := samples.slice(0, maxi(0, samples.size() - deadzone))
+	if usable.is_empty():
+		return samples.duplicate()
+	return usable
+
 ## Consensus throw-velocity estimate (technique: Meta ISDK release filtering,
 ## as publicly described; implementation ours - see docs/grab-feel-design.md).
-## Drops the newest deadzone_frames samples (release corruption), then returns
-## the mean of the largest set of mutually agreeing samples. Two samples agree
-## when their difference is under tolerance * median sample magnitude. Ties go
-## to the more recent set. Fewer than 4 usable samples: plain mean of them.
+## After the dead-zone, returns the mean of the largest cluster: for each
+## sample, every other sample within tolerance * MEDIAN magnitude of it, and
+## the biggest such group wins. That is a ball around one anchor, not a
+## mutually-agreeing clique -- two members can differ by up to 2 * the radius.
+## The approximation is deliberate: it is linear in the buffer and the buffer
+## is ~10 samples. Ties go to the more recent anchor, which sits closer to the
+## actual release. Fewer than 4 usable samples: plain mean of them.
 ## The dead-zone itself shrinks when the buffer is too small to afford it (at
 ## least 3 samples stay usable), so a small throw_sample_frames buffer is
 ## never starved down to a single stale sample.
 static func throw_consensus(samples: Array[Vector3], deadzone_frames: int, tolerance: float) -> Vector3:
 	if samples.is_empty():
 		return Vector3.ZERO
-	# A small buffer cannot afford the full dead-zone: dropping the newest
-	# frames from a 3-sample buffer would leave a single stale sample, which is
-	# worse than the plain mean it replaced. Shrink the dead-zone instead.
-	var deadzone := mini(deadzone_frames, maxi(0, samples.size() - 3))
-	var usable := samples.slice(0, maxi(0, samples.size() - deadzone))
-	if usable.is_empty():
-		usable = samples.duplicate()
+	var usable := _deadzone_slice(samples, deadzone_frames)
 	if usable.size() < 4:
 		return _mean_of(usable)
 
@@ -518,6 +541,8 @@ static func transit_duration(from: Transform3D, to: Transform3D, speed: float) -
 		return 0.0
 	var translation := (to.origin - from.origin).length()
 	var rotation_deg := rad_to_deg(from.basis.get_rotation_quaternion().angle_to(to.basis.get_rotation_quaternion()))
+	# The 0.5/360 factor comes from Meta's published description and is a
+	# sanity check, not a shipped constant: it is ours to retune on device.
 	var perceived := maxf(translation, rotation_deg * 0.5 / 360.0)
 	if perceived < 0.0005:
 		return 0.0

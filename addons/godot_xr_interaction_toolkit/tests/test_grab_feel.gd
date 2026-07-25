@@ -19,10 +19,14 @@ var _failures: Array[String] = []
 
 func _init() -> void:
 	_test_grip_anchor_prefers_palm(_failures)
+	_test_grip_anchor_identity_when_nothing_valid(_failures)
 	_test_grab_point_bind_palm_uses_metacarpal_center(_failures)
 	_test_simulator_palm_uses_metacarpal_center(_failures)
 	_test_throw_consensus(_failures)
 	_test_throw_consensus_small_buffer_not_starved(_failures)
+	_test_angular_deadzone_not_starved(_failures)
+	_test_consensus_tolerance_scales_by_median(_failures)
+	_test_consensus_tie_prefers_recent(_failures)
 	_test_transit_timing(_failures)
 	_test_transit_blend(_failures)
 	# _test_grip_pose_stays_on_palm_with_full_hand, _test_transit_phase, and
@@ -35,6 +39,8 @@ func _process(_delta: float) -> bool:
 	_test_grip_pose_stays_on_palm_with_full_hand(_failures)
 	_test_transit_phase(_failures)
 	_test_transit_survives_handoff(_failures)
+	_test_transit_respects_track_rotation(_failures)
+	_test_angular_release_uses_the_guard(_failures)
 	if _failures.is_empty():
 		print("XR grab feel: PASS")
 		quit(0)
@@ -536,3 +542,137 @@ func _test_transit_survives_handoff(failures: Array[String]) -> void:
 		failures.append("releasing to zero grabbers must clear a still-armed transit, not leave in_transit() stuck true")
 
 	grab.queue_free(); hand_a.queue_free(); hand_b.queue_free()
+
+func _test_angular_deadzone_not_starved(failures: Array[String]) -> void:
+	# The angular estimate used to slice the dead-zone off raw, unguarded: on the
+	# shipped throw prefabs (throw_sample_frames = 3) that left ONE sample, and at
+	# 2 it left NONE -- zero angular velocity. Both paths now share _deadzone_slice.
+	var three: Array[Vector3] = [Vector3(0, 4, 0), Vector3(0, 8, 0), Vector3(0, 16, 0)]
+	var guarded := XRGrabInteractable._deadzone_slice(three, 2)
+	if guarded.size() != 3:
+		failures.append("a 3-sample angular buffer must keep all 3 rather than starve to 1, got %d" % guarded.size())
+	var two: Array[Vector3] = [Vector3(0, 4, 0), Vector3(0, 9, 0)]
+	var tiny := XRGrabInteractable._deadzone_slice(two, 2)
+	if tiny.is_empty():
+		failures.append("a 2-sample buffer must never slice to empty -- angular velocity would be exactly zero")
+	# A buffer large enough to afford the dead-zone still pays it in full.
+	var plenty: Array[Vector3] = []
+	for i in range(10):
+		plenty.append(Vector3(0, float(i), 0))
+	if XRGrabInteractable._deadzone_slice(plenty, 2).size() != 8:
+		failures.append("a 10-sample buffer must still drop the newest 2")
+
+func _test_consensus_tolerance_scales_by_median(failures: Array[String]) -> void:
+	# The cluster radius is tolerance * MEDIAN magnitude. Using the minimum
+	# instead silently shrinks the radius to near-nothing on any throw containing
+	# one slow sample -- the tolerance stops meaning anything physical.
+	# Here: median magnitude 5.0 -> limit 1.75; min magnitude 0.02 -> limit 0.007,
+	# which isolates every sample and returns a single-sample estimate.
+	# The slow sample is NEWEST deliberately: under the min-magnitude mutant every
+	# sample isolates into its own singleton cluster and the tie-to-recent rule
+	# then returns this one. With the slow sample oldest, the tie handed back a
+	# fast singleton and the mutation sailed through.
+	var samples: Array[Vector3] = [
+		Vector3(5.0, 0, 0),
+		Vector3(5.4, 0, 0),
+		Vector3(5.8, 0, 0),
+		Vector3(6.2, 0, 0),
+		Vector3(0.02, 0, 0),
+	]
+	var estimate := XRGrabInteractable.throw_consensus(samples, 0, 0.35)
+	if estimate.x < 5.0:
+		failures.append("consensus must cluster the fast samples via the MEDIAN magnitude, got %s" % estimate)
+
+func _test_consensus_tie_prefers_recent(failures: Array[String]) -> void:
+	# Two clusters of equal size: the design says ties go to the MORE RECENT set,
+	# because the later samples are closer to the actual release.
+	var samples: Array[Vector3] = [
+		Vector3(1.0, 0, 0),
+		Vector3(1.0, 0, 0),
+		Vector3(4.0, 0, 0),
+		Vector3(4.0, 0, 0),
+	]
+	var estimate := XRGrabInteractable.throw_consensus(samples, 0, 0.20)
+	if not is_equal_approx(estimate.x, 4.0):
+		failures.append("a tie must resolve to the more recent cluster (4.0), got %s" % estimate)
+
+func _test_transit_respects_track_rotation(failures: Array[String]) -> void:
+	# Transit used to assign target.global_transform directly, bypassing the
+	# track_rotation / track_position / movement_type gate that governs every
+	# other frame of a grab. A snap grab with track_rotation = false then twisted
+	# into the grip during transit and FROZE there, because the post-transit
+	# _apply_movement preserves whatever basis transit left behind. Every other
+	# transit fixture sets track_rotation = true, which is why nothing caught it.
+	var grab := XRGrabInteractable.new()
+	var body := Node3D.new()
+	grab.add_child(body)
+	get_root().add_child(grab)
+	grab.target_path = grab.get_path_to(body)
+	grab.snap_to_attach = true
+	grab.track_rotation = false
+	grab.transit_speed = 1.5
+	var interactor := StubInteractor.new()
+	get_root().add_child(interactor)
+	# A grip rotated well away from the object's resting basis: if transit ignored
+	# the gate, the object would visibly yaw into it.
+	interactor.pose = Transform3D(Basis(Vector3.UP, PI * 0.5), Vector3(0.3, 1.0, 0.0))
+	body.global_transform = Transform3D(Basis.IDENTITY, Vector3.ZERO)
+	var resting_basis := body.global_transform.basis
+
+	grab._notify_select_entered(interactor)
+	var worst_drift := 0.0
+	for frame in range(60):
+		grab._physics_process(1.0 / 60.0)
+		var drift := rad_to_deg(body.global_transform.basis.get_rotation_quaternion().angle_to(resting_basis.get_rotation_quaternion()))
+		worst_drift = maxf(worst_drift, drift)
+	if worst_drift > 0.5:
+		failures.append("track_rotation = false must hold the basis through transit too, drifted %.1f deg" % worst_drift)
+	if grab.in_transit():
+		failures.append("transit should have completed within 60 frames")
+
+	grab.queue_free()
+	interactor.queue_free()
+
+func _test_angular_release_uses_the_guard(failures: Array[String]) -> void:
+	# Exercises the RELEASE PATH, not just _deadzone_slice: an earlier revision
+	# guarded only the linear estimate, so the angular one still sliced raw and
+	# starved to a single stale sample on the shipped throw prefabs
+	# (throw_sample_frames = 3). Asserting the helper alone cannot see that --
+	# the defect lives in the call site.
+	var grab := XRGrabInteractable.new()
+	var body := RigidBody3D.new()
+	body.freeze = true
+	grab.add_child(body)
+	get_root().add_child(grab)
+	grab.target_path = grab.get_path_to(body)
+	grab.throw_on_release = true
+	grab.throw_sample_frames = 3
+	grab.throw_deadzone_frames = 2
+	grab.throw_angular_velocity_scale = 1.0
+	grab.max_throw_angular_speed = 100.0
+	grab._has_throw_sample = true
+	# An accelerating spin: the 3-sample mean is 10.0, the single-oldest-sample
+	# answer a starved slice would give is 4.0.
+	grab._throw_angular_samples.assign([Vector3(0, 4, 0), Vector3(0, 10, 0), Vector3(0, 16, 0)])
+	grab._throw_linear_samples.assign([Vector3(1, 0, 0), Vector3(1, 0, 0), Vector3(1, 0, 0)])
+
+	body.freeze = false
+	grab._apply_throw_on_release()
+	var spin := body.angular_velocity.y
+	if absf(spin - 10.0) > 0.01:
+		failures.append("release must average all 3 angular samples (10.0), got %.3f -- a starved slice yields 4.0" % spin)
+
+	grab.queue_free()
+
+func _test_grip_anchor_identity_when_nothing_valid(failures: Array[String]) -> void:
+	# Public static: with neither palm nor wrist valid it must hand back identity
+	# rather than whatever stale transform the tracker still carries.
+	var tracker := XRHandTracker.new()
+	tracker.has_tracking_data = true
+	tracker.set_hand_joint_transform(XRHandTracker.HAND_JOINT_WRIST, Transform3D(Basis.IDENTITY, Vector3(9, 9, 9)))
+	tracker.set_hand_joint_flags(XRHandTracker.HAND_JOINT_WRIST, 0)
+	tracker.set_hand_joint_transform(XRHandTracker.HAND_JOINT_PALM, Transform3D(Basis.IDENTITY, Vector3(9, 9, 9)))
+	tracker.set_hand_joint_flags(XRHandTracker.HAND_JOINT_PALM, 0)
+	var anchor := XRControllerHandAdapter.resolve_grip_anchor(tracker)
+	if not anchor.is_equal_approx(Transform3D.IDENTITY):
+		failures.append("no valid joint must yield identity, got %s" % anchor.origin)

@@ -173,6 +173,11 @@ static func resolve_grip_anchor(tracker: XRHandTracker) -> Transform3D:
 	var joint := XRHandTracker.HAND_JOINT_PALM
 	if not XRHandGestureProvider.joint_position_valid(tracker, joint):
 		joint = XRHandTracker.HAND_JOINT_WRIST
+		# Both current callers gate on tracking first, but this is a public
+		# static: with neither joint valid, hand back identity rather than
+		# whatever stale transform the tracker still holds.
+		if not XRHandGestureProvider.joint_position_valid(tracker, joint):
+			return Transform3D.IDENTITY
 	return tracker.get_hand_joint_transform(joint)
 
 

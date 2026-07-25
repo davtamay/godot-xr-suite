@@ -397,9 +397,12 @@ GF Task 4: complete (commits 0ec42bd..339d152, review clean both verdicts,
     to 3.0x and tracks basis determinant per frame.
   - PRE-EXISTING, for final-review triage: snap_to_attach with NO attach node
     yields _grab_offset = IDENTITY, which encodes no scale, so a scaled object
-    reverts to unit scale once plain tracking resumes. Point grabs, free grabs
-    and snap-with-node all encode scale correctly. Task 5 audits whether any
-    shipped prefab hits the degenerate config.
+    reverts to unit scale once plain tracking resumes. CORRECTED by the final
+    review: only FREE grabs encode the object's scale. When the attach/point
+    node is a DESCENDANT of the target, _compute_grab_offset reduces to
+    local_node_transform.inverse(), which is scale-free -- so point grabs and
+    snap-with-node also land at scale 1. Latent: nothing shipped combines a
+    scaled instance with an authored grip (Task 5 verified).
   - Minor, for follow-up (not blocking): the brief's arming condition
     (_grab_points.is_empty()) disables snap_to_attach transit object-wide once
     ANY grab point exists, including for a non-matching hand.
@@ -496,3 +499,38 @@ GF Task 5: complete (no code/scene changes -- audit found zero policy
     dead-zone fix itself is wrong.
   - Suites + demo boot re-verified green after the fix; git status clean
     in both repos.
+
+## Final whole-branch review (grab-feel) — findings and disposition
+Reviewer measured every claim with probes rather than inference. Three
+Criticals, all real:
+  C1 FIXED: transit assigned target.global_transform directly, bypassing the
+    track_rotation / track_position / movement_type gate that governs every
+    other frame. SnapGripCube (track_rotation=false) yawed 0->90 deg during
+    transit and FROZE there. In the earn-in scene. Transit now routes through
+    _apply_movement; _arm_transit also stops letting a rotation that will never
+    be applied lengthen the tween.
+  C2 FIXED: the dead-zone starvation guard was linear-only. Angular still
+    sliced raw, so the shipped throw prefabs (throw_sample_frames=3) fell to a
+    single stale sample (15.6 -> 13.2 rad/s measured), and at <=2 samples to
+    exactly zero. Both paths now share _deadzone_slice.
+  C3 OPEN — DAVID'S: the four authored grips (pen, blaster, spray_can,
+    coffee_cup) were authored 2026-07-19 against the retired anchor and are
+    4.58 cm stale toward the fingers (measured on the shipped bind rig). Needs
+    an editor re-authoring pass BEFORE the earn-in, or Task 6 grades grips
+    already known wrong. Preview ghost and runtime now agree, so dragging each
+    grab point until the preview looks right is now a valid procedure.
+  I1 -> EARN-IN CHECKLIST: the dead-zone costs ~12% throw speed on default
+    objects (3.20 -> 2.80 m/s measured on a ramp). Intended consequence, but a
+    real feel change delivered through an untuned knob. If throws feel weak the
+    dial is throw_deadzone_frames or throw_velocity_scale, not code.
+  I2/I3/minors FIXED: handoff test extended past settle; median-vs-min and
+    tie-break coverage added (both mutations had SURVIVED the suite);
+    transit_speed documented and allowed to reach 0 (opt out of transit);
+    consensus comment now describes the ball-around-an-anchor it actually
+    computes rather than promising a clique; the 0.5/360 factor marked as a
+    borrowed sanity check, ours to retune; resolve_grip_anchor self-contained.
+DEFECT CLASS, sixth and seventh occurrence: two of the fixes I wrote for this
+  round had fixtures too benign to fail (the median test's tie-break rescued
+  the mutant; the angular test exercised the helper rather than the release
+  wiring the defect lives in). Both caught by running the mutations, not by
+  reading. Never bank a test that has not been proven able to fail.
