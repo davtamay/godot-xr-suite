@@ -39,6 +39,8 @@ func _init() -> void:
 func _process(_delta: float) -> bool:
 	_test_grip_pose_stays_on_palm_with_full_hand(_failures)
 	_test_transit_phase(_failures)
+	_test_grab_swaps_between_hands(_failures)
+	_test_stabilization_is_bounded(_failures)
 	_test_use_axis(_failures)
 	_test_activator_publishes_use_value(_failures)
 	_test_transit_survives_handoff(_failures)
@@ -883,3 +885,117 @@ func _bend_index(tracker: XRHandTracker, bend: float) -> void:
 		tracker.set_hand_joint_transform(chain[i], Transform3D(Basis.IDENTITY, position))
 		position += direction * 0.03
 		direction = direction.rotated(Vector3.RIGHT, bend).normalized()
+
+## A stub that models a REAL interactor closely enough to prove the swap
+## releases it properly: it tracks its own _selected, the way the base
+## interactor does, so a swap that only tells the interactable would leave this
+## stub wedged -- which is what wedges a real ray.
+class SwapStub:
+	extends Node
+	var hand := 0
+	# can_hover masks the interactable's layers against the interactor's, so a
+	# stub without this is refused before the swap logic is ever reached.
+	var interaction_layers := 1
+	var _selected: Node = null
+	func get_attach_pose() -> Transform3D:
+		return Transform3D.IDENTITY
+	func _release_select() -> void:
+		var released = _selected
+		_selected = null
+		if released != null and is_instance_valid(released):
+			released._notify_select_exited(self)
+
+func _test_grab_swaps_between_hands(failures: Array[String]) -> void:
+	var grab := XRGrabInteractable.new()
+	get_root().add_child(grab)
+	grab.allow_grab_swap = true
+	grab.two_hand_grab_enabled = false
+
+	var left := SwapStub.new()
+	left.hand = 0
+	get_root().add_child(left)
+	var right := SwapStub.new()
+	right.hand = 1
+	get_root().add_child(right)
+
+	left._selected = grab
+	grab._notify_select_entered(left)
+	if grab._grabbers.size() != 1 or grab._grabbers[0] != left:
+		failures.append("the first hand must hold the object")
+
+	# The other hand takes it: exactly one holder, and it is the new one.
+	right._selected = grab
+	if not grab.can_select(right):
+		failures.append("a held object must accept the other hand when swapping is allowed")
+	grab._notify_select_entered(right)
+	if grab._grabbers.size() != 1:
+		failures.append("after a swap exactly one hand may hold it, got %d" % grab._grabbers.size())
+	elif grab._grabbers[0] != right:
+		failures.append("after a swap the NEW hand must hold it")
+
+	# ...and the old hand must not still believe it holds the object, or it
+	# stays wedged and can never hover or select anything again.
+	if left._selected != null:
+		failures.append("the previous holder must be released through its own interactor, not just dropped from the list")
+
+	# With swapping off, the second hand is refused and the first keeps it.
+	var kept := XRGrabInteractable.new()
+	get_root().add_child(kept)
+	kept.allow_grab_swap = false
+	kept.two_hand_grab_enabled = false
+	var holder := SwapStub.new()
+	get_root().add_child(holder)
+	holder._selected = kept
+	kept._notify_select_entered(holder)
+	var thief := SwapStub.new()
+	thief.hand = 1
+	get_root().add_child(thief)
+	if kept.can_select(thief):
+		failures.append("with swapping off a held object must refuse the other hand")
+	# ...and the swap must not happen even if the entry point is reached anyway:
+	# asserting only can_select leaves the second guard free to be deleted.
+	kept._notify_select_entered(thief)
+	if holder._selected == null:
+		failures.append("with swapping off the original holder must not be released")
+
+	grab.free(); left.free(); right.free()
+	kept.free(); holder.free(); thief.free()
+
+const HandAdapter := preload("res://addons/godot_xr_interaction_toolkit/runtime/input/xr_controller_hand_adapter.gd")
+
+## The stabilization anchor must cover the PINCH TRANSIENT and then let go.
+## Holding it for the whole grab freezes the aim direction, so a far-held object
+## cannot be steered -- David on device: "their movement is more rigid, i cant
+## manuever things like i was doing before".
+func _test_stabilization_is_bounded(failures: Array[String]) -> void:
+	var adapter := HandAdapter.new()
+	get_root().add_child(adapter)
+	adapter.stabilize_hand_select = true
+	adapter.stabilize_hand_select_sec = 0.18
+
+	var anchored := {"origin": Vector3(0, 1.4, 0), "direction": Vector3(0, 0, -1), "basis": Basis.IDENTITY}
+	var live := {"origin": Vector3(0, 1.4, 0), "direction": Vector3(0.5, -0.4, -1).normalized(), "basis": Basis.IDENTITY}
+	adapter._select_down[0] = true
+	adapter._select_anchor_pose[0] = anchored.duplicate()
+	adapter._select_anchor_hand_anchor[0] = null
+
+	# Inside the window: the anchored aim is what the ray gets.
+	adapter._select_held_time[0] = 0.05
+	var during: Dictionary = adapter._stabilized_hand_pose(0, live)
+	if not (during.get("direction", Vector3.ZERO) as Vector3).is_equal_approx(anchored["direction"]):
+		failures.append("inside the window the anchored aim must be used, got %s" % during.get("direction"))
+
+	# Past it: live again, so the object can be steered.
+	adapter._select_held_time[0] = 0.40
+	var after: Dictionary = adapter._stabilized_hand_pose(0, live)
+	if not (after.get("direction", Vector3.ZERO) as Vector3).is_equal_approx(live["direction"]):
+		failures.append("past the window the ray must track live so a held object can be manoeuvred, got %s" % after.get("direction"))
+
+	# 0 keeps the old unbounded behaviour for anyone who wants it.
+	adapter.stabilize_hand_select_sec = 0.0
+	adapter._select_held_time[0] = 10.0
+	var unbounded: Dictionary = adapter._stabilized_hand_pose(0, live)
+	if not (unbounded.get("direction", Vector3.ZERO) as Vector3).is_equal_approx(anchored["direction"]):
+		failures.append("0 must mean no bound, keeping the anchor for the whole hold")
+
+	adapter.free()

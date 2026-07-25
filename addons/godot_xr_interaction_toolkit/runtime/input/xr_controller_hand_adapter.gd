@@ -40,6 +40,12 @@ const SYNTHETIC_SELECT := "synthetic"
 ## Enabled in the shipped rig as of 2026-07-25 (David reported the cursor
 ## moving during the pinch). Still exported so a project can turn it off.
 @export var stabilize_hand_select := false
+## How long the anchor holds after a select starts. It exists to absorb the
+## PINCH TRANSIENT -- the drift while the fingers close -- not the whole hold:
+## anchoring for the full grab freezes the aim direction, so a far-grabbed
+## object cannot be turned or steered and the grab feels rigid. After this
+## window the ray is live again and manoeuvring works normally.
+@export_range(0.0, 1.0, 0.01) var stabilize_hand_select_sec := 0.18
 
 var _origin: Node3D
 var _controllers := {}
@@ -81,6 +87,11 @@ var _select_anchor_hand_anchor := {
 	Hand.LEFT: null,
 	Hand.RIGHT: null,
 }
+# Time spent selecting, so stabilization can be bounded to the pinch transient.
+var _select_held_time := {
+	Hand.LEFT: 0.0,
+	Hand.RIGHT: 0.0,
+}
 
 
 ## Subclasses call this from their _ready() before wiring their select source.
@@ -91,6 +102,11 @@ func _resolve_rig() -> void:
 
 
 func _process(_delta: float) -> void:
+	for hand_id in [Hand.LEFT, Hand.RIGHT]:
+		if _select_down.get(hand_id, false):
+			_select_held_time[hand_id] = _select_held_time.get(hand_id, 0.0) + _delta
+		else:
+			_select_held_time[hand_id] = 0.0
 	if synthesize_pinch_select:
 		_update_synthetic_pinch_select(Hand.LEFT)
 		_update_synthetic_pinch_select(Hand.RIGHT)
@@ -257,6 +273,13 @@ func _stabilized_hand_pose(hand_id: int, raw_pose: Dictionary) -> Dictionary:
 
 	if not _select_down.get(hand_id, false):
 		_remember_free_hand_pose(hand_id, raw_pose)
+		return raw_pose
+
+	# Bounded to the pinch transient. Holding the anchor for the whole grab
+	# froze the aim direction, so a far-held object could not be steered --
+	# David, on device: "their movement is more rigid, i cant manuever things".
+	var held_time: float = _select_held_time.get(hand_id, 0.0)
+	if stabilize_hand_select_sec > 0.0 and held_time > stabilize_hand_select_sec:
 		return raw_pose
 
 	var anchor_pose: Dictionary = _select_anchor_pose.get(hand_id, {})

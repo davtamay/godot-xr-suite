@@ -35,6 +35,14 @@ signal use_changed(value: float)
 ## free). See HandGrab. A gun/blaster uses GRIP so the index can pull a trigger.
 @export var hand_grab_style: HandGrab = HandGrab.PINCH
 
+## Grabbing a held object with the OTHER hand takes it over, instead of the
+## second hand being refused and the object staying stuck to the first. This is
+## the single-hand counterpart to two-hand grabbing, and it is what passing an
+## object between your hands is expected to do. Ignored when
+## two_hand_grab_enabled is on -- there the second hand JOINS rather than taking
+## over.
+@export var allow_grab_swap := true
+
 ## Whether a bare hand grabs this by gripping the lower fingers instead of
 ## pinching. Queried by the direct interactor.
 func uses_grip_grab() -> bool:
@@ -147,12 +155,28 @@ func can_select(interactor) -> bool:
 	if not can_hover(interactor) or _grabbers.has(interactor):
 		return false
 	if not two_hand_grab_enabled:
+		# A different hand may TAKE OVER a held object; _notify_select_entered
+		# releases the previous holder. Without this the second hand was simply
+		# refused and the object stayed stuck to the first.
+		if allow_grab_swap and not _grabbers.is_empty():
+			return true
 		return super(interactor)
 	return _grabbers.size() < 2
 
 func _notify_select_entered(interactor) -> void:
 	if _grabbers.has(interactor):
 		return
+	# Hand-to-hand swap: the previous holder lets go first, so exactly one hand
+	# owns the object and the offset/transit/use-axis state is rebuilt against
+	# the hand that now has it.
+	if allow_grab_swap and not two_hand_grab_enabled and not _grabbers.is_empty():
+		for previous in _grabbers.duplicate():
+			if previous != null and previous.has_method("_release_select"):
+				# Through the INTERACTOR, never _notify_select_exited directly:
+				# the latter leaves the old interactor still believing it holds
+				# this object, which wedges it in a selected state and is
+				# exactly how a ray ends up unable to hover anything again.
+				previous._release_select()
 	super(interactor)
 	_grabbers.append(interactor)
 	if _grabbers.size() == 1:

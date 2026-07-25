@@ -818,3 +818,31 @@ now also builds a WORLD-SPACE XRPokeButton that follows the active camera, and
 XRSceneRouter INJECTS it into every scene it opens (skipping the launcher
 itself), so every showcase is reachable and exitable in-headset without
 editing any scene file.
+
+## On-device round 3 (David): stabilization regression + swap + stuck ray
+  1. FIXED, regression from round 2: enabling stabilize_hand_select made grabs
+     RIGID. The existing feature anchored the aim for the WHOLE hold, so a
+     far-grabbed object could not be steered. It exists to absorb the pinch
+     TRANSIENT, so it is now bounded by stabilize_hand_select_sec (0.18 s);
+     past that the ray is live and manoeuvring works. 0 keeps the old
+     unbounded behaviour. Note this is the same shape as my deleted latch --
+     the difference is it now bounds the EXISTING mechanism instead of adding
+     a second one.
+  2. ADDED: allow_grab_swap (default true). Grabbing a held object with the
+     other hand takes it over instead of being refused. Releases through the
+     PREVIOUS INTERACTOR's _release_select, never _notify_select_exited --
+     the latter leaves the old interactor believing it still holds the object,
+     which wedges it. That wedge is a plausible cause of finding 3.
+  3. OPEN, not yet fixed: the ray sometimes gets stuck unable to hover/select,
+     with a SMALLER cursor, and using the other hand's ray unsticks it. The
+     small cursor is diagnostic: near_stub_length shrinks the line to a stub
+     when the ray is SUPPRESSED, so the ray is stuck in a suppressed state --
+     i.e. the arbiter has that hand in NEAR (or NONE) and never returns to
+     FAR. Prime suspects, in order: a direct interactor whose get_selected()
+     never cleared (the wedge in 2 above); XRPokeInteractor._active[hand]
+     holding a stale entry so is_poking stays true; or _hand_tracked
+     answering NONE. The Feel Check mode readout will identify which in one
+     glance -- ask David to open it when it next happens and read L/R.
+  Four mutations, all fatal after two rounds. S3 and S4 both survived first:
+  S3 because the test only checked can_select and not the entry point, S4
+  because the rigidity fix had NO adapter-level test at all.
