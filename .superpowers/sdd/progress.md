@@ -151,6 +151,21 @@ hands per segment to user://hand_traces/{rest,motion,dropout}_{left,right}.res.
 NOTE: rest-trace "lag" and motion-trace "jitter" are meaningless by
 construction; read each metric only on its matching trace kind.
 
+Task 10 progress (2026-07-24, on-device session with David over Quest Link):
+  - Six real traces captured (rest/motion/dropout x both hands) after ~8
+    failed launches whose root cause was xr/shaders/enabled missing from the
+    demo's project.godot (fe55c99 there; recipe memorised). Baselines
+    measured; sweep run (25+7 points); position_beta 0.7 -> 2.0 committed
+    with docs/hand-conditioning-results.md. Bone-dev criterion PASSES on all
+    six real traces (0.07-0.37mm vs 0.5mm ceiling). Jitter criterion passes
+    only under a frame-to-frame reformulation -- the plan's from-the-mean
+    metric is drift-dominated on real hands (SPEC CHALLENGE raised in the
+    results doc, needs David's sign-off). Lag: 1 frame left / 2 frames right,
+    metric quantized to whole frames.
+  - STILL OPEN for Task 10: on-device FEEL check of tuned params + A/B
+    toggle (the earn-in gate), WEB frame-cost measurement, right-hand
+    2-frame lag decision.
+
 ## NEXT ACTIONS, in order
 1. Task 10: baseline traces, tuning, WEB frame-cost measurement, on-device
    earn-in. REQUIRES DAVID IN A HEADSET. A/B on the WebGL path, not WebGPU. Task 10 requires David in a headset; 7-9 automatable.

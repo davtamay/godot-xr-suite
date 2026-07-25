@@ -17,9 +17,12 @@ const _HANDS := 2
 
 @export var enabled := true
 
-## Optically-tracked parameters.
+## Optically-tracked parameters. Tuned 2026-07-24 against recorded Quest Link
+## traces (docs/hand-conditioning-results.md): beta 0.7 -> 2.0 cut motion lag
+## from 53-56 ms to 18-28 ms at a 0.2% jitter cost; the sweep plateaus above
+## beta 1.5, so higher values buy nothing.
 @export var position_min_cutoff := 1.0
-@export var position_beta := 0.7
+@export var position_beta := 2.0
 @export var rotation_min_cutoff := 1.5
 @export var rotation_beta := 0.5
 ## Bone offsets converge to a stable skeleton; deliberately far lower.
