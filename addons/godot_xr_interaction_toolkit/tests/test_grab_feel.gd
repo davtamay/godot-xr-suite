@@ -248,3 +248,12 @@ func _test_transit_blend(failures: Array[String]) -> void:
 		failures.append("blend rotation at 0.5 wrong: %f rad" % mid_angle)
 	if not XRGrabInteractable.transit_blend(from, to, 1.5).origin.is_equal_approx(to.origin):
 		failures.append("alpha must clamp at 1")
+	# Scale must survive transit: Basis(Quaternion) is pure rotation, so a
+	# scaled object would otherwise snap to unit scale and never recover.
+	var scaled_to := Transform3D(Basis(Vector3.UP, PI * 0.5).scaled(Vector3(2, 2, 2)), Vector3(1, 0, 0))
+	var end_state := XRGrabInteractable.transit_blend(from, scaled_to, 1.0)
+	if not end_state.basis.get_scale().is_equal_approx(Vector3(2, 2, 2)):
+		failures.append("transit must converge to the target scale, got %s" % end_state.basis.get_scale())
+	var half := XRGrabInteractable.transit_blend(from, scaled_to, 0.5)
+	if not half.basis.get_scale().is_equal_approx(Vector3(1.5, 1.5, 1.5)):
+		failures.append("transit must interpolate scale, got %s" % half.basis.get_scale())

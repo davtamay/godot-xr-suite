@@ -1,4 +1,4 @@
-@icon("res://addons/godot_xr_interaction_toolkit/icons/xr_grab_interactable.svg")
+﻿@icon("res://addons/godot_xr_interaction_toolkit/icons/xr_grab_interactable.svg")
 class_name XRGrabInteractable
 extends "res://addons/godot_xr_interaction_toolkit/runtime/xr_base_interactable.gd"
 
@@ -462,7 +462,12 @@ static func transit_blend(from: Transform3D, to: Transform3D, alpha: float) -> T
 	var t := clampf(alpha, 0.0, 1.0)
 	var from_rotation := from.basis.orthonormalized().get_rotation_quaternion()
 	var to_rotation := to.basis.orthonormalized().get_rotation_quaternion()
-	return Transform3D(Basis(from_rotation.slerp(to_rotation, t)), from.origin.lerp(to.origin, t))
+	var blended := Basis(from_rotation.slerp(to_rotation, t))
+	# Scale rides along: Basis(Quaternion) is pure rotation, so without this a
+	# scaled object would snap to unit scale the moment transit engaged and
+	# never recover it -- the blend must converge to `to` exactly at alpha 1.
+	blended = blended.scaled(from.basis.get_scale().lerp(to.basis.get_scale(), t))
+	return Transform3D(blended, from.origin.lerp(to.origin, t))
 
 func _angular_velocity_between(from_basis: Basis, to_basis: Basis, delta: float) -> Vector3:
 	if delta <= 0.0:
