@@ -93,14 +93,10 @@ func _ready() -> void:
     _ar_button = get_node_or_null(enter_ar_button_path) as Button
     _status_label = get_node_or_null(status_label_path) as Label
     _inspect_object = get_node_or_null(inspect_object_path) as MeshInstance3D
-    _world_environment = get_node_or_null(world_environment_path) as WorldEnvironment
-    if _world_environment == null:
-        _world_environment = _find_world_environment()
     _base_transparent_bg = get_viewport().transparent_bg
     _base_clear_color = RenderingServer.get_default_clear_color()
-    if _world_environment and _world_environment.environment:
-        _base_environment_background_mode = _world_environment.environment.background_mode
-        _base_environment_background_color = _world_environment.environment.background_color
+    # Deliberately NOT resolved here -- see _resolve_world_environment.
+    _resolve_world_environment()
 
     # Zero-wiring paths, in order: adopt an XRSessionUI block if the scene has
     # one (the polished HUD, found by group - it joins in _enter_tree so it is
@@ -348,11 +344,34 @@ func _merge_provider_features(features: Array[String], method: StringName, sessi
             if not feature.is_empty() and not features.has(feature):
                 features.append(feature)
 
+## Resolved lazily and re-tried, never cached once at _ready. _ready runs during
+## add_child, which is BEFORE the tree publishes current_scene -- and
+## _find_world_environment searched exactly that. So the lookup returned null on
+## every scene the router streams in, _apply_ar_scene_mode had nothing to clear,
+## and the scene's opaque background painted straight over passthrough. On
+## device (Quest 3, WebXR immersive-ar): AR mode entered, but no room, no floor.
+func _resolve_world_environment() -> WorldEnvironment:
+    if _world_environment != null and is_instance_valid(_world_environment):
+        return _world_environment
+    var found := get_node_or_null(world_environment_path) as WorldEnvironment
+    if found == null:
+        found = _find_world_environment()
+    if found == null:
+        return null
+    _world_environment = found
+    # Capture the restore values the first time we actually have them, not at
+    # _ready -- restoring from a base that was never read would clear the
+    # scene's real background when AR mode is left.
+    if found.environment and _base_environment_background_mode < 0:
+        _base_environment_background_mode = found.environment.background_mode
+        _base_environment_background_color = found.environment.background_color
+    return _world_environment
+
 func _apply_ar_scene_mode(enabled: bool) -> void:
     get_viewport().transparent_bg = enabled if enabled else _base_transparent_bg
     RenderingServer.set_default_clear_color(Color(0, 0, 0, 0) if enabled else _base_clear_color)
 
-    if _world_environment and _world_environment.environment:
+    if _resolve_world_environment() and _world_environment.environment:
         if enabled:
             _world_environment.environment.background_mode = Environment.BG_CLEAR_COLOR
             _world_environment.environment.background_color = Color(0, 0, 0, 0)
@@ -465,10 +484,23 @@ func _build_default_ui() -> void:
 func _find_world_environment() -> WorldEnvironment:
     # Auto-find the scene's WorldEnvironment when not wired, so AR passthrough can
     # clear its background (sky/color) with no manual setup.
-    var scene := get_tree().current_scene
+    # Walks up to our own top-level ancestor rather than asking the tree for
+    # current_scene: current_scene is not published until AFTER add_child
+    # returns, so anything resolving during _ready (or during the router's
+    # add-then-publish order) reads null or the OUTGOING scene. Our own ancestry
+    # is correct the moment we are in the tree.
+    var scene: Node = self
+    while scene.get_parent() != null and scene.get_parent() != get_tree().root:
+        scene = scene.get_parent()
     if scene == null:
         return null
     var found := scene.find_children("*", "WorldEnvironment", true, false)
     if found.is_empty():
-        return null
+        # Last resort for a rig parented outside the scene it serves.
+        var current := get_tree().current_scene
+        if current == null or current == scene:
+            return null
+        found = current.find_children("*", "WorldEnvironment", true, false)
+        if found.is_empty():
+            return null
     return found[0] as WorldEnvironment

@@ -26,6 +26,10 @@ enum Mode { NONE, NEAR, FAR, TELEPORT }
 ## immediate -- latency on the way IN reads as unresponsive, latency on the way
 ## OUT reads as stable, so the damping is one-sided by design.
 @export_range(0.0, 1.0, 0.01) var near_release_dwell_sec := 0.12
+## Prints a line whenever a hand changes mode, naming the evidence that caused
+## it. Change-gated, so it is quiet until something actually moves. For live
+## on-device diagnosis; leave off in shipping scenes.
+@export var debug_log := false
 
 var _mode := [Mode.NONE, Mode.NONE]
 var _time_since_candidate := [INF, INF]
@@ -76,13 +80,47 @@ func _physics_process(delta: float) -> void:
 		var candidate := _has_near_candidate(hand)
 		# Reset on SIGHT, accumulate on absence -- see resolve_mode.
 		_time_since_candidate[hand] = 0.0 if candidate else _time_since_candidate[hand] + delta
+		var previous: int = _mode[hand]
+		var tracked := _hand_tracked(hand)
+		var teleporting := _is_teleport_aiming(hand)
 		_mode[hand] = resolve_mode(
-			_mode[hand],
-			_hand_tracked(hand),
+			previous,
+			tracked,
 			candidate,
-			_is_teleport_aiming(hand),
+			teleporting,
 			_time_since_candidate[hand],
 			near_release_dwell_sec)
+		if debug_log and _mode[hand] != previous:
+			print("[arbiter] hand=%d %s -> %s | %s" % [
+				hand, _mode_name(previous), _mode_name(_mode[hand]),
+				_evidence(hand, tracked, candidate, teleporting)])
+
+func _mode_name(mode: int) -> String:
+	match mode:
+		Mode.NEAR: return "NEAR"
+		Mode.FAR: return "FAR"
+		Mode.TELEPORT: return "TELEPORT"
+		_: return "NONE"
+
+## Names every input the decision was made from, so a stuck mode says WHICH
+## piece of evidence is holding it rather than only that it is stuck.
+func _evidence(hand: int, tracked: bool, candidate: bool, teleporting: bool) -> String:
+	var direct_selected := false
+	var direct_hovered := false
+	var direct_valid := false
+	for node in get_tree().get_nodes_in_group(XRDirectInteractor.GROUP):
+		var direct := node as XRDirectInteractor
+		if direct == null or int(direct.hand) != hand:
+			continue
+		direct_selected = direct_selected or direct.get_selected() != null
+		direct_hovered = direct_hovered or direct.get_hovered() != null
+		direct_valid = direct_valid or bool(direct.get_direct_state().get("valid", false))
+	var poking := false
+	for node in get_tree().get_nodes_in_group(XRPokeInteractor.GROUP):
+		var poke := node as XRPokeInteractor
+		poking = poking or (poke != null and poke.is_poking(hand))
+	return "tracked=%s near=%s tele=%s | direct sel=%s hov=%s valid=%s | poking=%s" % [
+		tracked, candidate, teleporting, direct_selected, direct_hovered, direct_valid, poking]
 
 func mode_for(hand: int) -> int:
 	if hand < 0 or hand >= _mode.size():

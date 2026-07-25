@@ -63,6 +63,11 @@ extends "res://addons/godot_xr_interaction_toolkit/runtime/xr_base_interactor.gd
 ## palm normal with the direction to your head). Higher = harder to hide.
 @export_range(0.0, 1.0, 0.05) var aim_pose_palm_threshold := 0.35
 var _ray_state := {"valid": false}
+## Live-diagnosis aid: prints when THIS ray starts or stops being suppressed,
+## with the reason. Change-gated. Paired with XRInteractionArbiter.debug_log.
+@export var debug_log := false
+var _debug_last_suppressed := -1
+var _debug_pose_was_empty := false
 var _poke_interactor: Node
 var _locomotion: Node
 var _grab_distance := 0.0
@@ -130,8 +135,22 @@ func _update_ray(delta := 0.0) -> void:
 
     var pose: Dictionary = _adapter.get_aim_pose(hand) if _adapter else {}
 
-    if _selected == null and (_is_suppressed_by_linked_interactor() \
-            or (hand_ray_requires_aim_pose and _suppressed_by_hand_pose())):
+    var linked_suppressed := _is_suppressed_by_linked_interactor()
+    var held_near := _held_object_is_in_hand()
+    var pose_suppressed: bool = hand_ray_requires_aim_pose and _suppressed_by_hand_pose()
+    var suppressed: bool = (_selected == null or held_near) \
+            and (linked_suppressed or held_near or pose_suppressed)
+    if debug_log and int(suppressed) != _debug_last_suppressed:
+        _debug_last_suppressed = int(suppressed)
+        var dbg := _resolve_arbiter()
+        print("[ray] hand=%d suppressed=%s | linked=%s held_near=%s pose_gate=%s selected=%s pose_empty=%s | arbiter=%s" % [
+            hand, suppressed, linked_suppressed, held_near, pose_suppressed,
+            _selected != null, pose.is_empty(),
+            "none" if dbg == null else dbg._mode_name(dbg.mode_for(hand))])
+    if debug_log and pose.is_empty() != _debug_pose_was_empty:
+        _debug_pose_was_empty = pose.is_empty()
+        print("[ray] hand=%d aim_pose_empty=%s (empty means no ray and no hover at all)" % [hand, pose.is_empty()])
+    if suppressed:
         # Near-far switch (Unity): don't leave a long ray pointing off-angle
         # during near interaction - SHRINK the line to a short stub at the
         # hand (near_stub_length; 0 = hide fully). No far cursor, no select.
