@@ -62,6 +62,24 @@ Task 2: complete (commit dd0114d, review clean both verdicts, no Critical or
     the specific trap this task carried, since XRPokeProfile's defaults
     deliberately match XRPokeEvaluator's.
 
+Task 3: IN PROGRESS (implementer commit b96cea5; fix pass 1 in flight)
+  - PRE-EXISTING BUG FOUND, and it is a real one. xr_pokeable.gd's
+    _local_normal() has its two Z arms inverted: Godot's Vector3.BACK is
+    (0,0,+1), not (0,0,-1) as its trailing comments claim, so Z_PLUS returned
+    (0,0,-1) and Z_MINUS returned (0,0,+1). Z_PLUS is the DEFAULT face, so the
+    default configuration measured depth with the wrong sign. Verified
+    empirically on this Godot build, not from memory.
+  - This survived because XRPokeable has no consumers and had no tests. It is
+    the strongest evidence so far for the design's claim that XRPokeable was
+    the least-proven of the three poke surfaces.
+  - The implementer's first fix negated at the call site
+    (normal := -_local_normal()), which corrects the two Z arms and INVERTS the
+    four X/Y arms that were already right. The suite stayed green because every
+    fixture used the default Z_PLUS face. Sent back: repair the function, and
+    add a non-Z-face test, which is the assertion that would have caught it.
+  - Plan deviation authorised by controller: the brief said preserve
+    _local_normal byte-for-byte. That rested on the function being correct.
+
 ### Minor findings deferred to the final whole-branch review
 - Task 1: is_pressed() / is_source_pressed() are only exercised indirectly
   through event assertions; no direct call in any test.
