@@ -19,8 +19,20 @@ enum Face { X_PLUS, X_MINUS, Y_PLUS, Y_MINUS, Z_PLUS, Z_MINUS }
 
 signal pressed(hand: int)
 signal released(hand: int)
+## An aborted press: the fingertip left the face while still down. Buttons
+## conventionally fire on RELEASE, so without this a slide-off ACTIVATES them.
+signal cancelled(hand: int)
+## Opt-in drag reporting, in metres along the face's own u/v axes.
+signal dragged(hand: int, delta: Vector2)
+
+const _Evaluator := preload("res://addons/godot_xr_interaction_toolkit/runtime/poke/xr_poke_evaluator.gd")
 
 @export var poke_face := Face.Z_PLUS
+
+@export_group("Poke Feel")
+## Assign to take press depth and the approach gate from one project-wide
+## resource. When set it WINS over the exports below.
+@export var poke_profile: XRPokeProfile
 ## Finger must come within this depth of the surface to press, and retract past
 ## the second to release (hysteresis stops flicker). Metres.
 @export var press_depth := 0.012
@@ -28,9 +40,35 @@ signal released(hand: int)
 ## Half-extents of the pokeable face (metres) - a poke outside this rectangle is
 ## ignored. Zero = no bounds (the whole plane pokes).
 @export var half_size := Vector2(0.05, 0.05)
+## Require the fingertip to have been seen in FRONT of this face before it can
+## press, so a hand sweeping sideways across a row of buttons does not press
+## each one it crosses.
+@export var require_entry_through_face := true
+## Travel must point inward within this angle at the moment of crossing.
+@export_range(0.0, 90.0, 1.0) var max_approach_angle := 60.0
+## Below this displacement the direction is noise and the angle test abstains.
+@export_range(0.0, 0.02, 0.0005) var min_approach_travel := 0.003
+## Report drags instead of activating on let-go - for handles, not buttons.
+@export var interpret_drag := false
+@export_range(0.001, 0.1, 0.001) var drag_threshold := 0.01
 
 var _body: CollisionObject3D
-var _down := {}  # hand -> bool
+var _evaluator: XRPokeEvaluator
+var _pins := {}  # hand -> world-space pinned point
+
+
+func _sync_evaluator() -> void:
+	if _evaluator == null:
+		_evaluator = _Evaluator.new()
+	_evaluator.press_depth = press_depth
+	_evaluator.release_depth = release_depth
+	_evaluator.half_size = half_size
+	_evaluator.require_entry_through_face = require_entry_through_face
+	_evaluator.max_approach_angle = max_approach_angle
+	_evaluator.min_approach_travel = min_approach_travel
+	_evaluator.interpret_drag = interpret_drag
+	_evaluator.drag_threshold = drag_threshold
+	_evaluator.apply_profile(poke_profile)
 
 
 func _enter_tree() -> void:
@@ -58,41 +96,58 @@ func _get_configuration_warnings() -> PackedStringArray:
 	return PackedStringArray(["Place this inside a body with a collider (StaticBody3D/Area3D)."])
 
 
-## Driven by the interactor with the world-space fingertip. Emits pressed on
-## entry past press_depth and released on retract past release_depth.
+## Driven by the interactor with the world-space fingertip.
 func poke_update(hand: int, world_point: Vector3) -> void:
+	_sync_evaluator()
 	var local := global_transform.affine_inverse() * world_point
-	# Distance in FRONT of the surface along the chosen face normal, and the
-	# in-plane offset (for the bounds rectangle).
-	var normal := _local_normal()
+	# _local_normal()'s Z_PLUS/Z_MINUS cases return the PRESS direction (see
+	# class doc: default faces -Z), the opposite sign convention from its own
+	# "outward normal" docstring and from the X/Y cases. The canonical frame
+	# needs the true outward direction (+Z = distance IN FRONT), so negate.
+	var normal := -_local_normal()
+	var u_axis := _plane_u(normal)
+	var v_axis := _plane_v(normal)
 	var depth := local.dot(normal)
 	var planar := local - normal * depth
-	if half_size.x > 0.0 or half_size.y > 0.0:
-		var u := absf(planar.dot(_plane_u(normal)))
-		var v := absf(planar.dot(_plane_v(normal)))
-		if u > half_size.x or v > half_size.y:
-			poke_end(hand)
-			return
-	if depth < -release_depth or depth > release_depth * 6.0:
-		poke_end(hand)
-		return
-	if _down.get(hand, false):
-		if depth > release_depth:
-			_down[hand] = false
-			released.emit(hand)
-	elif depth <= press_depth:
-		_down[hand] = true
-		pressed.emit(hand)
+	# Canonical frame: +Z outward, z = distance in front of the surface.
+	var canonical := Vector3(planar.dot(u_axis), planar.dot(v_axis), depth)
+	var result: Dictionary = _evaluator.evaluate(hand, canonical)
+	var pinned: Vector3 = result["pinned_point"]
+	_pins[hand] = global_transform * (u_axis * pinned.x + v_axis * pinned.y + normal * pinned.z)
+	_emit(hand, result)
 
 
+## The poke source lost its point (hand untracked / moved away).
 func poke_end(hand: int) -> void:
-	if _down.get(hand, false):
-		_down[hand] = false
-		released.emit(hand)
+	if _evaluator == null:
+		return
+	_pins.erase(hand)
+	var event: int = _evaluator.forget(hand)
+	if event == _Evaluator.Event.CANCELLED:
+		cancelled.emit(hand)
 
 
 func is_pressed() -> bool:
-	return _down.values().has(true)
+	return _evaluator != null and _evaluator.is_pressed()
+
+
+## World-space point pinned to this face while the hand is in contact, so a
+## marker can stop ON the surface instead of sinking through it. INF = none.
+func get_poke_pin(hand: int) -> Vector3:
+	return _pins.get(hand, Vector3.INF)
+
+
+func _emit(hand: int, result: Dictionary) -> void:
+	match int(result["event"]):
+		_Evaluator.Event.PRESSED:
+			pressed.emit(hand)
+		_Evaluator.Event.RELEASED:
+			released.emit(hand)
+		_Evaluator.Event.CANCELLED:
+			_pins.erase(hand)
+			cancelled.emit(hand)
+		_Evaluator.Event.DRAG:
+			dragged.emit(hand, result["drag_delta"])
 
 
 ## Outward face normal in local space (the finger presses toward -normal).

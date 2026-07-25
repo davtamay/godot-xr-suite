@@ -5,8 +5,10 @@ extends SceneTree
 
 const XRPokeEvaluator := preload("res://addons/godot_xr_interaction_toolkit/runtime/poke/xr_poke_evaluator.gd")
 const XRPokeProfile := preload("res://addons/godot_xr_interaction_toolkit/runtime/poke/xr_poke_profile.gd")
+const XRPokeableScript := preload("res://addons/godot_xr_interaction_toolkit/runtime/xr_pokeable.gd")
 
 var _failures: Array[String] = []
+var _tree_tests_done := false
 
 
 func _init() -> void:
@@ -27,14 +29,65 @@ func _init() -> void:
 	_test_apply_profile_include_depth_false(_failures)
 	_test_apply_profile_null_changes_nothing(_failures)
 	_test_mixed_axis_half_size(_failures)
+
+
+func _process(_delta: float) -> bool:
+	if _tree_tests_done:
+		return true
+	_tree_tests_done = true
+	_test_pokeable_emits_cancelled_on_slide_off(_failures)
+	_test_pokeable_reports_a_pin(_failures)
 	if _failures.is_empty():
 		print("XR poke fidelity: PASS")
 		quit(0)
-		return
+		return true
 	for failure in _failures:
 		printerr("FAIL: %s" % failure)
 	printerr("XR poke fidelity: %d FAILURE(S)" % _failures.size())
 	quit(1)
+	return true
+
+
+## Build a pokeable at the origin, facing +Z, parented to a body so its
+## self-wiring finds one.
+func _make_pokeable() -> Node3D:
+	var body := StaticBody3D.new()
+	get_root().add_child(body)
+	var pokeable := Node3D.new()
+	pokeable.set_script(XRPokeableScript)
+	body.add_child(pokeable)
+	return pokeable
+
+
+func _test_pokeable_emits_cancelled_on_slide_off(failures: Array[String]) -> void:
+	var pokeable := _make_pokeable()
+	var seen := {"pressed": 0, "released": 0, "cancelled": 0}
+	pokeable.pressed.connect(func(_hand): seen["pressed"] += 1)
+	pokeable.released.connect(func(_hand): seen["released"] += 1)
+	pokeable.cancelled.connect(func(_hand): seen["cancelled"] += 1)
+	# Face normal is +Z by default, so world +Z is "in front".
+	pokeable.poke_update(0, Vector3(0.0, 0.0, 0.050))
+	pokeable.poke_update(0, Vector3(0.0, 0.0, 0.008))
+	pokeable.poke_update(0, Vector3(0.080, 0.0, 0.008))
+	_check(failures, seen["pressed"] == 1,
+			"pokeable: expected 1 pressed, got %d" % seen["pressed"])
+	_check(failures, seen["cancelled"] == 1,
+			"pokeable: expected 1 cancelled, got %d" % seen["cancelled"])
+	_check(failures, seen["released"] == 0,
+			"pokeable: a slide-off must NOT emit released, got %d" % seen["released"])
+	pokeable.get_parent().queue_free()
+
+
+func _test_pokeable_reports_a_pin(failures: Array[String]) -> void:
+	var pokeable := _make_pokeable()
+	pokeable.poke_update(0, Vector3(0.0, 0.0, 0.050))
+	pokeable.poke_update(0, Vector3(0.010, 0.0, -0.020))
+	var pin: Vector3 = pokeable.get_poke_pin(0)
+	_check(failures, pin != Vector3.INF,
+			"pokeable: expected a pin while in contact")
+	_check(failures, is_equal_approx(pin.z, 0.0),
+			"pokeable: the pin must sit ON the surface, got z=%f" % pin.z)
+	pokeable.get_parent().queue_free()
 
 
 ## A default evaluator: XRPokeable's shipped thresholds.
