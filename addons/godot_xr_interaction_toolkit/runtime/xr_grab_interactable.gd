@@ -146,6 +146,19 @@ func _is_primary_hand(source_hand: int) -> bool:
 	var primary = _grabbers[0]
 	return primary != null and "hand" in primary and int(primary.hand) == source_hand
 
+## True when this object is held, and every holder is a DIFFERENT hand from the
+## incoming interactor. An interactor with no hand (a screen/mouse ray) never
+## swaps, because there is no hand to swap away from.
+func _held_by_other_hand(interactor) -> bool:
+	if _grabbers.is_empty() or interactor == null or not ("hand" in interactor):
+		return false
+	for holder in _grabbers:
+		if holder == null or not ("hand" in holder):
+			return false
+		if int(holder.hand) == int(interactor.hand):
+			return false
+	return true
+
 func get_target() -> Node3D:
 	if target_path.is_empty():
 		return self
@@ -155,10 +168,12 @@ func can_select(interactor) -> bool:
 	if not can_hover(interactor) or _grabbers.has(interactor):
 		return false
 	if not two_hand_grab_enabled:
-		# A different hand may TAKE OVER a held object; _notify_select_entered
-		# releases the previous holder. Without this the second hand was simply
-		# refused and the object stayed stuck to the first.
-		if allow_grab_swap and not _grabbers.is_empty():
+		# A different HAND may take over a held object; _notify_select_entered
+		# releases the previous holder. Deliberately hand-based, not
+		# interactor-based: allowing any other interactor let the SAME hand's
+		# far ray hover and steal what its own near grab was holding, which
+		# also kept the ray cursor drawn over an object already in the hand.
+		if allow_grab_swap and _held_by_other_hand(interactor):
 			return true
 		return super(interactor)
 	return _grabbers.size() < 2
@@ -169,7 +184,7 @@ func _notify_select_entered(interactor) -> void:
 	# Hand-to-hand swap: the previous holder lets go first, so exactly one hand
 	# owns the object and the offset/transit/use-axis state is rebuilt against
 	# the hand that now has it.
-	if allow_grab_swap and not two_hand_grab_enabled and not _grabbers.is_empty():
+	if allow_grab_swap and not two_hand_grab_enabled and _held_by_other_hand(interactor):
 		for previous in _grabbers.duplicate():
 			if previous != null and previous.has_method("_release_select"):
 				# Through the INTERACTOR, never _notify_select_exited directly:

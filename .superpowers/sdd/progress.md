@@ -858,3 +858,15 @@ editing any scene file.
      Two mutations fatal (no self-heal; heals even while genuinely held).
      Still unconfirmed on device -- if it recurs, the Feel Check mode readout
      is the next probe.
+  4. FIXED, and it was MY regression from the swap: allow_grab_swap made
+     can_select return true for ANY already-held object, so a hand's own far
+     ray could hover and steal what its own near grab was holding -- which
+     also left the ray cursor drawn over an object already in the hand. David
+     said "swapping what HAND is grabbing it"; I implemented "any different
+     interactor". Now hand-based (_held_by_other_hand): an interactor with no
+     hand never swaps, and same-hand interactors never steal from each other.
+  5. ADDED, David's stated intent: hide_ray_when_held_within (0.25 m). A held
+     object that ends up within arm's reach is near interaction by any
+     sensible reading, so the ray and cursor stand down even though this ray
+     is what holds it -- reeling something in should not leave a ray drawn
+     through the thing in your hand. The grab itself is untouched.

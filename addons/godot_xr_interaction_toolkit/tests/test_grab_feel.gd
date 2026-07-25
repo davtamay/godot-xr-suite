@@ -939,6 +939,16 @@ func _test_grab_swaps_between_hands(failures: Array[String]) -> void:
 	if left._selected != null:
 		failures.append("the previous holder must be released through its own interactor, not just dropped from the list")
 
+	# The SAME hand's other interactor must never swap: a hand's far ray stealing
+	# what its own near grab is holding is what kept the ray cursor drawn over an
+	# object already in the hand.
+	var same_hand_ray := SwapStub.new()
+	same_hand_ray.hand = right.hand
+	get_root().add_child(same_hand_ray)
+	if grab.can_select(same_hand_ray):
+		failures.append("the same hand's other interactor must not be able to take over its own grab")
+	same_hand_ray.free()
+
 	# With swapping off, the second hand is refused and the first keeps it.
 	var kept := XRGrabInteractable.new()
 	get_root().add_child(kept)

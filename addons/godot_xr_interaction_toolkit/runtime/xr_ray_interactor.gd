@@ -48,6 +48,11 @@ extends "res://addons/godot_xr_interaction_toolkit/runtime/xr_base_interactor.gd
 ## while you poke. Set > 0 to instead SHRINK the ray to a stub of that length
 ## at the hand (Unity Near-Far look) rather than hiding it fully.
 @export var near_stub_length := 0.0
+## A held object this close to the hand is NEAR interaction, so the ray and its
+## cursor stand down even though this ray is what is holding it -- reeling
+## something into your hand should not leave a ray drawn through it. The grab
+## itself is untouched; only the visual and the hover/cursor stop. 0 disables.
+@export_range(0.0, 1.0, 0.01) var hide_ray_when_held_within := 0.25
 ## Unity/Meta hand-ray rule: a BARE HAND only shows the ray when it's tracked and
 ## in an aim posture (palm facing away from your head). Turn your palm toward your
 ## face, drop your hand, or lose tracking and the ray hides. Controllers always
@@ -305,6 +310,26 @@ func _resolve_suppression_interactor() -> void:
     if suppress_interactor_path.is_empty():
         return
     _suppress_interactor = get_node_or_null(suppress_interactor_path)
+
+## True when this ray is holding something that has ended up within arm's reach
+## -- a far grab reeled in, or an object handed over. At that point it is near
+## interaction by any sensible reading, so the ray should not still be drawn
+## through the thing in your hand.
+func _held_object_is_in_hand() -> bool:
+    if _selected == null or hide_ray_when_held_within <= 0.0 or _adapter == null:
+        return false
+    var target: Node3D = null
+    if _selected.has_method("get_target"):
+        target = _selected.get_target() as Node3D
+    else:
+        target = _selected as Node3D
+    if target == null:
+        return false
+    var grip: Dictionary = _adapter.get_grip_pose(hand)
+    if grip.is_empty():
+        return false
+    return (grip["origin"] as Vector3).distance_to(target.global_position) <= hide_ray_when_held_within
+
 
 func _is_suppressed_by_linked_interactor() -> bool:
     # The arbiter owns this decision: one rule in one place. The shipped rig
