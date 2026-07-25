@@ -348,3 +348,11 @@ GF Task 1: complete (commits a76abdd..cd80922, review clean both verdicts,
   bind[PALM] confirmed dead data, aligned anyway. CARRIED: preview-ghost
   change untestable headless -- David eyeballs a grab-point preview in the
   editor once; folded into the Task 6 checklist.
+GF Task 2: complete (commits 9704a50..3101a13, review clean both verdicts,
+  one fix round). Brief's mutation (a) SURVIVED as written -- every original
+  vector let consensus alone reject the tail, so the dead-zone had zero
+  observable coverage. Killed with a dead-zone-decisive vector (4 clean vs 5
+  slowdown-tail: tail WINS consensus unless the newest 2 are dropped).
+  Same defect class as GF Task 1's: a test that passes for the wrong reason.
+  Reviewer independently hand-traced even-size median, deadzone>=size slice
+  clamp, and tie-to-recent anchor ordering -- no bugs.
