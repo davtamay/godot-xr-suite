@@ -162,9 +162,25 @@ Task 10 progress (2026-07-24, on-device session with David over Quest Link):
     metric is drift-dominated on real hands (SPEC CHALLENGE raised in the
     results doc, needs David's sign-off). Lag: 1 frame left / 2 frames right,
     metric quantized to whole frames.
-  - STILL OPEN for Task 10: on-device FEEL check of tuned params + A/B
-    toggle (the earn-in gate), WEB frame-cost measurement, right-hand
-    2-frame lag decision.
+  - FEEL CHECK PASSED (David, on-device, same day): extensive A/B via the
+    feel_check workshop scene (~40 toggle flips). All three discriminating
+    tests pass -- draw-station line quality, dropout freeze test (the
+    reviewer's Critical confirmed dead on-device), throw release accuracy.
+    Tuned params validated. Earn-in for hand conditioning: MET.
+  - Two NEW on-device findings, classification pending an A/B bisect:
+    (a) grabbed cubes snap to the WRIST rather than the hand -- either the
+        grab code's palm->wrist fallback firing (palm joint invalid through
+        some path) or pre-existing anchor behaviour;
+    (b) microgesture teleport arc unreliable, sometimes "stuck on hand" --
+        likely recognizer reliability (the historically rolled-back area)
+        and/or the 3 s intent timeout reading as stuck. NOTE: any change here
+        touches on-device-tuned behaviour and needs its own earn-in.
+  - David's next feature interest: ISDK-style near/far interaction (shoulder
+    -anchored ray, conical scoring, hysteresis, near/far arbitration).
+    Technique-level only -- Oculus SDK License forbids code replication.
+    Backlog inventory from 54c7562 is the starting input.
+  - STILL OPEN for Task 10: WEB frame-cost measurement, right-hand 2-frame
+    lag decision.
 
 ## NEXT ACTIONS, in order
 1. Task 10: baseline traces, tuning, WEB frame-cost measurement, on-device
