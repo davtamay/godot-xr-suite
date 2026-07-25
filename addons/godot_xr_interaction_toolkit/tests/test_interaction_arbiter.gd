@@ -21,6 +21,7 @@ func _init() -> void:
 func _process(_delta: float) -> bool:
 	_test_backcompat_without_arbiter(_failures)
 	_test_consult_with_arbiter(_failures)
+	_test_teleport_exit_routes(_failures)
 	if _failures.is_empty():
 		print("XR interaction arbiter: PASS")
 		quit(0)
@@ -176,5 +177,53 @@ func _test_consult_with_arbiter(failures: Array[String]) -> void:
 	arbiter.enabled = false
 	if ray._is_suppressed_by_linked_interactor():
 		failures.append("a disabled arbiter must not suppress -- the A/B switch would strand the ray off")
+
+	host.queue_free()
+
+const Locomotion := preload("res://addons/godot_xr_interaction_toolkit/runtime/xr_locomotion.gd")
+
+## The reported on-device bug in test form: the arc must not outlive the
+## gesture. Drives XRLocomotion's real intent API rather than simulating a
+## microgesture, and checks EVERY exit route -- a state that is entered by one
+## path and left by only some of them is exactly how an arc gets stuck.
+func _test_teleport_exit_routes(failures: Array[String]) -> void:
+	var host := Node3D.new()
+	get_root().add_child(host)
+	var arbiter := Arbiter.new()
+	host.add_child(arbiter)
+	var locomotion := Locomotion.new()
+	host.add_child(locomotion)
+	locomotion.teleport_enabled = true
+
+	# Entry.
+	locomotion.begin_teleport_aim(0)
+	if not locomotion.is_aiming(0):
+		failures.append("begin_teleport_aim must start an aim; the rest of this test cannot run")
+		host.queue_free()
+		return
+	if Arbiter.resolve_mode(Arbiter.Mode.FAR, true, false, locomotion.is_aiming(0), 10.0, 0.12) != Arbiter.Mode.TELEPORT:
+		failures.append("an active aim must put the hand in TELEPORT")
+
+	# Exit route 1: explicit cancel.
+	locomotion.cancel_teleport(0)
+	if locomotion.is_aiming(0):
+		failures.append("cancel_teleport must end the aim")
+	if Arbiter.resolve_mode(Arbiter.Mode.TELEPORT, true, false, locomotion.is_aiming(0), 10.0, 0.12) == Arbiter.Mode.TELEPORT:
+		failures.append("cancelling must leave TELEPORT")
+
+	# Exit route 2: commit (no valid target here, so it just ends the aim).
+	locomotion.begin_teleport_aim(0)
+	locomotion.commit_teleport(0)
+	if locomotion.is_aiming(0):
+		failures.append("commit_teleport must end the aim even with no valid target")
+	if Arbiter.resolve_mode(Arbiter.Mode.TELEPORT, true, false, locomotion.is_aiming(0), 10.0, 0.12) == Arbiter.Mode.TELEPORT:
+		failures.append("committing must leave TELEPORT")
+
+	# Exit route 3: tracking loss while aiming -- the hand is gone, so nothing
+	# is being aimed regardless of what locomotion still believes.
+	locomotion.begin_teleport_aim(0)
+	if Arbiter.resolve_mode(Arbiter.Mode.TELEPORT, false, false, locomotion.is_aiming(0), 10.0, 0.12) != Arbiter.Mode.NONE:
+		failures.append("losing tracking mid-aim must leave TELEPORT")
+	locomotion.cancel_teleport(0)
 
 	host.queue_free()

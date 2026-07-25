@@ -655,3 +655,13 @@ IA Task 2: complete. Ray and poke interactors consult the arbiter when one
   - Scene-based tests had to be deferred to _process: a node added to
     get_root() during _init() is not yet inside the tree and get_tree()
     lookups assert. Same constraint test_grab_feel.gd already documents.
+IA Task 3: complete. Teleport exit coverage + earn-in dial.
+  - Every exit route is asserted, not just the happy one: cancel, commit, and
+    tracking-loss-mid-aim. The reported bug is a state entered by one path and
+    left by only some, so partial coverage would reproduce it exactly.
+  - feel_check gains an arbiter on/off dial AND a live per-hand mode readout
+    (L NEAR / R FAR / TELE), so the state machine is legible in the headset
+    rather than inferred from what the ray happens to be doing.
+  - The scene builds its own arbiter: it is opt-in, so the rig prefab does not
+    carry one and the earn-in scene must supply it.
+READY FOR: whole-branch review (strongest model), then David's earn-in.
