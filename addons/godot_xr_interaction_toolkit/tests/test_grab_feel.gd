@@ -22,6 +22,7 @@ func _init() -> void:
 	_test_grab_point_bind_palm_uses_metacarpal_center(_failures)
 	_test_simulator_palm_uses_metacarpal_center(_failures)
 	_test_throw_consensus(_failures)
+	_test_throw_consensus_small_buffer_not_starved(_failures)
 	_test_transit_timing(_failures)
 	_test_transit_blend(_failures)
 	# _test_grip_pose_stays_on_palm_with_full_hand, _test_transit_phase, and
@@ -231,6 +232,27 @@ func _test_throw_consensus(failures: Array[String]) -> void:
 	var dv := XRGrabInteractable.throw_consensus(decisive, 2, 0.35)
 	if dv.distance_to(Vector3(2, 1, 0)) > 0.05:
 		failures.append("dead-zone must keep the slowdown tail from winning consensus: %s" % dv)
+
+## Coordinator-flagged regression: throw_sample_frames=3 (throwable.tscn,
+## throw_station.tscn's Block1-4) with the default throw_deadzone_frames=2
+## leaves only 1 usable sample after an UNGUARDED dead-zone slice, so
+## _mean_of([oldest]) = the single oldest, stale sample -- strictly worse
+## than the pre-branch behaviour, which averaged all 3. Two clean (oldest)
+## samples plus one deliberately different (newest) sample makes the 1-sample
+## and 3-sample answers differ by a measurable, exact amount: an unguarded
+## slice returns the clean value alone; a guarded slice (dead-zone shrunk to
+## keep >=3 usable) returns the mean of all three, pulled toward the newest.
+func _test_throw_consensus_small_buffer_not_starved(failures: Array[String]) -> void:
+	var clean := Vector3(2, 1, 0)
+	var different := Vector3(5, 1, 0)
+	var small: Array[Vector3] = [clean, clean, different]
+	var expected_mean := (clean + clean + different) / 3.0  # (3, 1, 0)
+	var starved := clean  # what an unguarded slice(0, 1) would return
+	var result := XRGrabInteractable.throw_consensus(small, 2, 0.35)
+	if not result.is_equal_approx(expected_mean):
+		failures.append("3-sample buffer with deadzone_frames=2 must shrink the dead-zone and use all 3 samples: expected %s, got %s" % [expected_mean, result])
+	if result.is_equal_approx(starved):
+		failures.append("3-sample buffer was starved down to the single oldest sample (%s) -- dead-zone guard did not engage" % starved)
 
 func _test_transit_timing(failures: Array[String]) -> void:
 	var origin := Transform3D.IDENTITY

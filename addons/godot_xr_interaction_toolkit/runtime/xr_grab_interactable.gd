@@ -467,10 +467,17 @@ func _average_throw_samples(samples: Array[Vector3]) -> Vector3:
 ## the mean of the largest set of mutually agreeing samples. Two samples agree
 ## when their difference is under tolerance * median sample magnitude. Ties go
 ## to the more recent set. Fewer than 4 usable samples: plain mean of them.
+## The dead-zone itself shrinks when the buffer is too small to afford it (at
+## least 3 samples stay usable), so a small throw_sample_frames buffer is
+## never starved down to a single stale sample.
 static func throw_consensus(samples: Array[Vector3], deadzone_frames: int, tolerance: float) -> Vector3:
 	if samples.is_empty():
 		return Vector3.ZERO
-	var usable := samples.slice(0, maxi(0, samples.size() - deadzone_frames))
+	# A small buffer cannot afford the full dead-zone: dropping the newest
+	# frames from a 3-sample buffer would leave a single stale sample, which is
+	# worse than the plain mean it replaced. Shrink the dead-zone instead.
+	var deadzone := mini(deadzone_frames, maxi(0, samples.size() - 3))
+	var usable := samples.slice(0, maxi(0, samples.size() - deadzone))
 	if usable.is_empty():
 		usable = samples.duplicate()
 	if usable.size() < 4:
