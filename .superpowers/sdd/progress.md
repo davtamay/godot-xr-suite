@@ -314,4 +314,28 @@ same fix.
 **Suites:** `test_grab_feel.gd` PASS, `test_hand_conditioning.gd` PASS,
 `test_gesture_foundation.gd` PASS, all after the anchor-origin change.
 
-Status: complete. Commit: see task-1-report.md.
+**Fix round (reviewer feedback):** verified the authoritative palm formula
+first - OpenXR's `XR_HAND_JOINT_PALM_EXT` = midpoint(MIDDLE_METACARPAL,
+MIDDLE_FINGER_PHALANX_PROXIMAL), i.e. the center of the middle metacarpal
+bone, NOT wrist-involved at all (Meta OpenXR SDK implementation notes +
+godot-proposals#13876). Three sites still used the retired
+wrist<->metacarpal midpoint and were aligned to the real formula:
+- `xr_grab_point.gd::_rebuild_hand_preview` (editor Preview Hand ghost) -
+  fixed; untestable headless by design (`Engine.is_editor_hint()` guard
+  makes it a no-op outside the editor), documented in task-1-report.md
+  rather than shipping a fake test.
+- `xr_grab_point.gd::_build_bind`'s `bind[PALM]` - traced downstream: dead
+  data, nothing in `xr_hand_pose_math.gd` or `_pose_skeleton`'s write-back
+  reads `HAND_JOINT_PALM`. Aligned anyway at zero behavioral risk. Test:
+  `_test_grab_point_bind_palm_uses_metacarpal_center`.
+- `xr_simulator.gd`'s fake-tracker PALM synthesis - materially misplaced
+  (same systematic error as the original bug), fixed. Test:
+  `_test_simulator_palm_uses_metacarpal_center`, against the REAL
+  `_load_bind_skeletons()` asset-loading path (confirmed headless-safe: no
+  tree/editor dependency).
+
+Both new assertions mutation-proven (reverted each to the retired formula ->
+FAIL -> reverted back -> PASS). All three suites re-confirmed green after
+the fix round.
+
+Status: complete (both submission and fix round). Commit: see task-1-report.md.

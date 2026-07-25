@@ -4,11 +4,14 @@ extends SceneTree
 ## Run: godot --headless --xr-mode off --path <demo> --script res://addons/godot_xr_interaction_toolkit/tests/test_grab_feel.gd
 
 const XRControllerHandAdapter := preload("res://addons/godot_xr_interaction_toolkit/runtime/input/xr_controller_hand_adapter.gd")
+const XRSimulator := preload("res://addons/godot_webxr_kit/runtime/xr_simulator.gd")
 
 var _failures: Array[String] = []
 
 func _init() -> void:
 	_test_grip_anchor_prefers_palm(_failures)
+	_test_grab_point_bind_palm_uses_metacarpal_center(_failures)
+	_test_simulator_palm_uses_metacarpal_center(_failures)
 	# _test_grip_pose_stays_on_palm_with_full_hand needs a live Node3D.global_transform,
 	# which asserts "!is_inside_tree()" if read this early: a node added to
 	# get_root() during _init() is not yet inside the tree (confirmed empirically -
@@ -43,6 +46,67 @@ func _test_grip_anchor_prefers_palm(failures: Array[String]) -> void:
 	var wrist_anchor := XRControllerHandAdapter.resolve_grip_anchor(_make_tracker(false))
 	if not wrist_anchor.origin.is_equal_approx(Vector3(0, 1, 0)):
 		failures.append("grip anchor must fall back to the WRIST when the palm is invalid, got %s" % wrist_anchor.origin)
+
+## Fix-round regression (reviewer-found cross-file divergence): XRGrabPoint's
+## Preview Hand pose math builds its own wrist-relative "bind" per joint, and
+## bind[PALM] used the same retired wrist<->metacarpal midpoint. Aligned it to
+## OpenXR's real XR_HAND_JOINT_PALM_EXT convention: the midpoint between the
+## middle metacarpal joint and the middle finger's PROXIMAL PHALANX joint (the
+## center of the metacarpal bone), not the wrist. A synthetic 3-bone skeleton
+## keeps this independent of the shipped hand model asset.
+func _test_grab_point_bind_palm_uses_metacarpal_center(failures: Array[String]) -> void:
+	var skeleton := Skeleton3D.new()
+	var wrist_bone := skeleton.add_bone("wrist")
+	var metacarpal_bone := skeleton.add_bone("middle_mc")
+	var proximal_bone := skeleton.add_bone("middle_prox")
+	skeleton.set_bone_rest(wrist_bone, Transform3D(Basis.IDENTITY, Vector3.ZERO))
+	skeleton.set_bone_rest(metacarpal_bone, Transform3D(Basis.IDENTITY, Vector3(0, 0, 0.04)))
+	skeleton.set_bone_rest(proximal_bone, Transform3D(Basis.IDENTITY, Vector3(0, 0, 0.08)))
+
+	var joint_bone := {
+		XRHandTracker.HAND_JOINT_WRIST: wrist_bone,
+		XRHandTracker.HAND_JOINT_MIDDLE_FINGER_METACARPAL: metacarpal_bone,
+		XRHandTracker.HAND_JOINT_MIDDLE_FINGER_PHALANX_PROXIMAL: proximal_bone,
+	}
+
+	var grab_point := XRGrabPoint.new()
+	var bind: Array = grab_point._build_bind(skeleton, joint_bone, Transform3D.IDENTITY)
+	var palm_origin: Vector3 = (bind[XRHandTracker.HAND_JOINT_PALM] as Transform3D).origin
+	var expected := Vector3(0, 0, 0.06)  # (0.04 + 0.08) / 2
+	if not palm_origin.is_equal_approx(expected):
+		failures.append("bind[PALM] must sit at the metacarpal<->proximal-phalanx midpoint, got %s, expected %s" % [palm_origin, expected])
+	var wrist_metacarpal_midpoint := Vector3(0, 0, 0.02)  # the retired (wrist + metacarpal) / 2
+	if palm_origin.is_equal_approx(wrist_metacarpal_midpoint):
+		failures.append("bind[PALM] regressed to the retired wrist<->metacarpal midpoint: %s" % palm_origin)
+
+	grab_point.free()
+	skeleton.free()
+
+## Fix-round regression: xr_simulator.gd's fake tracker synthesized its PALM
+## joint with the same retired wrist<->metacarpal midpoint. Drives the REAL
+## asset-loading path (_load_bind_skeletons reads the shipped generic_hand
+## glbs' Skin bind poses) rather than a synthetic double, since it turns out
+## to be genuinely headless-testable: no editor and no scene-tree dependency
+## (confirmed - it only touches ResourceLoader/PackedScene/Skin/Skeleton3D
+## bind data, never Node3D.global_transform).
+func _test_simulator_palm_uses_metacarpal_center(failures: Array[String]) -> void:
+	var sim := XRSimulator.new()
+	if not sim._load_bind_skeletons():
+		failures.append("XRSimulator failed to load its bind skeletons - cannot check its PALM synthesis")
+		sim.free()
+		return
+	for hand in 2:
+		var rel: Array = sim._bind[hand]["rel"]
+		var palm: Vector3 = (rel[XRHandTracker.HAND_JOINT_PALM] as Transform3D).origin
+		var metacarpal: Vector3 = (rel[XRHandTracker.HAND_JOINT_MIDDLE_FINGER_METACARPAL] as Transform3D).origin
+		var proximal: Vector3 = (rel[XRHandTracker.HAND_JOINT_MIDDLE_FINGER_PHALANX_PROXIMAL] as Transform3D).origin
+		var expected := (metacarpal + proximal) * 0.5
+		if not palm.is_equal_approx(expected):
+			failures.append("hand %d: simulator PALM must be the metacarpal<->proximal-phalanx midpoint, got %s, expected %s" % [hand, palm, expected])
+		var retired_midpoint := metacarpal * 0.5  # (wrist + metacarpal) / 2, wrist = origin in this wrist-relative frame
+		if palm.is_equal_approx(retired_midpoint):
+			failures.append("hand %d: simulator PALM regressed to the retired wrist<->metacarpal midpoint: %s" % [hand, palm])
+	sim.free()
 
 ## Regression for the 2026-07-19 (15d3783) wrist<->middle-metacarpal midpoint
 ## that silently overrode resolve_grip_anchor()'s PALM-first choice whenever

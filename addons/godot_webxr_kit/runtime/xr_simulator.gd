@@ -424,7 +424,16 @@ func _load_bind_skeletons() -> bool:
 		for joint in XRHandTracker.HAND_JOINT_MAX:
 			rel[joint] = to_wrist * bind_world[joint] if bind_world.has(joint) else Transform3D.IDENTITY
 		var middle_origin: Vector3 = (rel[XRHandTracker.HAND_JOINT_MIDDLE_FINGER_METACARPAL] as Transform3D).origin
-		rel[XRHandTracker.HAND_JOINT_PALM] = Transform3D(Basis.IDENTITY, middle_origin * 0.5)
+		# OpenXR's real XR_HAND_JOINT_PALM_EXT sits at the CENTER of the middle
+		# metacarpal BONE - the midpoint between that metacarpal's own joint and
+		# the middle finger's proximal phalanx joint (Meta's OpenXR SDK computes
+		# it the same way when a runtime has no native palm joint). A
+		# wrist<->metacarpal midpoint reads too close to the wrist - that
+		# convention was retired from the live grip anchor 2026-07-24 for
+		# exactly that reason (xr_controller_hand_adapter.gd); fabricate the
+		# simulator's fake PALM the correct way so it matches a real one.
+		var middle_proximal_origin: Vector3 = (rel[XRHandTracker.HAND_JOINT_MIDDLE_FINGER_PHALANX_PROXIMAL] as Transform3D).origin
+		rel[XRHandTracker.HAND_JOINT_PALM] = Transform3D(Basis.IDENTITY, (middle_origin + middle_proximal_origin) * 0.5)
 
 		# Hand axes measured FROM the bind (no convention guessing): finger
 		# direction, chirality-corrected palm normal (the thumb metacarpal

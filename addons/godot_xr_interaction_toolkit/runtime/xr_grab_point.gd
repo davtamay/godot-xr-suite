@@ -161,19 +161,32 @@ func _rebuild_hand_preview() -> void:
 	var index := skeleton.find_bone("index-finger-metacarpal")
 	var pinky := skeleton.find_bone("pinky-finger-metacarpal")
 	var middle := skeleton.find_bone("middle-finger-metacarpal")
+	var middle_proximal := skeleton.find_bone("middle-finger-phalanx-proximal")
 	if wrist < 0 or index < 0 or pinky < 0:
 		return
 	var s2w := skeleton.global_transform
 	var wrist_p: Vector3 = s2w * skeleton.get_bone_global_rest(wrist).origin
 	var index_p: Vector3 = s2w * skeleton.get_bone_global_rest(index).origin
 	var pinky_p: Vector3 = s2w * skeleton.get_bone_global_rest(pinky).origin
-	# The tracker's PALM joint (the runtime grip origin, and the pose math's palm
-	# proxy) sits ~halfway between the wrist and the middle metacarpal - NOT at
-	# the metacarpal. Using the midpoint lands the ghost's grip where the object
-	# actually anchors, instead of shifted forward toward the fingers.
+	# The runtime's grip anchor (resolve_grip_anchor in
+	# xr_controller_hand_adapter.gd) reads the tracker's real PALM joint
+	# first. This rig has no "palm" bone to read directly, so approximate the
+	# same anatomical point: OpenXR's XR_HAND_JOINT_PALM_EXT sits at the
+	# CENTER of the middle metacarpal BONE, i.e. the midpoint between that
+	# metacarpal's own joint and the middle finger's proximal phalanx joint
+	# (Meta's OpenXR SDK computes a runtime-synthesized palm the same way;
+	# xr_simulator.gd's fake tracker now agrees). A wrist<->metacarpal
+	# midpoint reads too close to the wrist - that convention was retired
+	# from the runtime grip anchor 2026-07-24 for exactly that reason. Until
+	# this fix the preview still used the retired convention, so what you
+	# authored against no longer matched where the object actually anchors.
 	var origin_p := wrist_p
-	if middle >= 0:
-		origin_p = (wrist_p + s2w * skeleton.get_bone_global_rest(middle).origin) * 0.5
+	if middle >= 0 and middle_proximal >= 0:
+		var middle_p: Vector3 = s2w * skeleton.get_bone_global_rest(middle).origin
+		var middle_proximal_p: Vector3 = s2w * skeleton.get_bone_global_rest(middle_proximal).origin
+		origin_p = (middle_p + middle_proximal_p) * 0.5
+	elif middle >= 0:
+		origin_p = s2w * skeleton.get_bone_global_rest(middle).origin
 	var forward := (index_p - wrist_p).normalized()
 	var across := pinky_p - index_p
 	if forward.length_squared() < 0.000001 or across.length_squared() < 0.000001:
@@ -241,8 +254,23 @@ func _build_bind(skeleton: Skeleton3D, joint_bone: Dictionary, wrist_rest: Trans
 	var to_wrist := wrist_rest.affine_inverse()
 	for joint in joint_bone:
 		bind[joint] = to_wrist * skeleton.get_bone_global_rest(joint_bone[joint])
+	# Same grip-anchor convention as resolve_grip_anchor()'s runtime PALM and
+	# xr_simulator.gd's fake tracker: OpenXR's XR_HAND_JOINT_PALM_EXT sits at
+	# the CENTER of the middle metacarpal bone (metacarpal joint <->
+	# proximal-phalanx joint midpoint), not a wrist<->metacarpal midpoint.
+	# Traced downstream: this is currently DEAD data. xr_hand_pose_math.gd
+	# (measure_curl_axes/fk_pose/pose_joints/rel_from_recorded) never reads
+	# HAND_JOINT_PALM - they key off the finger chains and WRIST only - and
+	# _pose_skeleton's write-back loop only visits joint_bone's keys, which
+	# never include PALM (this rig has no "palm" bone to map one to). Kept
+	# correct anyway, at zero behavioral cost, so it cannot silently diverge
+	# again if a future reader starts using it.
 	var middle: Vector3 = (bind[XRHandTracker.HAND_JOINT_MIDDLE_FINGER_METACARPAL] as Transform3D).origin
-	bind[XRHandTracker.HAND_JOINT_PALM] = Transform3D(Basis.IDENTITY, middle * 0.5)
+	var middle_proximal_joint := XRHandTracker.HAND_JOINT_MIDDLE_FINGER_PHALANX_PROXIMAL
+	var palm_origin := middle
+	if joint_bone.has(middle_proximal_joint):
+		palm_origin = (middle + (bind[middle_proximal_joint] as Transform3D).origin) * 0.5
+	bind[XRHandTracker.HAND_JOINT_PALM] = Transform3D(Basis.IDENTITY, palm_origin)
 	return bind
 
 
