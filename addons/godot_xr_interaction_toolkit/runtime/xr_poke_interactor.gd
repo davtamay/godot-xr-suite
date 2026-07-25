@@ -85,16 +85,20 @@ func is_poking(hand: int) -> bool:
 	return hand >= 0 and hand < 2 and not _active[hand].is_empty()
 
 
-## True when an arbiter exists and says this hand is not in NEAR mode. Poke is
-## near-field interaction, so it stands down while the hand is aiming a
-## teleport or reaching at distance. With no arbiter this is always false and
-## poke behaves exactly as before.
+## True only while this hand is aiming a teleport. Poke is gated on TELEPORT
+## exclusivity and NOT on NEAR, because NEAR is derived from the GRAB
+## interactor's hover -- and poke targets are not grab interactables.
+## XRPokeButton carries no collider at all, so a hand reaching for one resolves
+## to FAR; gating poke on NEAR made every poke button in the suite unpressable
+## whenever an arbiter existed, including the arbiter's own off switch. Poke's
+## own poke_reach broad-phase already is its near-field test, and teleport
+## exclusivity is all the design ever required of it.
 func _suppressed_by_arbiter(hand: int) -> bool:
 	if _arbiter == null or not is_instance_valid(_arbiter):
 		_arbiter = XRInteractionArbiter.find_in_tree(self)
 	if _arbiter == null:
 		return false
-	return not _arbiter.is_mode_active(hand, XRInteractionArbiter.Mode.NEAR)
+	return _arbiter.mode_for(hand) == XRInteractionArbiter.Mode.TELEPORT and _arbiter.enabled
 
 func _physics_process(_delta: float) -> void:
 	if not enabled:

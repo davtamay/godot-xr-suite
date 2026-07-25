@@ -50,20 +50,51 @@ reasoning.
 
 1. **TELEPORT is exclusive and wins from any state.** Entered only via the
    locomotion intent API (`begin_teleport_aim`), left only on commit or
-   cancel. While active, NEAR and FAR are inert and their visuals hidden.
-   This is the structural fix for the stuck arc: the arc cannot outlive a
-   state that exclusively owns it, where another suppression flag would only
-   add a second way to get out of sync.
-2. **NONE** when the hand is not tracked.
-3. **NEAR** when any interactable lies within `near_radius` of the hand's grip
-   anchor (`XRControllerHandAdapter.resolve_grip_anchor`, i.e. the palm),
-   **FAR** otherwise.
+   cancel. While active, FAR and poke are inert and their visuals hidden.
 
-**Hysteresis on the near/far boundary.** Enter NEAR at `near_radius`; leave
-only beyond `near_radius + near_release_margin`, and only after
-`minimum_dwell_sec` in the current mode. Without this the ray strobes when a
-hand rests at the edge of a table. Same shape as `XRHandConfidenceGate`'s
-hold, which is already earned-in on-device.
+   **CORRECTION (2026-07-25, whole-branch review).** The original text claimed
+   this was the structural fix for the stuck arc, "because the arc cannot
+   outlive a state that exclusively owns it". THAT IS NOT WHAT WAS BUILT. The
+   arbiter only *reads* `XRLocomotion.is_aiming()`; locomotion still draws the
+   arc, still owns its `_INTENT_TIMEOUT`, and still decides when aiming ends.
+   The arbiter is a follower of that state, not its owner, so a stuck aim
+   produces a stuck TELEPORT mode rather than being prevented by it — and
+   because poke now stands down in TELEPORT, a stuck arc is HARDER to recover
+   from than before, not easier.
+
+   What this subsystem actually delivers is that teleport, ray and poke can no
+   longer disagree about who is active: one value decides. Fixing the arc
+   itself means giving something ownership of its lifecycle, which is separate
+   work and is NOT in this branch. The earn-in must therefore treat "the arc
+   never persists after the gesture ends" as an OPEN BUG to observe, not as a
+   fix to confirm.
+2. **NONE** when the hand is not tracked.
+3. **NEAR** when the direct interactor already reports a hover or selection
+   for that hand, **FAR** otherwise.
+
+   **NEAR gates the far ray only — never poke.** NEAR is derived from the GRAB
+   interactor's hover, and poke targets are not grab interactables:
+   `XRPokeButton` carries no collider at all. Gating poke on NEAR made every
+   poke button in the suite unpressable whenever an arbiter existed, including
+   the arbiter's own off switch. Poke is gated on TELEPORT exclusivity alone;
+   its `poke_reach` broad-phase already is its near-field test. Recorded
+   because the mistake is easy to repeat: a mode DERIVED from one interactor
+   cannot also GATE a different one whose targets it cannot see.
+
+   For the same reason `XRDirectInteractor` is not gated at all — gating it on
+   a mode derived from its own hover would be a feedback loop. Direct grabbing
+   is therefore NOT inert during TELEPORT, which the original text claimed it
+   would be.
+
+**Hysteresis is a DWELL, not a second radius.** The arbiter reuses the direct
+interactor's already-tuned `hover_radius` rather than introducing one of its
+own, so the damping lives in time: NEAR survives `near_release_dwell_sec`
+after its candidate disappears. Entering is immediate.
+
+The clock measures time since the candidate was last SEEN, not time in the
+mode. A time-in-mode clock was the first implementation and it strobed: a
+candidate flickering at the sphere edge never changes the mode, so that clock
+ran out anyway and dropped to FAR mid-flicker.
 
 **Back-compatibility is a hard requirement.** With no arbiter node in the
 scene, every interactor keeps its current suppression behaviour byte for
@@ -101,11 +132,15 @@ behaviour until it adds the node.
 
 ## Earn-in (gate)
 
-Adds a fourth feel-check dial: arbiter on/off, so the whole state machine is
-A/B-able against current behaviour in one poke. Checklist: the ray disappears
-as a hand approaches a grabbable and returns on withdrawal, without flicker at
-the boundary; teleport aiming hides both ray and poke visuals and restores
-them exactly once on commit or cancel; the arc never persists after the
-gesture ends; nothing feels worse than today. Values (`near_radius`,
-`near_release_margin`, `minimum_dwell_sec`) are set from this session, not
-chosen offline.
+Arbiter on/off dial plus a live per-hand mode readout. Checklist:
+
+- the far ray disappears as a hand approaches a grabbable and returns on
+  withdrawal, WITHOUT flicker (tune `near_release_dwell_sec` live);
+- POKE BUTTONS STILL WORK in every mode -- the scene's own dials are poke
+  buttons, and gating poke on NEAR once made all of them dead;
+- CONTROLLERS WORK -- ray and poke both function with controllers in hand,
+  since liveness used to require a hand tracker;
+- teleport aiming hides ray and poke, and restores them on commit and cancel;
+- the arc persisting after a gesture is an OPEN BUG to observe, not a fix to
+  confirm -- see the correction above;
+- nothing feels worse than with the arbiter off.

@@ -68,9 +68,13 @@ static func resolve_mode(
 		return Mode.NEAR
 	return Mode.FAR
 
-func _process(delta: float) -> void:
-	if not enabled:
-		return
+func _physics_process(delta: float) -> void:
+	# Resolves even while disabled: `enabled` gates ANSWERS at is_mode_active,
+	# not the resolution itself, so the in-headset mode readout stays truthful
+	# during the arbiter-OFF leg of the A/B -- which is the leg being compared.
+	# Runs in _physics_process because every consumer reads it there; resolving
+	# in _process left the mode stale on extra physics ticks and accumulated the
+	# dwell in a different clock domain from the one that consumes it.
 	for hand in [XRInputAdapter.Hand.LEFT, XRInputAdapter.Hand.RIGHT]:
 		var candidate := _has_near_candidate(hand)
 		# Reset on SIGHT, accumulate on absence -- see resolve_mode.
@@ -103,15 +107,34 @@ static func find_in_tree(node: Node) -> XRInteractionArbiter:
 	var found := node.get_tree().get_first_node_in_group(GROUP)
 	return found as XRInteractionArbiter
 
+## "Does this hand have INPUT", not "does this hand have a hand tracker". A
+## controller-driven hand has no XRHandTracker at all, so a tracker-only test
+## pinned it in NONE forever and suppressed both ray and poke -- a terminal
+## state on any controller rig. The modality manager is the authority when
+## present (resolved by group, so no addon dependency is created); the hand
+## tracker and the controller are each sufficient on their own otherwise.
 func _hand_tracked(hand: int) -> bool:
+	var manager := get_tree().get_first_node_in_group("xr_input_modality_manager")
+	if manager != null and manager.has_method("get_modality"):
+		# Any resolved modality means this hand is driving something.
+		return int(manager.get_modality(hand)) >= 0
 	var tracker := XRHandTrackerResolver.get_tracker(hand)
-	return tracker != null and tracker.has_tracking_data
+	if tracker != null and tracker.has_tracking_data:
+		return true
+	var controller := XRRigResolver.find_controller(self, hand)
+	return controller != null and controller.get_is_active()
 
 ## Reads the near-field interactor's ALREADY-COMPUTED candidate rather than
 ## running a second query with a second radius. A SELECTED object counts as a
 ## candidate too: a held object may be carried outside the hover sphere, and
 ## the far ray must not reappear mid-grab.
 func _has_near_candidate(hand: int) -> bool:
+	# Rescan while empty: an arbiter built before its rig (or in a scene whose
+	# current_scene is null at _ready) would otherwise cache an empty list
+	# forever and pin both hands to FAR, silently.
+	if _near_interactors.is_empty():
+		var scene := get_tree().current_scene if get_tree() else null
+		_collect_near_interactors(scene if scene != null else get_tree().root)
 	for interactor in _near_interactors:
 		if not is_instance_valid(interactor) or int(interactor.hand) != hand:
 			continue

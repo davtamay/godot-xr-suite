@@ -22,6 +22,9 @@ func _process(_delta: float) -> bool:
 	_test_backcompat_without_arbiter(_failures)
 	_test_consult_with_arbiter(_failures)
 	_test_teleport_exit_routes(_failures)
+	_test_node_drives_modes_per_hand(_failures)
+	_test_node_accumulator_damps_flicker(_failures)
+	_test_poke_gate_only_blocks_teleport(_failures)
 	if _failures.is_empty():
 		print("XR interaction arbiter: PASS")
 		quit(0)
@@ -150,7 +153,7 @@ func _test_backcompat_without_arbiter(failures: Array[String]) -> void:
 		failures.append("clearing suppress_on_linked_select must still unsuppress with no arbiter")
 
 	linked._selected.free()
-	host.queue_free()
+	host.free()
 
 ## With an arbiter present it owns the decision entirely, and the old exports
 ## no longer get a vote -- one rule in one place is the whole point.
@@ -178,7 +181,7 @@ func _test_consult_with_arbiter(failures: Array[String]) -> void:
 	if ray._is_suppressed_by_linked_interactor():
 		failures.append("a disabled arbiter must not suppress -- the A/B switch would strand the ray off")
 
-	host.queue_free()
+	host.free()
 
 const Locomotion := preload("res://addons/godot_xr_interaction_toolkit/runtime/xr_locomotion.gd")
 
@@ -199,7 +202,7 @@ func _test_teleport_exit_routes(failures: Array[String]) -> void:
 	locomotion.begin_teleport_aim(0)
 	if not locomotion.is_aiming(0):
 		failures.append("begin_teleport_aim must start an aim; the rest of this test cannot run")
-		host.queue_free()
+		host.free()
 		return
 	if Arbiter.resolve_mode(Arbiter.Mode.FAR, true, false, locomotion.is_aiming(0), 10.0, 0.12) != Arbiter.Mode.TELEPORT:
 		failures.append("an active aim must put the hand in TELEPORT")
@@ -226,4 +229,151 @@ func _test_teleport_exit_routes(failures: Array[String]) -> void:
 		failures.append("losing tracking mid-aim must leave TELEPORT")
 	locomotion.cancel_teleport(0)
 
-	host.queue_free()
+	host.free()
+
+const PokeInteractor := preload("res://addons/godot_xr_interaction_toolkit/runtime/xr_poke_interactor.gd")
+
+## A headless run has no tracked hands at all, and _hand_tracked is now part of
+## the path under test, so the node-level tests must supply real trackers.
+func _register_hand(hand: int) -> XRHandTracker:
+	var tracker := XRHandTracker.new()
+	tracker.name = "/user/hand_tracker/%s" % ("left" if hand == 0 else "right")
+	tracker.hand = XRPositionalTracker.TRACKER_HAND_LEFT if hand == 0 else XRPositionalTracker.TRACKER_HAND_RIGHT
+	tracker.has_tracking_data = true
+	var valid := XRHandTracker.HAND_JOINT_FLAG_POSITION_VALID | XRHandTracker.HAND_JOINT_FLAG_ORIENTATION_VALID
+	for joint in range(XRHandTracker.HAND_JOINT_MAX):
+		tracker.set_hand_joint_transform(joint, Transform3D(Basis.IDENTITY, Vector3(0.1, 1.0, -0.3)))
+		tracker.set_hand_joint_flags(joint, valid)
+	XRServer.add_tracker(tracker)
+	return tracker
+
+func _unregister(trackers: Array) -> void:
+	for tracker in trackers:
+		XRServer.remove_tracker(tracker)
+const DirectInteractor := preload("res://addons/godot_xr_interaction_toolkit/runtime/xr_direct_interactor.gd")
+
+## Stub standing in for a direct interactor's hover result. The real one needs
+## a physics world and an interaction manager; what the arbiter consumes is
+## only get_hovered()/get_selected()/hand.
+class StubDirect:
+	extends DirectInteractor
+	var stub_hovered: Node = null
+	func get_hovered() -> Node:
+		return stub_hovered
+	func get_selected() -> Node:
+		return null
+
+func _pump(arbiter, frames: int) -> void:
+	for i in range(frames):
+		arbiter._physics_process(1.0 / 72.0)
+
+## Kills the mutants that survived the whole-branch review: mode_for ignoring
+## its hand argument, _has_near_candidate dropping its hand filter, and
+## _physics_process being a no-op. resolve_mode has no hand parameter, so NONE
+## of this is reachable through the pure function -- the previous suite tested
+## the rule and never the node.
+func _test_node_drives_modes_per_hand(failures: Array[String]) -> void:
+	var trackers := [_register_hand(0), _register_hand(1)]
+	var host := Node3D.new()
+	get_root().add_child(host)
+	var arbiter := Arbiter.new()
+	host.add_child(arbiter)
+	var left := StubDirect.new()
+	left.hand = 0
+	host.add_child(left)
+	var right := StubDirect.new()
+	right.hand = 1
+	host.add_child(right)
+	arbiter._near_interactors.clear()
+	arbiter._collect_near_interactors(host)
+
+	# Only the LEFT hand has something in reach.
+	left.stub_hovered = Node.new()
+	_pump(arbiter, 3)
+	if arbiter.mode_for(0) != Arbiter.Mode.NEAR:
+		failures.append("left hand with a hover candidate must be NEAR, got %d" % arbiter.mode_for(0))
+	if arbiter.mode_for(1) == Arbiter.Mode.NEAR:
+		failures.append("right hand has no candidate and must NOT be NEAR -- hands are being confused")
+
+	# Swap: the modes must follow the hands, not stay put.
+	left.stub_hovered.free()
+	left.stub_hovered = null
+	right.stub_hovered = Node.new()
+	_pump(arbiter, 30)
+	if arbiter.mode_for(1) != Arbiter.Mode.NEAR:
+		failures.append("right hand must become NEAR once it has the candidate")
+	if arbiter.mode_for(0) == Arbiter.Mode.NEAR:
+		failures.append("left hand must leave NEAR once its candidate is gone")
+
+	right.stub_hovered.free()
+	_unregister(trackers)
+	host.free()
+
+## Drives the NODE's own accumulator through a flickering candidate. The
+## earlier flicker test re-implemented that accumulator inside the test, so it
+## proved a property of the test's arithmetic -- restoring the original
+## time-in-mode bug in _physics_process left it passing.
+func _test_node_accumulator_damps_flicker(failures: Array[String]) -> void:
+	var trackers := [_register_hand(0), _register_hand(1)]
+	var host := Node3D.new()
+	get_root().add_child(host)
+	var arbiter := Arbiter.new()
+	host.add_child(arbiter)
+	var direct := StubDirect.new()
+	direct.hand = 0
+	host.add_child(direct)
+	arbiter._near_interactors.clear()
+	arbiter._collect_near_interactors(host)
+
+	var candidate := Node.new()
+	direct.stub_hovered = candidate
+	_pump(arbiter, 3)
+	var flips := 0
+	for frame in range(60):
+		direct.stub_hovered = candidate if frame % 2 == 0 else null
+		var before := arbiter.mode_for(0)
+		arbiter._physics_process(1.0 / 72.0)
+		if arbiter.mode_for(0) != before:
+			flips += 1
+	if flips != 0:
+		failures.append("the NODE must damp a per-frame flickering candidate, flipped %d times" % flips)
+	if arbiter.mode_for(0) != Arbiter.Mode.NEAR:
+		failures.append("a flickering candidate must hold NEAR at the node level")
+
+	# ...and must still release once it is genuinely gone.
+	direct.stub_hovered = null
+	_pump(arbiter, 30)
+	if arbiter.mode_for(0) == Arbiter.Mode.NEAR:
+		failures.append("the node must release NEAR after the candidate really disappears")
+
+	candidate.free()
+	_unregister(trackers)
+	host.free()
+
+## The review's Critical: poke was gated on NEAR, but XRPokeButton has no
+## collider and can never be a hover candidate, so every poke button in the
+## suite went dead whenever an arbiter existed -- including the arbiter's own
+## off switch. Poke must stand down for TELEPORT and nothing else.
+func _test_poke_gate_only_blocks_teleport(failures: Array[String]) -> void:
+	var host := Node3D.new()
+	get_root().add_child(host)
+	var arbiter := Arbiter.new()
+	host.add_child(arbiter)
+	var poke := PokeInteractor.new()
+	host.add_child(poke)
+
+	for mode in [Arbiter.Mode.NEAR, Arbiter.Mode.FAR, Arbiter.Mode.NONE]:
+		arbiter._mode[0] = mode
+		if poke._suppressed_by_arbiter(0):
+			failures.append("poke must stay live in mode %d -- poke targets are not grab interactables" % mode)
+	arbiter._mode[0] = Arbiter.Mode.TELEPORT
+	if not poke._suppressed_by_arbiter(0):
+		failures.append("poke must stand down while a teleport is being aimed")
+
+	# A disabled arbiter must never suppress: that is the in-headset escape
+	# hatch, and it is reached BY POKING a button.
+	arbiter.enabled = false
+	if poke._suppressed_by_arbiter(0):
+		failures.append("a disabled arbiter must not suppress poke -- the off switch is itself a poke button")
+
+	host.free()
