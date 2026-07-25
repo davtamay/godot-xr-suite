@@ -176,7 +176,14 @@ func _poll_finger(hand: int) -> void:
 	_rest[hand] = rest
 	var pull := curl - rest
 	# Trigger bottoms out exactly at the fire point, so the visual = the shot.
-	trigger_progress.emit(hand, clampf(pull / fire_pull, 0.0, 1.0))
+	var progress := clampf(pull / fire_pull, 0.0, 1.0)
+	trigger_progress.emit(hand, progress)
+	# Publish the same normalized pull as the held object's USE axis, so any prop
+	# can read "how hard is this being used" without knowing about this node or
+	# about hands at all. Deliberately reuses the value already computed above --
+	# the curl math and its thresholds are on-device tuned and untouched here.
+	if _interactable != null and _interactable.has_method("set_use_value"):
+		_interactable.set_use_value(progress, hand)
 	if activate_mode == ActivateMode.CONTINUOUS:
 		if _active.get(hand) == null and pull >= fire_pull:
 			_active[hand] = interactor

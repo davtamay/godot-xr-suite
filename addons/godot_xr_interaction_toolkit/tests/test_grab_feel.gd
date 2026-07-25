@@ -39,6 +39,8 @@ func _init() -> void:
 func _process(_delta: float) -> bool:
 	_test_grip_pose_stays_on_palm_with_full_hand(_failures)
 	_test_transit_phase(_failures)
+	_test_use_axis(_failures)
+	_test_activator_publishes_use_value(_failures)
 	_test_transit_survives_handoff(_failures)
 	_test_transit_respects_track_rotation(_failures)
 	_test_angular_release_uses_the_guard(_failures)
@@ -727,3 +729,157 @@ func _test_peak_bias_recovers_deadzone_loss(failures: Array[String]) -> void:
 	# Zero bias is exactly the previous behaviour.
 	if not XRGrabInteractable.throw_consensus(ramp, 2, 0.35, 0.0).is_equal_approx(XRGrabInteractable.throw_consensus(ramp, 2, 0.35)):
 		failures.append("default peak_bias must be 0 so existing callers are unchanged")
+
+class UseStub:
+	extends Node
+	var hand := 0
+	func get_attach_pose() -> Transform3D:
+		return Transform3D.IDENTITY
+
+## The analog USE axis: additive to grabbing and to the binary activate pair.
+func _test_use_axis(failures: Array[String]) -> void:
+	var grab := XRGrabInteractable.new()
+	var seen: Array[float] = []
+	grab.use_changed.connect(func(v: float) -> void: seen.append(v))
+	var left := UseStub.new()
+	left.hand = 0
+	var right := UseStub.new()
+	right.hand = 1
+	grab._grabbers = [left, right]
+
+	# Clamping.
+	grab.set_use_value(2.5, 0)
+	if not is_equal_approx(grab.use_value, 1.0):
+		failures.append("use_value must clamp above 1, got %f" % grab.use_value)
+	grab.set_use_value(-3.0, 0)
+	if not is_equal_approx(grab.use_value, 0.0):
+		failures.append("use_value must clamp below 0, got %f" % grab.use_value)
+
+	# use_changed fires on a real change and NOT on a repeat. A prop driving a
+	# per-frame signal would rebuild its effect every frame at a steady pull --
+	# and a steady-value fixture could never see that, so drive both.
+	seen.clear()
+	grab.set_use_value(0.5, 0)
+	grab.set_use_value(0.5, 0)
+	grab.set_use_value(0.5, 0)
+	if seen.size() != 1:
+		failures.append("use_changed must fire once for a change held steady, fired %d times" % seen.size())
+	grab.set_use_value(0.75, 0)
+	if seen.size() != 2:
+		failures.append("use_changed must fire again when the value actually moves")
+
+	# Two-hand rule: the FIRST grabber owns the axis; the second cannot fight it.
+	grab.set_use_value(0.2, 1)
+	if not is_equal_approx(grab.use_value, 0.75):
+		failures.append("a non-primary hand must not drive the axis, value moved to %f" % grab.use_value)
+
+	# Handoff: the primary leaves, the remaining hand takes over.
+	grab._grabbers = [right]
+	grab.set_use_value(0.3, 1)
+	if not is_equal_approx(grab.use_value, 0.3):
+		failures.append("after a handoff the remaining hand must drive the axis, got %f" % grab.use_value)
+
+	left.free()
+	right.free()
+	grab.free()
+
+	# The RELEASE path itself must zero the axis -- asserting a manual
+	# set_use_value(0.0) proves nothing about what happens when the object is
+	# actually let go, which is when a prop would latch a stale pull.
+	var released_grab := XRGrabInteractable.new()
+	get_root().add_child(released_grab)
+	var holder := UseStub.new()
+	holder.hand = 0
+	get_root().add_child(holder)
+	released_grab._notify_select_entered(holder)
+	released_grab.set_use_value(0.9, 0)
+	if not is_equal_approx(released_grab.use_value, 0.9):
+		failures.append("the primary grabber must be able to drive the axis while held")
+	released_grab._notify_select_exited(holder)
+	if not is_equal_approx(released_grab.use_value, 0.0):
+		failures.append("releasing must zero the use axis, left at %f -- a prop would latch a stale pull" % released_grab.use_value)
+	released_grab.free()
+	holder.free()
+
+const HandActivator := preload("res://addons/godot_xr_interaction_toolkit/runtime/xr_hand_activator.gd")
+
+## The activator is what actually drives the axis on device, so this drives its
+## REAL code path -- _poll_finger, its own curl, its own baseline -- rather
+## than calling set_use_value on its behalf. Simulating the publish inside the
+## test left the publish call free to be deleted with the suite still green,
+## which is the same mistake the arbiter's first flicker test made.
+func _test_activator_publishes_use_value(failures: Array[String]) -> void:
+	var grab := XRGrabInteractable.new()
+	get_root().add_child(grab)
+	var activator := HandActivator.new()
+	activator.require_held = false  # no live interactor in a headless run
+	grab.add_child(activator)
+	var holder := UseStub.new()
+	holder.hand = 0
+	get_root().add_child(holder)
+	grab._grabbers = [holder]
+
+	if activator._find_interactable() != grab:
+		failures.append("the activator must resolve the interactable it is parented to")
+	# _ready() normally assigns this; it has not run for a node added mid-test.
+	activator._interactable = grab
+
+	# Read RAW: the activator normally reads the conditioned shadow, which the
+	# publisher refreshes at most once per PROCESS frame -- so in a headless
+	# loop it would never see the bend this test applies between polls. What is
+	# under test is the activator's publish, not the conditioning chain.
+	var was_conditioned := XRHandTrackerResolver.is_conditioned()
+	XRHandTrackerResolver.set_conditioned(false)
+
+	var tracker := _index_finger_tracker(0.0)
+	# Frame 1: a straight finger establishes the relaxed baseline.
+	XRHandTrackerResolver._cache_frame = -1
+	activator._poll_finger(0)
+	# Frames 2+: the same finger, now curled -- pull is measured against that
+	# rest, and the activator smooths toward the new curl rather than jumping,
+	# so a single frame would under-read it.
+	_bend_index(tracker, 0.6)
+	for frame in range(4):
+		XRHandTrackerResolver._cache_frame = -1
+		activator._poll_finger(0)
+
+	if grab.use_value <= 0.0:
+		failures.append("a real curl through _poll_finger must publish a non-zero use axis, got %f" % grab.use_value)
+
+	XRHandTrackerResolver.set_conditioned(was_conditioned)
+	XRServer.remove_tracker(tracker)
+	grab.free()
+	holder.free()
+
+## A hand whose INDEX finger joints form a real chain, so _finger_curl's
+## bone-angle sum is meaningful rather than degenerate.
+func _index_finger_tracker(bend: float) -> XRHandTracker:
+	var tracker := XRHandTracker.new()
+	tracker.name = "/user/hand_tracker/left"
+	tracker.hand = XRPositionalTracker.TRACKER_HAND_LEFT
+	tracker.has_tracking_data = true
+	var valid := XRHandTracker.HAND_JOINT_FLAG_POSITION_VALID | XRHandTracker.HAND_JOINT_FLAG_ORIENTATION_VALID
+	for joint in range(XRHandTracker.HAND_JOINT_MAX):
+		tracker.set_hand_joint_transform(joint, Transform3D(Basis.IDENTITY, Vector3(0.05, 1.0, -0.2)))
+		tracker.set_hand_joint_flags(joint, valid)
+	XRServer.add_tracker(tracker)
+	_bend_index(tracker, bend)
+	return tracker
+
+## Lays the index chain out with a controllable bend: 0 is straight, higher
+## values fold each successive bone further, which is what a pull looks like.
+func _bend_index(tracker: XRHandTracker, bend: float) -> void:
+	var chain := [
+		XRHandTracker.HAND_JOINT_INDEX_FINGER_METACARPAL,
+		XRHandTracker.HAND_JOINT_INDEX_FINGER_PHALANX_PROXIMAL,
+		XRHandTracker.HAND_JOINT_INDEX_FINGER_PHALANX_INTERMEDIATE,
+		XRHandTracker.HAND_JOINT_INDEX_FINGER_PHALANX_DISTAL,
+	]
+	# Away from the world origin: joint_position_valid treats a joint sitting on
+	# the origin as STALE and rejects it, which made the whole curl read -1.
+	var position := Vector3(0.05, 1.0, -0.2)
+	var direction := Vector3(0.0, 0.0, -1.0)
+	for i in range(chain.size()):
+		tracker.set_hand_joint_transform(chain[i], Transform3D(Basis.IDENTITY, position))
+		position += direction * 0.03
+		direction = direction.rotated(Vector3.RIGHT, bend).normalized()

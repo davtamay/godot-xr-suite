@@ -20,6 +20,11 @@ enum HandGrab { PINCH, GRIP }
 signal grabbed(interactor)
 signal released(interactor)
 signal thrown(linear_velocity: Vector3, angular_velocity: Vector3)
+## Analog USE strength, 0..1, while held. Separate from grabbing and from the
+## binary activated/deactivated pair: a prop reads this to vary what it does
+## (spray rate, trigger pull) without caring what is holding it. Emitted only
+## when the value actually changes.
+signal use_changed(value: float)
 
 @export_group("Target")
 ## Node3D to move. Empty = this node.
@@ -103,9 +108,35 @@ var _throw_angular_velocity := Vector3.ZERO
 var _throw_linear_samples: Array[Vector3] = []
 var _throw_angular_samples: Array[Vector3] = []
 var _has_throw_sample := false
+## Analog use strength, 0..1. Read-only to consumers; drivers call
+## set_use_value(). Zero whenever nothing is driving it, so a prop can never
+## latch a stale pull after release.
+var use_value := 0.0
 var _transit_time_left := 0.0
 var _transit_duration := 0.0
 var _transit_from := Transform3D.IDENTITY
+
+## Called by whatever is driving USE on this object -- today the bare-hand
+## XRHandActivator, which already computes a normalized pull. `source_hand` is
+## the hand supplying it; a push from a hand that is not the PRIMARY grabber is
+## ignored, so a second hand resting on a two-handed tool cannot fight the
+## hand actually working it. Pass -1 to drive it unconditionally.
+func set_use_value(value: float, source_hand: int = -1) -> void:
+	if source_hand >= 0 and not _is_primary_hand(source_hand):
+		return
+	var clamped := clampf(value, 0.0, 1.0)
+	if is_equal_approx(clamped, use_value):
+		return
+	use_value = clamped
+	use_changed.emit(use_value)
+
+## The first grabber owns the axis; on a two-hand -> one-hand handoff the
+## remaining hand takes it over, because _grabbers[0] is then that hand.
+func _is_primary_hand(source_hand: int) -> bool:
+	if _grabbers.is_empty():
+		return false
+	var primary = _grabbers[0]
+	return primary != null and "hand" in primary and int(primary.hand) == source_hand
 
 func get_target() -> Node3D:
 	if target_path.is_empty():
@@ -149,6 +180,7 @@ func _notify_select_exited(interactor) -> void:
 		_point_grab = false
 		_transit_duration = 0.0
 		_transit_time_left = 0.0
+		set_use_value(0.0)
 		released.emit(interactor)
 		return
 

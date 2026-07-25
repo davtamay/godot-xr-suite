@@ -36,10 +36,17 @@ and hand-only, so no prop can simply read "how hard is this being used".
 - `use_value: float` — 0..1, read-only to consumers
 - `use_changed(value: float)` — emitted only when the value actually changes
 
-The holding interactor pushes into it each frame: bare hands from
-`XRHandActivator`'s existing curl, controllers from their trigger axis. A prop
-reads its own parent and never learns which kind of thing is holding it, so
-controller props get analog input with no extra path.
+`XRHandActivator` pushes into it: it already computes the normalized pull AND
+already holds an `_interactable` reference, so publishing is one call beside
+the existing `trigger_progress.emit` with zero change to the curl math.
+
+**CORRECTION to the approved design (found during implementation).** The
+design claimed "controllers get analog input for free". They do not. The
+activator is bare-hand only, and `xr_input_adapter.gd` exposes no analog axis
+at all (`get_aim_pose`, `get_grip_pose`, `get_source_kind` only). `use_value`
+therefore stays 0 for controller-held props until a controller analog source
+exists. The interactable-owned design is still right — it is where a
+controller source would publish — but the benefit is future, not present.
 
 **Binary behaviour is untouched.** `activated` / `deactivated` fire exactly as
 today, at today's thresholds, through today's code. `use_value` is purely

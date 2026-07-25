@@ -692,3 +692,24 @@ IA REVIEW ROUND (whole-branch, strongest model). Verdict NO -- 3 Criticals.
 DEFECT CLASS, TENTH occurrence, one layer up -- the fixture was not too
   benign, its SCOPE was. Mutating only what the tests already aim at proves
   nothing.
+
+## Use axis (ISDK item 7) -- implemented, NOT yet independently reviewed
+Corrects the inventory: the analog curl already existed and was on-device
+tuned (XRHandActivator._finger_curl -> trigger_progress); it was just
+activator-shaped and hand-only, driving the blaster's trigger MESH while
+firing stayed binary. XRGrabInteractable now owns use_value/use_changed; the
+activator publishes beside its existing emit; binary activate untouched.
+DESIGN CORRECTED mid-implementation: "controllers get analog for free" was
+WRONG -- the activator is bare-hand only and the input adapter exposes no
+analog axis, so use_value stays 0 for controller-held props until one exists.
+Two-hand rule implemented as specified: _grabbers[0] owns the axis, handoff
+transfers it.
+SIX mutations, all now fatal -- but TWO survived the first pass and both were
+the same mistake in different clothes: the test SIMULATED the thing under
+test. U5 asserted a manual set_use_value(0.0) instead of driving the release
+path; U6 called set_use_value on the activator's behalf instead of invoking
+_poll_finger, leaving the publish call deletable with the suite green. Same
+shape as the arbiter's first flicker test. ELEVENTH occurrence.
+Fixture lesson worth keeping: joint_position_valid rejects a joint sitting on
+the WORLD ORIGIN as stale, so a finger-chain fixture built from Vector3.ZERO
+reads curl -1 and every downstream assertion silently measures nothing.
