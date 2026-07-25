@@ -339,3 +339,12 @@ FAIL -> reverted back -> PASS). All three suites re-confirmed green after
 the fix round.
 
 Status: complete (both submission and fix round). Commit: see task-1-report.md.
+GF Task 1: complete (commits a76abdd..cd80922, review clean both verdicts,
+  one fix round). Real bug was NOT joint selection but the 15d3783 midpoint
+  override (tuned Jul 19, reversed Jul 24 with David's sign-off; Task 6
+  verifies). Fix round aligned preview ghost + simulator palm synthesis to
+  the OpenXR palm definition (midpoint of middle metacarpal bone, verified
+  against the Khronos spec by implementer AND reviewer independently);
+  bind[PALM] confirmed dead data, aligned anyway. CARRIED: preview-ghost
+  change untestable headless -- David eyeballs a grab-point preview in the
+  editor once; folded into the Task 6 checklist.
