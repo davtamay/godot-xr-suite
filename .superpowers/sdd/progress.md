@@ -379,3 +379,27 @@ GF Task 3: complete (commits 407632b..f78df35, review clean, TWO fix rounds).
     recomputes _grab_offset (line ~137) -- alpha=1 then lands on a wrong but
     plausible-looking basis with no error. Task 4 must clear/re-arm transit on
     EVERY _compute_grab_offset recompute, not only when grabbers go empty.
+GF Task 4: complete (commits 0ec42bd..339d152, review clean both verdicts,
+  one fix round). Transit wired as a phase; free grabs never transit.
+  - Implementer caught TWO of the brief's own mutations surviving against
+    brief-derived fixtures and strengthened them unprompted -- the branch's
+    recurring lesson finally landing at implementer level.
+  - Transit is armed/cleared on every _grab_offset write path (entered,
+    handoff, two-hand begin). Handoff RE-ARMS (recaptures _transit_from from
+    the object's live world transform) rather than merely clearing, so the
+    Task 3 scale invariant holds for the new offset.
+  - Reviewer traced and DISPROVED a suspected cross-feature bug: transit
+    motion cannot contaminate throw velocity, because _sample_throw_velocity
+    samples the interactor's attach_pose, never the target's transform.
+  - Fix round: the handoff test moved both hands by the same vector, so hand
+    DISTANCE never changed and two_hand_scale never fired -- the test never
+    exercised the scale change that motivated the re-arm. Now separates hands
+    to 3.0x and tracks basis determinant per frame.
+  - PRE-EXISTING, for final-review triage: snap_to_attach with NO attach node
+    yields _grab_offset = IDENTITY, which encodes no scale, so a scaled object
+    reverts to unit scale once plain tracking resumes. Point grabs, free grabs
+    and snap-with-node all encode scale correctly. Task 5 audits whether any
+    shipped prefab hits the degenerate config.
+  - Minor, for follow-up (not blocking): the brief's arming condition
+    (_grab_points.is_empty()) disables snap_to_attach transit object-wide once
+    ANY grab point exists, including for a non-matching hand.
