@@ -43,6 +43,7 @@ func _process(_delta: float) -> bool:
 	_test_pokeable_pin_is_inf_when_off_face(_failures)
 	_test_pokeable_pin_is_inf_when_beyond_band(_failures)
 	_test_canvas_cancel_pushes_the_release_off_panel(_failures)
+	_test_canvas_press_fires_the_control(_failures)
 	if _failures.is_empty():
 		print("XR poke fidelity: PASS")
 		quit(0)
@@ -204,6 +205,36 @@ func _test_canvas_cancel_pushes_the_release_off_panel(failures: Array[String]) -
 	panel.poke_update(0, Vector3(0.300, 0.0, 0.008))  # slide off the panel
 	_check(failures, fired["count"] == 0,
 			"canvas: an aborted poke must not fire the Control, fired %d" % fired["count"])
+	panel.queue_free()
+
+
+## The positive mirror of the cancel test above: a straight-on poke arms the
+## entry gate, crosses the press plane (PRESSED), then retracts past
+## release_depth while still over the panel (RELEASED). The release must land
+## inside the Button's rect and fire it - proving the cancel test isn't
+## passing merely because poke_update never presses anything at all.
+func _test_canvas_press_fires_the_control(failures: Array[String]) -> void:
+	var panel := Node3D.new()
+	panel.set_script(XRUICanvasScript)
+	var viewport := SubViewport.new()
+	viewport.size = Vector2i(256, 256)
+	panel.add_child(viewport)
+	panel.viewport_path = panel.get_path_to(viewport)
+	panel.panel_size = Vector2(0.4, 0.4)
+	get_root().add_child(panel)
+
+	var button := Button.new()
+	button.anchor_right = 1.0
+	button.anchor_bottom = 1.0
+	viewport.add_child(button)
+	var fired := {"count": 0}
+	button.pressed.connect(func(): fired["count"] += 1)
+
+	panel.poke_update(0, Vector3(0.0, 0.0, 0.050))  # in front, arms entry
+	panel.poke_update(0, Vector3(0.0, 0.0, 0.008))  # cross the press plane
+	panel.poke_update(0, Vector3(0.0, 0.0, 0.050))  # retract past release_depth, still over the panel
+	_check(failures, fired["count"] == 1,
+			"canvas: a straight-on poke through the panel must fire the Control, fired %d" % fired["count"])
 	panel.queue_free()
 
 
