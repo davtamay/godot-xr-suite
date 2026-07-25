@@ -137,7 +137,16 @@ func _has_near_candidate(hand: int) -> bool:
 		var direct := node as XRDirectInteractor
 		if direct == null or int(direct.hand) != hand:
 			continue
-		if direct.get_selected() != null or direct.get_hovered() != null:
+		# A HELD object is near-evidence unconditionally.
+		if direct.get_selected() != null:
+			return true
+		# A hover is only evidence while the interactor is CURRENTLY valid.
+		# It stops refreshing _hovered while it holds something, and keeps the
+		# last value when the grip pose goes away, so a stale hover could pin a
+		# hand to NEAR forever -- and a pinned NEAR is a ray that can never
+		# hover again. David, on device: one hand's cursor "stops working" and
+		# will not hover any more. Near-ness must be true NOW, not last seen.
+		if direct.get_hovered() != null and bool(direct.get_direct_state().get("valid", false)):
 			return true
 	# Poke reach counts as near-field too. NEAR cannot be derived from the GRAB
 	# interactor alone: UI panels and poke buttons are not grab interactables,

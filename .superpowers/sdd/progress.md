@@ -886,3 +886,14 @@ editing any scene file.
      LESSON: caching a scene lookup in _ready inside a node that ships INSIDE
      a reusable rig is a trap -- the rig outlives no scene, it is rebuilt with
      every one. Prefer live group lookups for anything rig-shaped.
+  7. Near interactions CONFIRMED WORKING on device after fix 6. Remaining:
+     one hand's ray "stops working" and will not hover any more when both
+     hands are used on the menu. Not a wedged selection (the reconcile in 3
+     would clear that), so it is the ray being SUPPRESSED -- the hand pinned
+     in NEAR. Cause found by reading XRDirectInteractor: it stops refreshing
+     _hovered while it holds something, and on an empty grip pose it clears
+     hover only when nothing is selected -- so a stale _hovered can survive
+     and pin the hand to NEAR indefinitely. Near-evidence must be true NOW:
+     a hover now counts only while get_direct_state().valid is true. A HELD
+     object still counts unconditionally. Mutation fatal. Unverified on
+     device -- if it recurs, the Feel Check L/R readout is the next probe.

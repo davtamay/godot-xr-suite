@@ -26,6 +26,7 @@ func _process(_delta: float) -> bool:
 	_test_node_accumulator_damps_flicker(_failures)
 	_test_poke_gate_only_blocks_teleport(_failures)
 	_test_poke_reach_counts_as_near(_failures)
+	_test_stale_hover_cannot_pin_near(_failures)
 	if _failures.is_empty():
 		print("XR interaction arbiter: PASS")
 		quit(0)
@@ -259,11 +260,14 @@ const DirectInteractor := preload("res://addons/godot_xr_interaction_toolkit/run
 class StubDirect:
 	extends DirectInteractor
 	var stub_hovered: Node = null
+	var stub_valid := true
 	# _enter_tree on the real class joins the group the arbiter looks in.
 	func get_hovered() -> Node:
 		return stub_hovered
 	func get_selected() -> Node:
 		return null
+	func get_direct_state() -> Dictionary:
+		return {"valid": stub_valid}
 
 func _pump(arbiter, frames: int) -> void:
 	for i in range(frames):
@@ -409,5 +413,35 @@ func _test_poke_reach_counts_as_near(failures: Array[String]) -> void:
 	if arbiter.mode_for(0) == Arbiter.Mode.NEAR:
 		failures.append("leaving poke reach must return the hand to FAR")
 
+	_unregister(trackers)
+	host.free()
+
+## A hover left behind by an interactor that is no longer valid must NOT keep a
+## hand in NEAR: that pins the far ray suppressed and it can never hover again,
+## which is what "one hand's cursor stops working" looked like on device.
+func _test_stale_hover_cannot_pin_near(failures: Array[String]) -> void:
+	var trackers := [_register_hand(0), _register_hand(1)]
+	var host := Node3D.new()
+	get_root().add_child(host)
+	var arbiter := Arbiter.new()
+	host.add_child(arbiter)
+	var direct := StubDirect.new()
+	direct.hand = 0
+	host.add_child(direct)
+
+	var candidate := Node.new()
+	direct.stub_hovered = candidate
+	direct.stub_valid = true
+	_pump(arbiter, 3)
+	if arbiter.mode_for(0) != Arbiter.Mode.NEAR:
+		failures.append("a live hover must select NEAR")
+
+	# The interactor goes invalid but keeps its last hover value.
+	direct.stub_valid = false
+	_pump(arbiter, 30)
+	if arbiter.mode_for(0) == Arbiter.Mode.NEAR:
+		failures.append("a stale hover from an invalid interactor must not pin the hand in NEAR")
+
+	candidate.free()
 	_unregister(trackers)
 	host.free()
