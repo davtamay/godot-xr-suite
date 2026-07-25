@@ -291,7 +291,10 @@ func _arm_transit(interactor) -> void:
 	if not (_point_grab or (snap_to_attach and _grab_points.is_empty())):
 		return
 	var target_node := get_target()
-	if target_node == null:
+	# Same out-of-tree hazard as _compute_grab_offset, and this one is reached
+	# on the very next line of the handoff. Arming a transit FROM identity would
+	# make the object tween in from world origin the moment it was re-parented.
+	if target_node == null or not target_node.is_inside_tree():
 		return
 	var desired := _attach_pose_for(interactor) * _grab_offset
 	_transit_from = target_node.global_transform
@@ -307,10 +310,23 @@ func _arm_transit(interactor) -> void:
 
 func _compute_grab_offset(interactor) -> Transform3D:
 	var target := get_target()
+	# A release can arrive while the object is already OUT of the tree: a scene
+	# change frees a held object and the deselect follows it down. Node3D does
+	# not merely complain about global_transform there -- it RETURNS IDENTITY,
+	# so recomputing would quietly install a garbage offset that snaps the
+	# object to the hand's origin if anything still draws or reuses it. Keep the
+	# offset that is actually in effect; there is nothing meaningful to
+	# recompute against a transform that no longer exists. David, on device
+	# (Quest 3 APK): 'Condition "!is_inside_tree()" is true' raised from the
+	# two-hand -> one-hand handoff below.
+	if target != null and not target.is_inside_tree():
+		return _grab_offset
 	_point_grab = false
 	if target == null:
 		return Transform3D.IDENTITY
 	var point := _best_grab_point(interactor)
+	if point != null and not point.is_inside_tree():
+		return _grab_offset
 	if point != null:
 		# Point grabs are authored grips: the object snaps so the point lands
 		# in the hand, position AND rotation, regardless of the free-grab
@@ -320,6 +336,8 @@ func _compute_grab_offset(interactor) -> Transform3D:
 		return _mirror_offset(point, interactor, offset)
 	if snap_to_attach:
 		var attach_node := get_node_or_null(attach_transform_path) as Node3D
+		if attach_node != null and not attach_node.is_inside_tree():
+			return _grab_offset
 		if attach_node:
 			return attach_node.global_transform.affine_inverse() * target.global_transform
 		return Transform3D.IDENTITY

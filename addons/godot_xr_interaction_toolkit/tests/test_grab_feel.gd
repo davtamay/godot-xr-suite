@@ -47,6 +47,7 @@ func _process(_delta: float) -> bool:
 	_test_transit_survives_handoff(_failures)
 	_test_transit_respects_track_rotation(_failures)
 	_test_angular_release_uses_the_guard(_failures)
+	_test_handoff_survives_the_scene_leaving(_failures)
 	if _failures.is_empty():
 		print("XR grab feel: PASS")
 		quit(0)
@@ -1058,3 +1059,51 @@ func _test_ray_recovers_from_wedged_selection(failures: Array[String]) -> void:
 		failures.append("a selection the input no longer backs must be released, or the ray goes deaf")
 
 	host.free()
+
+## A scene change frees a HELD object, and the deselect arrives after it has
+## already left the tree. Node3D.global_transform does not fail loudly there --
+## it returns IDENTITY -- so the two-hand -> one-hand handoff would recompute
+## _grab_offset against a transform that no longer exists and silently install
+## garbage. Reported on device from the Quest 3 APK as
+## 'Condition "!is_inside_tree()" is true', raised from _compute_grab_offset.
+func _test_handoff_survives_the_scene_leaving(failures: Array[String]) -> void:
+	var grab := XRGrabInteractable.new()
+	var body := Node3D.new()
+	grab.add_child(body)
+	get_root().add_child(grab)
+	grab.target_path = grab.get_path_to(body)
+	grab.two_hand_grab_enabled = true
+	# A FREE grab (no grab points, no snap_to_attach) is the branch the device
+	# backtrace pointed at: offset = attach_pose.inverse() * target.global.
+	grab.snap_to_attach = false
+	body.global_position = Vector3(0.4, 1.2, -0.7)
+
+	var hand_a := StubInteractor.new()
+	get_root().add_child(hand_a)
+	hand_a.pose = Transform3D(Basis.IDENTITY, Vector3(0.2, 1.0, 0.0))
+	var hand_b := StubInteractor.new()
+	get_root().add_child(hand_b)
+	hand_b.pose = Transform3D(Basis.IDENTITY, Vector3(0.8, 1.0, 0.0))
+
+	grab._notify_select_entered(hand_a)
+	var held_offset: Transform3D = grab._grab_offset
+	if held_offset.is_equal_approx(Transform3D.IDENTITY):
+		failures.append("scene_leaving fixture: a free grab 0.4 m off-hand must produce a NON-identity offset, else the assertion below cannot tell garbage from the real value")
+	grab._notify_select_entered(hand_b)
+
+	# The scene goes away underneath the grab, exactly as XRSceneRouter does.
+	get_root().remove_child(grab)
+
+	grab._notify_select_exited(hand_b)
+
+	if grab._grab_offset.is_equal_approx(Transform3D.IDENTITY):
+		failures.append("scene_leaving: handoff overwrote the offset with IDENTITY read off an out-of-tree node")
+	elif not grab._grab_offset.is_equal_approx(held_offset):
+		failures.append("scene_leaving: handoff must keep the offset in effect, got %s (was %s)" % [grab._grab_offset, held_offset])
+	# Arming a transit from an out-of-tree target would capture identity as
+	# _transit_from, so the object tweens in from world origin once re-parented.
+	if grab.in_transit():
+		failures.append("scene_leaving: a transit was armed against a target that is not in the tree")
+	grab.free()
+	hand_a.free()
+	hand_b.free()
