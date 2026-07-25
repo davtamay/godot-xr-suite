@@ -94,3 +94,32 @@ path must be untouched); confirm nothing regresses with controllers in hand.
 
 Items 4, 5, 6 and 8 of the inventory. In particular the synthetic display
 hand (item 4) is the agreed next piece and is much larger.
+
+
+## Follow-up: duplication audit (David, 2026-07-25)
+
+David challenged whether this session enhanced existing systems or grew
+parallel ones. The audit found three cases:
+
+1. **`XRConditionedHandPoseSource` was a duplicate of
+   `XRTrackerHandPoseSource` differing by ONE line** (`get_tracker` vs
+   `resolve_raw`). FIXED: folded back into the original as a `conditioned`
+   flag, the duplicate deleted, its one consumer updated. Proven by mutation
+   that the flag changes which tracker is read, not merely that it is stored.
+
+2. **`XRHandActivator.trigger_progress` and `XRGrabInteractable.use_value`
+   carry the same number through two mechanisms.** OPEN. One should be derived
+   from the other or retired; keeping both means a prop can read its pull two
+   ways. Needs a decision.
+
+3. **`XRInteractionArbiter` and the four `suppress_on_*` booleans both answer
+   "when is this interactor active".** OPEN BY DESIGN, but with no exit
+   written down. Back-compat requires both during transition; it must not stay
+   dual. Needs a deprecation path: arbiter standard in the rig, booleans
+   marked deprecated, then removed.
+
+Where existing code was checked first, duplication did not occur -- the
+arbiter reuses the tuned `hover_radius` rather than adding a radius,
+`_deadzone_slice` consolidated two copies, the use axis reuses the tuned curl,
+and the throw fix replaced the mean rather than sitting beside it. The pattern
+is simply: check first.

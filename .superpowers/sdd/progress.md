@@ -713,3 +713,23 @@ shape as the arbiter's first flicker test. ELEVENTH occurrence.
 Fixture lesson worth keeping: joint_position_valid rejects a joint sitting on
 the WORLD ORIGIN as stale, so a finger-chain fixture built from Vector3.ZERO
 reads curl -1 and every downstream assertion silently measures nothing.
+
+## Duplication audit (David's challenge, 2026-07-25)
+"we want to enhance our current systems not create duplicates". Audit found 3:
+  1. FIXED: XRConditionedHandPoseSource duplicated XRTrackerHandPoseSource,
+     differing by ONE line (get_tracker vs resolve_raw). Folded back in as a
+     `conditioned` flag; duplicate deleted. NOTE the test lesson AGAIN: the
+     first test asserted only that the flag was SET, so mutating the branch
+     inside capture() survived twice. Behavioural test added (publish once,
+     move raw without republishing, then capture both ways -- the two paths
+     then genuinely disagree). Twelfth occurrence of testing wiring rather
+     than effect.
+  2. OPEN: trigger_progress and use_value carry the same number through two
+     mechanisms. Needs a decision -- derive one from the other, or retire one.
+  3. OPEN BY DESIGN, no exit written: the arbiter and the suppress_on_*
+     booleans both answer "when is this interactor active". Back-compat needs
+     both now, but a deprecation path must be written or the duplication
+     becomes permanent.
+Where existing code WAS checked first, no duplication occurred (hover_radius
+reuse, _deadzone_slice consolidation, tuned-curl reuse, throw mean replaced
+not paralleled). The rule is simply: check first.

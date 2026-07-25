@@ -22,6 +22,7 @@ func _init() -> void:
 	_test_publisher_null_contract(failures)
 	_test_resolver_conditioned_routing(failures)
 	_test_resolver_toggle_resets_chain(failures)
+	_test_pose_source_flag_picks_the_path(failures)
 	_test_pose_source_reads_raw_across_frames(failures)
 	_test_resolver_scan_excludes_shadow(failures)
 	_test_toggle_invalidates_frame_cache(failures)
@@ -1137,6 +1138,60 @@ func _test_gate_rejection_yields_untracked_shadow(failures: Array[String]) -> vo
 				failures.append("gate-rejected shadow still claims tracking data")
 			if XRHandTrackerResolver.joint_position_valid(resolved, XRHandTracker.HAND_JOINT_WRIST):
 				failures.append("gate-rejected shadow still exposes valid joints -- grip curl, pinch and hand rays gate on joint_position_valid and would read the stale pose")
+
+	if XRServer.get_tracker(str(raw.name)) != null:
+		XRServer.remove_tracker(raw)
+	XRConditionedHandPublisher.set_enabled(was_enabled)
+	XRHandTrackerResolver._conditioned = was_conditioned
+	_clear_conditioning_state(hand)
+
+func _test_pose_source_flag_picks_the_path(failures: Array[String]) -> void:
+	# XRTrackerHandPoseSource.conditioned must actually CHANGE WHICH TRACKER IS
+	# READ, not merely be stored. An earlier revision had two near-identical
+	# classes for this; folding them into one flag is only an improvement if the
+	# flag is proven to do the work, so this drives capture() both ways and
+	# compares the frames.
+	#
+	# Divergence is manufactured the same way the feedback-loop test does it:
+	# publish once so the shadow holds a pose, then MOVE the raw tracker without
+	# letting the publisher run again. get_tracker then returns the stale shadow
+	# while resolve_raw returns the moved raw -- two different answers, which is
+	# exactly what the flag selects between.
+	var hand := 0
+	var was_conditioned := XRHandTrackerResolver.is_conditioned()
+	var was_enabled := XRConditionedHandPublisher.is_enabled()
+	var raw := _make_raw_tracker(hand)
+	_clear_conditioning_state(hand)
+	XRHandTrackerResolver._conditioned = true
+	XRConditionedHandPublisher._enabled = true
+
+	XRConditionedHandPublisher._published_frame[hand] = -1
+	var shadow := XRConditionedHandPublisher.get_conditioned(hand)
+	if shadow == null:
+		failures.append("arming publish failed; the pose-source flag check cannot run")
+	else:
+		var wrist := XRHandTracker.HAND_JOINT_WRIST
+		var shadow_origin := shadow.get_hand_joint_transform(wrist).origin
+		# Move raw well clear, and leave the frame memo set so no republish runs.
+		for joint in range(XRHandTracker.HAND_JOINT_MAX):
+			var moved := raw.get_hand_joint_transform(joint)
+			moved.origin += Vector3(0.4, 0.0, 0.0)
+			raw.set_hand_joint_transform(joint, moved)
+
+		var frame := XRHandFrame.new()
+		XRHandTrackerResolver._cache_frame = -1
+		var raw_source := XRTrackerHandPoseSource.new(false)
+		if not raw_source.capture(hand, 1000, frame):
+			failures.append("the raw pose source captured nothing")
+		elif not frame.joint_transforms[wrist].origin.is_equal_approx(raw.get_hand_joint_transform(wrist).origin):
+			failures.append("conditioned = false must read the RAW tracker, got %s" % frame.joint_transforms[wrist].origin)
+
+		XRHandTrackerResolver._cache_frame = -1
+		var conditioned_source := XRTrackerHandPoseSource.new(true)
+		if not conditioned_source.capture(hand, 1000, frame):
+			failures.append("the conditioned pose source captured nothing")
+		elif not frame.joint_transforms[wrist].origin.is_equal_approx(shadow_origin):
+			failures.append("conditioned = true must read the CONDITIONED tracker, got %s vs %s" % [frame.joint_transforms[wrist].origin, shadow_origin])
 
 	if XRServer.get_tracker(str(raw.name)) != null:
 		XRServer.remove_tracker(raw)

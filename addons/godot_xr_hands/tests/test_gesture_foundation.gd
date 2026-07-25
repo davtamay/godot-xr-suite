@@ -325,23 +325,29 @@ func _joint(frame: XRHandFrame, joint: int, position: Vector3) -> void:
     frame.set_joint(joint, Transform3D(Basis.IDENTITY, position), 0.008, VALID)
 
 func _test_runtime_source_selection(failures: Array[String]) -> void:
-    # The gesture runtime used to hard-code XRTrackerHandPoseSource, which
-    # Task 9 pointed at resolve_raw -- so recognition read RAW joints while
-    # every other consumer had moved to conditioned. The choice is now
-    # explicit and switchable, because the recognizers' thresholds were tuned
-    # against raw data and which one wins is an on-device question.
+    # The gesture runtime used to hard-code a RAW pose source, which Task 9
+    # pointed at resolve_raw because it FEEDS the conditioning chain -- so
+    # recognition read raw joints while every other consumer had moved to
+    # conditioned. The choice is now explicit and switchable, because the
+    # recognizers' thresholds were tuned against raw and which one wins is an
+    # on-device question.
+    #
+    # ONE class with a flag, not two classes: an earlier revision added a
+    # near-identical XRConditionedHandPoseSource differing by a single line,
+    # which is duplication rather than enhancement.
     var conditioned := XRGestureRuntime.default_pose_source(true)
-    if not (conditioned is XRConditionedHandPoseSource):
-        failures.append("conditioned selection must yield XRConditionedHandPoseSource, got %s" % conditioned)
+    if not (conditioned is XRTrackerHandPoseSource):
+        failures.append("the conditioned source must still be an XRTrackerHandPoseSource, got %s" % conditioned)
+    elif not (conditioned as XRTrackerHandPoseSource).conditioned:
+        failures.append("conditioned selection must set the conditioned flag")
     var raw := XRGestureRuntime.default_pose_source(false)
     if not (raw is XRTrackerHandPoseSource):
-        failures.append("raw selection must yield XRTrackerHandPoseSource, got %s" % raw)
-    if raw is XRConditionedHandPoseSource:
-        failures.append("the raw source must not be the conditioned one -- the A/B would compare a thing with itself")
+        failures.append("the raw source must be an XRTrackerHandPoseSource, got %s" % raw)
+    elif (raw as XRTrackerHandPoseSource).conditioned:
+        failures.append("raw selection must leave the conditioned flag clear -- the A/B would compare a thing with itself")
 
-    # Flipping at runtime must actually swap the source, and a repeat of the
-    # same value must not rebuild it (a caller driving this per frame would
-    # otherwise thrash acquisition).
+    # Flipping at runtime must swap the source, and repeating the same value
+    # must not rebuild it (a caller driving this per frame would thrash it).
     var runtime := XRGestureRuntime.new()
     runtime.use_conditioned_hands = false
     runtime.set_pose_source(XRGestureRuntime.default_pose_source(false))
@@ -349,8 +355,8 @@ func _test_runtime_source_selection(failures: Array[String]) -> void:
     runtime.set_use_conditioned_hands(true)
     if runtime._pose_source == before:
         failures.append("flipping the flag must swap the acquisition source")
-    if not (runtime._pose_source is XRConditionedHandPoseSource):
-        failures.append("flipping to conditioned must install the conditioned source")
+    if not (runtime._pose_source as XRTrackerHandPoseSource).conditioned:
+        failures.append("flipping to conditioned must install a conditioned source")
     var after = runtime._pose_source
     runtime.set_use_conditioned_hands(true)
     if runtime._pose_source != after:

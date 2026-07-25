@@ -41,7 +41,7 @@ func set_pose_source(source: XRHandPoseSource) -> void:
 ## The source a runtime uses when nothing was injected. Static and free of node
 ## state so the raw-vs-conditioned choice is testable headless.
 static func default_pose_source(conditioned: bool) -> XRHandPoseSource:
-    return XRConditionedHandPoseSource.new() if conditioned else XRTrackerHandPoseSource.new()
+    return XRTrackerHandPoseSource.new(conditioned)
 
 ## Swaps the acquisition source at runtime for A/B comparison, preserving
 ## nothing: recognizers keep their own state, and the next frame simply

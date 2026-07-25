@@ -29,6 +29,10 @@ extends Node
 
 enum SimMode { CONTROLLER, HAND }
 
+## How far the cursor ray probes for something to aim at, and the fallback
+## distance when it finds nothing.
+const _MOUSE_FALLBACK_DISTANCE := 20.0
+
 const _HAND_TRACKER_NAMES := [&"/user/hand_tracker/left", &"/user/hand_tracker/right"]
 const _POSE_PATHS := {
 	"open": "res://addons/godot_xr_hands/runtime/gesture_studio/presets/open_palm.tres",
@@ -241,11 +245,35 @@ func _update_poses() -> void:
 	_set_hand_pose(0, to_origin * left_xf)
 
 
+## The point the CURSOR is actually over, so the simulated ray lands where the
+## mouse points at ANY depth.
+##
+## This used to aim at a fixed 5 m along the camera ray. The controller sits
+## ~0.25 m to the side of the camera, so a fixed-depth target lines up only at
+## that exact depth and parallaxes everywhere else -- badly on near UI panels,
+## which is exactly where flat testing happens. Aiming at the real hit point
+## makes the two rays agree at every distance.
+##
+## `from_position` is the controller origin: the query deliberately runs from
+## the CAMERA (what the user is pointing with) and the controller then aims at
+## the result, which is what keeps cursor and reticle together.
 func _mouse_target(from_position: Vector3) -> Vector3:
 	var mouse := get_viewport().get_mouse_position()
 	var ray_origin := _camera.project_ray_origin(mouse)
 	var ray_direction := _camera.project_ray_normal(mouse)
-	return ray_origin + ray_direction * 5.0
+	var fallback := ray_origin + ray_direction * _MOUSE_FALLBACK_DISTANCE
+	var world := _camera.get_world_3d()
+	if world == null:
+		return fallback
+	var query := PhysicsRayQueryParameters3D.create(ray_origin, fallback)
+	query.collide_with_areas = true
+	query.collide_with_bodies = true
+	var hit := world.direct_space_state.intersect_ray(query)
+	if hit.has("position"):
+		return hit["position"]
+	# Nothing under the cursor: keep the ray parallel to the camera ray so it
+	# still points where the user is looking, just without a convergence point.
+	return fallback
 
 
 func _basis_looking(from_position: Vector3, at: Vector3) -> Basis:
