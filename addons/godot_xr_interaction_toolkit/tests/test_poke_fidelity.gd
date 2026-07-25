@@ -35,6 +35,7 @@ func _init() -> void:
 	_test_apply_profile_include_depth_true(_failures)
 	_test_apply_profile_include_depth_false(_failures)
 	_test_apply_profile_null_changes_nothing(_failures)
+	_test_mixed_axis_half_size(_failures)
 	if _failures.is_empty():
 		print("XR poke fidelity: PASS")
 		quit(0)
@@ -337,3 +338,32 @@ func _test_apply_profile_null_changes_nothing(failures: Array[String]) -> void:
 			and is_equal_approx(evaluator.min_approach_travel, prior_min_travel)
 	)
 	_check(failures, unchanged, "apply_profile: a null profile must change nothing")
+
+
+## Pins down BOTH halves of "zero on an axis = unbounded there" for a
+## half_size with only ONE axis unbounded. The old all-or-nothing guard
+## treated any bounded axis as if it bounded every axis, so a point far
+## outside half_size.x = 0.0 was wrongly rejected; the per-axis guard must let
+## it through while half_size.y = 0.05 keeps rejecting on y as before.
+func _test_mixed_axis_half_size(failures: Array[String]) -> void:
+	# x unbounded: far off-axis in x, approaching through the face and
+	# crossing the press plane, must still PRESS.
+	var unbounded_x = _make()
+	unbounded_x.half_size = Vector2(0.0, 0.05)
+	var x_events := _run(unbounded_x, [
+		Vector3(0.500, 0.0, 0.100),
+		Vector3(0.500, 0.0, 0.008),
+	])
+	_check(failures, _count(x_events, XRPokeEvaluator.Event.PRESSED) == 1,
+			"mixed axis: half_size.x = 0 must not reject a far off-axis point, got %s" % [x_events])
+
+	# y still bounded: press, then slide past |y| > 0.05, must still CANCEL.
+	var bounded_y = _make()
+	bounded_y.half_size = Vector2(0.0, 0.05)
+	var y_events := _run(bounded_y, [
+		Vector3(0.0, 0.0, 0.050),
+		Vector3(0.0, 0.0, 0.008),
+		Vector3(0.0, 0.080, 0.008),
+	])
+	_check(failures, _count(y_events, XRPokeEvaluator.Event.CANCELLED) == 1,
+			"mixed axis: half_size.y = 0.05 must still bound y and cancel, got %s" % [y_events])
