@@ -427,18 +427,30 @@ func _test_transit_survives_handoff(failures: Array[String]) -> void:
 	if grab.in_transit():
 		failures.append("two-hand begin must clear any leftover single-hand transit")
 
-	# Two-hand session moves the object well away from the world-origin-ish
-	# pose the stale single-hand _transit_from was captured at.
+	# Two-hand session: separate the hands (distance 0.6 -> 1.8 m, i.e. 3.0x)
+	# WHILE ALSO shifting the midpoint by the same total translation as
+	# before (per-frame average of the two hand deltas is unchanged), so the
+	# stale-target assertions below still hold. two_hand_scale (default true,
+	# set explicitly for clarity) means this genuinely scales the object --
+	# the case that motivates the whole re-arm decision. A fixture that moves
+	# both hands by the same vector (as an earlier version of this test did)
+	# never changes hand DISTANCE, so two_hand_scale never actually fires and
+	# the scale-staleness case goes completely unexercised.
+	grab.two_hand_scale = true
 	for frame in range(10):
-		hand_a.pose.origin += Vector3(0.05, 0.0, 0.02)
-		hand_b.pose.origin += Vector3(0.05, 0.0, 0.02)
+		hand_a.pose.origin += Vector3(-0.01, 0.0, 0.02)
+		hand_b.pose.origin += Vector3(0.11, 0.0, 0.02)
 		grab._physics_process(1.0 / 60.0)
 	var pos_before_handoff := body.global_position
+	var det_before_handoff := body.global_transform.basis.determinant()
 	if pos_before_handoff.distance_to(Vector3.ZERO) < 0.2:
 		failures.append("handoff setup: two-hand session must move the object well away from the stale pre-grab pose, got %s" % pos_before_handoff)
+	if absf(det_before_handoff - 27.0) > 0.5:
+		failures.append("handoff setup: two-hand session must scale the object to 3.0x (determinant 27), got determinant %.3f" % det_before_handoff)
 
 	# Hand B releases: two-hand -> one-hand handoff recomputes _grab_offset
-	# against hand A's CURRENT pose and the object's CURRENT (moved) transform.
+	# against hand A's CURRENT pose and the object's CURRENT (moved, SCALED)
+	# transform.
 	grab._notify_select_exited(hand_b)
 
 	# The very next frame is where a leftover/stale transit would pop the
@@ -452,27 +464,53 @@ func _test_transit_survives_handoff(failures: Array[String]) -> void:
 	if body.global_position.distance_to(Vector3.ZERO) < pos_before_handoff.distance_to(Vector3.ZERO) * 0.5:
 		failures.append("handoff object landed suspiciously close to the STALE pre-grab origin: %s" % body.global_position)
 
-	# The handoff-re-armed transit is still genuinely mid-flight here (only
-	# 2 frames of its ~0.64 s duration have elapsed). Releasing entirely
-	# (grabbers empty) must clear it immediately, not leave in_transit()
-	# stuck true -- _physics_process returns early with no grabbers, so a
-	# leftover _transit_time_left would never get the chance to decrement
-	# on its own afterward.
+	# Run the SAME handoff-re-armed transit to completion, tracking scale
+	# drift every frame. transit_blend (Task 3) carries `from`'s scale
+	# through UNTOUCHED for the entire blend, by construction -- if
+	# _arm_transit recaptured a STALE _transit_from (e.g. the pre-two-hand,
+	# unscaled 1.0x object pose) instead of the object's CURRENT (3.0x)
+	# transform at the moment of handoff, the whole blend would carry the
+	# WRONG constant scale from start to finish and land on a
+	# wrong-but-plausible basis with no engine error -- exactly the
+	# load-bearing concern this test exists to catch. Compares determinant
+	# (not Basis.get_scale(), per the Task 3 lesson: get_scale() silently
+	# permutes axes once a basis is rotated with non-uniform scale -- moot
+	# here since scale is uniform, but determinant is the sound choice on
+	# principle) against every frame while still in transit, and against the
+	# final value once the transit ends.
+	var max_scale_drift := 0.0
+	var transit_frames := 0
+	while grab.in_transit() and transit_frames < 400:
+		hand_a.pose.origin += Vector3(0.0, 0.0, -0.001)
+		grab._physics_process(1.0 / 60.0)
+		var det_now := body.global_transform.basis.determinant()
+		max_scale_drift = maxf(max_scale_drift, absf(det_now - det_before_handoff))
+		transit_frames += 1
+	if grab.in_transit():
+		failures.append("handoff-re-armed transit did not finish within the 400-frame test budget -- something is stuck")
+	if max_scale_drift > 0.01:
+		failures.append("object scale must not drift across the re-armed handoff transit: max |determinant delta| = %.4f (scale at handoff had determinant %.4f)" % [max_scale_drift, det_before_handoff])
+	var det_at_settle := body.global_transform.basis.determinant()
+	if absf(det_at_settle - det_before_handoff) > 0.01:
+		failures.append("object scale once the re-armed transit ends must match the scale it had at handoff: settle determinant %.4f, handoff determinant %.4f" % [det_at_settle, det_before_handoff])
+	if not body.global_position.is_equal_approx(hand_a.pose.origin):
+		failures.append("handoff-re-armed transit must land exactly on hand A's live pose at alpha=1, got %s vs %s" % [body.global_position, hand_a.pose.origin])
+
+	# Separately: releasing to zero grabbers must clear a transit that is
+	# genuinely still in flight (not one that already finished on its own,
+	# like the one just driven to completion above). _physics_process
+	# returns early with no grabbers, so a leftover _transit_time_left would
+	# never get the chance to decrement afterward.
+	grab._notify_select_exited(hand_a)
+	hand_a.pose = Transform3D(Basis.IDENTITY, hand_a.pose.origin + Vector3(1.0, 0.0, 0.0))  # far enough for a real transit
+	grab._notify_select_entered(hand_a)
 	if not grab.in_transit():
-		failures.append("handoff test setup: the re-armed transit must still be in flight before the release check")
+		failures.append("handoff test teardown: re-grab 1 m away must arm a fresh transit")
+	grab._physics_process(1.0 / 60.0)
+	if not grab.in_transit():
+		failures.append("handoff test teardown: transit must still be in flight after 1 frame")
 	grab._notify_select_exited(hand_a)
 	if grab.in_transit():
 		failures.append("releasing to zero grabbers must clear a still-armed transit, not leave in_transit() stuck true")
-
-	# Settle: re-grab and confirm single-hand tracking still converges exactly
-	# onto hand A's LIVE pose -- the release above must not have left any
-	# stale offset for the next grab to inherit. 60 frames comfortably clears
-	# a fresh transit at this distance and transit_speed.
-	grab._notify_select_entered(hand_a)
-	for frame in range(60):
-		hand_a.pose.origin += Vector3(0.0, 0.0, -0.001)
-		grab._physics_process(1.0 / 60.0)
-	if not body.global_position.is_equal_approx(hand_a.pose.origin):
-		failures.append("after handoff settle, object must sit exactly on hand A's live pose, got %s vs %s" % [body.global_position, hand_a.pose.origin])
 
 	grab.queue_free(); hand_a.queue_free(); hand_b.queue_free()
