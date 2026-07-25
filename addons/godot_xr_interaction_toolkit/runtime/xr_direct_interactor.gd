@@ -6,6 +6,10 @@ extends "res://addons/godot_xr_interaction_toolkit/runtime/xr_base_interactor.gd
 ## to hover/select nearby interactables. This is the Direct Interactor half of
 ## Unity XRI's near/far setup; XRRayInteractor remains the far interactor.
 
+## Group the arbiter finds these by. A LIVE lookup, not a cached list: this
+## node is a rig child, and a rig is rebuilt on every scene change.
+const GROUP := "xr_direct_interactor"
+
 @export_group("Direct Hover")
 @export_range(0.01, 2.0, 0.01, "or_greater") var hover_radius := 0.16
 @export_range(1, 128, 1, "or_greater") var max_results := 16
@@ -37,6 +41,9 @@ var _shape := SphereShape3D.new()
 var _direct_state := {"valid": false}
 var _attach_pose := Transform3D.IDENTITY
 var _grip_armed := true
+
+func _enter_tree() -> void:
+    add_to_group(GROUP)
 
 func _physics_process(_delta: float) -> void:
     _update_direct()

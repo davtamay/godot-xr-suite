@@ -259,6 +259,7 @@ const DirectInteractor := preload("res://addons/godot_xr_interaction_toolkit/run
 class StubDirect:
 	extends DirectInteractor
 	var stub_hovered: Node = null
+	# _enter_tree on the real class joins the group the arbiter looks in.
 	func get_hovered() -> Node:
 		return stub_hovered
 	func get_selected() -> Node:
@@ -285,9 +286,6 @@ func _test_node_drives_modes_per_hand(failures: Array[String]) -> void:
 	var right := StubDirect.new()
 	right.hand = 1
 	host.add_child(right)
-	arbiter._near_interactors.clear()
-	arbiter._collect_near_interactors(host)
-
 	# Only the LEFT hand has something in reach.
 	left.stub_hovered = Node.new()
 	_pump(arbiter, 3)
@@ -323,9 +321,6 @@ func _test_node_accumulator_damps_flicker(failures: Array[String]) -> void:
 	var direct := StubDirect.new()
 	direct.hand = 0
 	host.add_child(direct)
-	arbiter._near_interactors.clear()
-	arbiter._collect_near_interactors(host)
-
 	var candidate := Node.new()
 	direct.stub_hovered = candidate
 	_pump(arbiter, 3)
@@ -398,8 +393,6 @@ func _test_poke_reach_counts_as_near(failures: Array[String]) -> void:
 	host.add_child(arbiter)
 	var poke := StubPoke.new()
 	host.add_child(poke)
-	arbiter._near_interactors.clear()
-
 	_pump(arbiter, 3)
 	if arbiter.mode_for(0) != Arbiter.Mode.FAR:
 		failures.append("with nothing in reach the hand should be FAR, got %d" % arbiter.mode_for(0))

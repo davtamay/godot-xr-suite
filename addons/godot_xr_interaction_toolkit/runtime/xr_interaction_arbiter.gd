@@ -29,12 +29,9 @@ enum Mode { NONE, NEAR, FAR, TELEPORT }
 
 var _mode := [Mode.NONE, Mode.NONE]
 var _time_since_candidate := [INF, INF]
-var _near_interactors: Array[XRDirectInteractor] = []
 
 func _ready() -> void:
 	add_to_group(GROUP)
-	var scene := get_tree().current_scene if get_tree() else null
-	_collect_near_interactors(scene if scene != null else get_tree().root)
 
 ## The whole rule, as a pure function: no node state, no scene, no engine
 ## singletons, so every transition and the hysteresis band are provable
@@ -129,16 +126,18 @@ func _hand_tracked(hand: int) -> bool:
 ## candidate too: a held object may be carried outside the hover sphere, and
 ## the far ray must not reappear mid-grab.
 func _has_near_candidate(hand: int) -> bool:
-	# Rescan while empty: an arbiter built before its rig (or in a scene whose
-	# current_scene is null at _ready) would otherwise cache an empty list
-	# forever and pin both hands to FAR, silently.
-	if _near_interactors.is_empty():
-		var scene := get_tree().current_scene if get_tree() else null
-		_collect_near_interactors(scene if scene != null else get_tree().root)
-	for interactor in _near_interactors:
-		if not is_instance_valid(interactor) or int(interactor.hand) != hand:
+	# LIVE group lookup, deliberately -- this used to be a list cached at
+	# _ready, which was built before the scene existed. Whatever it captured
+	# (stale nodes from the outgoing scene) made it non-empty, so the "rescan
+	# while empty" guard never fired and every entry failed is_instance_valid.
+	# Grabbing therefore NEVER registered as near, while poke did, because poke
+	# was already a live lookup. Symptom on device: the ray and cursor vanished
+	# over UI but stayed drawn while holding a grabbed object.
+	for node in get_tree().get_nodes_in_group(XRDirectInteractor.GROUP):
+		var direct := node as XRDirectInteractor
+		if direct == null or int(direct.hand) != hand:
 			continue
-		if interactor.get_selected() != null or interactor.get_hovered() != null:
+		if direct.get_selected() != null or direct.get_hovered() != null:
 			return true
 	# Poke reach counts as near-field too. NEAR cannot be derived from the GRAB
 	# interactor alone: UI panels and poke buttons are not grab interactables,
@@ -152,13 +151,6 @@ func _has_near_candidate(hand: int) -> bool:
 			return true
 	return false
 
-## Cached at _ready: the direct interactors are rig children that do not come
-## and go, and a per-frame tree walk for two nodes is waste.
-func _collect_near_interactors(root: Node) -> void:
-	if root is XRDirectInteractor:
-		_near_interactors.append(root)
-	for child in root.get_children():
-		_collect_near_interactors(child)
 
 func _is_teleport_aiming(hand: int) -> bool:
 	for node in get_tree().get_nodes_in_group(XRLocomotion.GROUP):

@@ -870,3 +870,19 @@ editing any scene file.
      sensible reading, so the ray and cursor stand down even though this ray
      is what holds it -- reeling something in should not leave a ray drawn
      through the thing in your hand. The grab itself is untouched.
+  6. ROOT CAUSE of "ray hides over UI but not while grabbing" -- and it had
+     been broken since the arbiter shipped. The two near sources were looked
+     up differently: POKE via a live get_nodes_in_group every frame, DIRECT
+     via a list cached in _ready. That cache is built before the scene exists
+     (the arbiter is a rig child; current_scene is null or still the OUTGOING
+     scene), so it captured stale nodes -- which made it NON-EMPTY, so the
+     "rescan while empty" guard never fired, and every entry then failed
+     is_instance_valid. Grabbing therefore never registered as near, silently
+     and permanently, while poke always worked. David's observation that poke
+     worked and grab did not is what isolated it.
+     Fixed by making both live: XRDirectInteractor joins a GROUP in
+     _enter_tree and the arbiter queries it every frame, same as poke. Cache
+     and rescan-guard deleted. Two mutations fatal.
+     LESSON: caching a scene lookup in _ready inside a node that ships INSIDE
+     a reusable rig is a trap -- the rig outlives no scene, it is rebuilt with
+     every one. Prefer live group lookups for anything rig-shaped.
