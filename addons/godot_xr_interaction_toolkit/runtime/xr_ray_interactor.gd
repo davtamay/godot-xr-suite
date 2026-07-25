@@ -298,10 +298,11 @@ func _resolve_suppression_interactor() -> void:
     _suppress_interactor = get_node_or_null(suppress_interactor_path)
 
 func _is_suppressed_by_linked_interactor() -> bool:
-    # An arbiter, when present, owns this decision entirely -- the point of it
-    # is one rule in one place instead of the four independent branches below.
-    # With no arbiter in the scene every branch runs exactly as it did before
-    # this file learned the word, which is the back-compat contract.
+    # The arbiter owns this decision: one rule in one place. The shipped rig
+    # carries one, which is why the suppress_on_* exports below are no longer
+    # wired there. They remain for scenes that build their own rig without an
+    # arbiter -- NOT as a parallel system, but as the answer for a rig that has
+    # not adopted one.
     var arbiter := _resolve_arbiter()
     if arbiter != null:
         return not arbiter.is_mode_active(hand, XRInteractionArbiter.Mode.FAR)

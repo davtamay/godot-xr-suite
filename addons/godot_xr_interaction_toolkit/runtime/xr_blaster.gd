@@ -75,13 +75,14 @@ func _setup_feedback() -> void:
 			_glow.material_override = _glow_material
 			_glow_base_energy = _glow_material.emission_energy_multiplier
 	if _interactable:
-		for node in _interactable.find_children("*", "Node", true, false):
-			if node is XRHandActivator:
-				(node as XRHandActivator).trigger_progress.connect(_on_trigger_progress)
-				break
+		# The USE axis on the held object, not the activator's own signal: one
+		# source for "how hard is this being used", so the visual cannot drift
+		# from what every other consumer sees.
+		if _interactable.has_signal("use_changed") 				and not _interactable.use_changed.is_connected(_on_use_changed):
+			_interactable.use_changed.connect(_on_use_changed)
 
 
-func _on_trigger_progress(_hand: int, amount: float) -> void:
+func _on_use_changed(amount: float) -> void:
 	if _trigger:
 		_trigger.transform.basis = _trigger_rest * Basis(Vector3.RIGHT, -deg_to_rad(trigger_max_angle * amount))
 	if _glow_material:

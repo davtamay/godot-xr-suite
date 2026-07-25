@@ -1,4 +1,4 @@
-[gd_scene load_steps=16 format=3 uid="uid://digw24c7kgacb"]
+[gd_scene load_steps=17 format=3 uid="uid://digw24c7kgacb"]
 
 [ext_resource type="Script" uid="uid://nrrau4vedars" path="res://addons/godot_webxr_kit/rig/webxr_rig.gd" id="0_rig"]
 [ext_resource type="Script" uid="uid://5wgrevdcbpfb" path="res://addons/godot_xr_interaction_toolkit/runtime/xr_interaction_manager.gd" id="1_manager"]
@@ -15,6 +15,7 @@
 [ext_resource type="Script" uid="uid://d2ivnk6q3qlk0" path="res://addons/godot_xr_interaction_toolkit/runtime/xr_poke_interactor.gd" id="12_poke"]
 [ext_resource type="Script" uid="uid://bv8cujsq5qm8j" path="res://addons/godot_webxr_kit/runtime/xr_hands_mount.gd" id="13_hands"]
 [ext_resource type="Script" uid="uid://dhcijs6x6gehg" path="res://addons/godot_xr_interaction_toolkit/runtime/xr_interaction_feedback.gd" id="14_feedback"]
+[ext_resource type="Script" uid="uid://bgmik2uq7x5ii" path="res://addons/godot_xr_interaction_toolkit/runtime/xr_interaction_arbiter.gd" id="15_arbiter"]
 
 [node name="WebXRRig" type="Node3D"]
 script = ExtResource("0_rig")
@@ -92,9 +93,11 @@ script = ExtResource("4_direct")
 input_adapter_path = NodePath("../../WebXRInputAdapter")
 hand = 1
 
+[node name="XRInteractionArbiter" type="Node" parent="."]
+script = ExtResource("15_arbiter")
+
 [node name="LeftRayInteractor" type="Node3D" parent="XROrigin3D"]
 script = ExtResource("5_ray")
-suppress_interactor_path = NodePath("../LeftDirectInteractor")
 input_adapter_path = NodePath("../../WebXRInputAdapter")
 
 [node name="LineVisual" type="MeshInstance3D" parent="XROrigin3D/LeftRayInteractor"]
@@ -106,7 +109,6 @@ script = ExtResource("7_reticle")
 
 [node name="RightRayInteractor" type="Node3D" parent="XROrigin3D"]
 script = ExtResource("5_ray")
-suppress_interactor_path = NodePath("../RightDirectInteractor")
 input_adapter_path = NodePath("../../WebXRInputAdapter")
 hand = 1
 

@@ -14,7 +14,8 @@ extends Node
 ## thumb); or point `activate_gesture` at any XRHandGesture (a Gesture Studio
 ## recording or a preset) to fire on a whole authored pose instead.
 ##
-## Emits `trigger_progress(hand, amount)` every frame the object is held so the
+## Publishes the pull as the held object's USE axis (XRGrabInteractable
+## .use_value). Also still emits the deprecated `trigger_progress` so the
 ## tool can respond live (a trigger that visibly depresses as your finger curls),
 ## which is how the gesture teaches itself to the user.
 ##
@@ -52,6 +53,10 @@ enum ActivateMode { MOMENTARY, CONTINUOUS }
 signal activated_by_gesture(hand: int)
 ## Emitted every frame a hand holds the object: amount is the trigger finger's
 ## curl 0..1 (or 1.0 when an authored gesture is matched). Drive live feedback.
+## DEPRECATED, kept as a thin forward of the held object's USE axis so any
+## external project still connected to it keeps working. Prefer
+## XRGrabInteractable.use_changed / use_value: that is the single source, and
+## it reaches controller-held props too if a controller analog source lands.
 signal trigger_progress(hand: int, amount: float)
 
 const _RECOGNIZER_PATH := "res://addons/godot_xr_hands/runtime/gesture_studio/xr_gesture_recognizer.gd"

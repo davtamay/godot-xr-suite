@@ -733,3 +733,28 @@ reads curl -1 and every downstream assertion silently measures nothing.
 Where existing code WAS checked first, no duplication occurred (hover_radius
 reuse, _deadzone_slice consolidation, tuned-curl reuse, throw mean replaced
 not paralleled). The rule is simply: check first.
+
+## Duplication follow-up: the "back-compat" was a phantom (David, 2026-07-25)
+David: "again backwards compatibility from what, isnt our logic universal for
+any build?" -- correct, and the evidence settled it:
+  - trigger_progress had exactly ONE consumer, xr_blaster.gd, ours. Nothing
+    else connects it; no scene references it.
+  - suppress_interactor_path was set in webxr_rig.tscn itself. So the thing
+    depending on the old mechanism was OUR OWN RIG, not an external user.
+Done, in one change rather than a deprecation timeline:
+  - XRInteractionArbiter added to webxr_rig.tscn; suppress_interactor_path
+    removed from both rays. Verified on the INSTANTIATED rig: arbiters=1,
+    rays=2, rays_still_wired=0.
+  - The blaster reads XRGrabInteractable.use_changed instead of the
+    activator's trigger_progress -- one source for "how hard is this used".
+  - trigger_progress kept ONLY as a documented-deprecated forward, because the
+    suite is genuinely published (GitHub remote, v1.72.0, tagged releases) and
+    the blocks-dock palette advertises it. That is the one real external
+    surface; everything internal is off it.
+  - The suppress_on_* exports remain for a rig that builds itself WITHOUT an
+    arbiter -- not a parallel system, the answer for a rig that has not
+    adopted one. Comment corrected to say that rather than "back-compat".
+CAVEAT: the arbiter is now the rig's ONLY arbitration path and it has still
+not been verified in a headset. If the earn-in finds a problem there is no
+fallback in the shipped rig -- that is the risk David accepted by choosing to
+do this now rather than after the session.
