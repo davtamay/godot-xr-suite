@@ -28,7 +28,16 @@ const PANEL_MATERIAL := preload("res://addons/godot_xr_interaction_toolkit/runti
 
 var _viewport: SubViewport
 var _panel_mesh: MeshInstance3D
-var _hovering_interactor: Node
+## Every interactor currently hovering this panel, in the order they arrived
+## (most recent last). A SubViewport has exactly ONE mouse cursor, so only one
+## of these can drive it -- but which one has to stay RECOVERABLE. This used to
+## be a single slot, and two rays on one panel wedged it: the second hand
+## overwrote the slot, then its exit cleared it to null while the first hand was
+## still hovering. The first hand never re-entered (it never left), so nothing
+## drove the viewport from it again and its buttons stopped highlighting for the
+## rest of the scene. David, on device: "when using both cursors one stops
+## working in producing hovers". A stack hands ownership back instead.
+var _ui_hovering: Array[Node] = []
 var _pressing_interactor: Node
 var _pointer_down := false
 var _screen_pointer_down := false
@@ -57,7 +66,7 @@ func _ready() -> void:
 	select_exited.connect(_on_select_exited)
 
 func _process(_delta: float) -> void:
-	var interactor: Node = _pressing_interactor if _pressing_interactor != null else _hovering_interactor
+	var interactor := get_pointer_driver()
 	if interactor != null:
 		_update_pointer(interactor)
 
@@ -170,16 +179,46 @@ func _get_pointer_camera() -> Camera3D:
 			return configured_camera
 	return get_viewport().get_camera_3d()
 
+## The single interactor allowed to move the viewport's mouse right now: a press
+## always wins (you must not lose the cursor mid-click to the other hand), else
+## the most recent hand to arrive. Freed interactors are dropped here rather
+## than on a signal -- a scene change frees them without ever emitting exit.
+func get_pointer_driver() -> Node:
+	if _pressing_interactor != null and is_instance_valid(_pressing_interactor):
+		return _pressing_interactor
+	while not _ui_hovering.is_empty():
+		# Deliberately untyped: a freed node still sits in the array, and
+		# assigning one to a `Node`-typed local is itself an error in GDScript.
+		var candidate = _ui_hovering.back()
+		if is_instance_valid(candidate):
+			return candidate
+		_ui_hovering.pop_back()
+	return null
+
+func _push_ui_hover(interactor) -> void:
+	# Erase-then-append, so a re-entering hand goes back on TOP instead of
+	# sitting under a stale duplicate of itself.
+	_ui_hovering.erase(interactor)
+	_ui_hovering.append(interactor)
+
 func _on_hover_entered(interactor) -> void:
-	_hovering_interactor = interactor
+	_push_ui_hover(interactor)
 	_update_pointer(interactor)
 
 func _on_hover_exited(interactor) -> void:
-	if interactor == _hovering_interactor:
-		_hovering_interactor = null
+	_ui_hovering.erase(interactor)
+	# Hand the cursor straight back to whoever is still on the panel. Without
+	# this the surviving hand keeps a drawn ray and reticle but stops moving the
+	# viewport mouse, which reads as "that hand can no longer hover anything".
+	var next := get_pointer_driver()
+	if next != null:
+		_update_pointer(next)
 
 func _on_select_entered(interactor) -> void:
 	_pressing_interactor = interactor
+	# A press also claims hover ownership, so releasing leaves the cursor with
+	# the hand that just clicked rather than snapping back to the idle hand.
+	_push_ui_hover(interactor)
 	if _update_pointer(interactor):
 		_push_mouse_button(_last_pointer_position, true)
 		_push_mouse_motion(_last_pointer_position)
@@ -191,7 +230,16 @@ func _on_select_exited(interactor) -> void:
 		_pressing_interactor = null
 
 func _update_pointer(interactor: Node) -> bool:
-	if _viewport == null or interactor == null or not interactor.has_method("get_ray_state"):
+	# Both branches below map through global_transform, which on an out-of-tree
+	# panel returns IDENTITY rather than failing -- so the cursor would be
+	# placed by treating the panel as if it sat at the world origin. A scene
+	# change reaches here: tearing the scene down emits hover_exited, and the
+	# handback hands the cursor to the next interactor on a panel that is
+	# already leaving. _push_mouse_button carries the same guard for the same
+	# reason; this is the read side of it.
+	if _viewport == null or not is_inside_tree():
+		return false
+	if interactor == null or not interactor.has_method("get_ray_state"):
 		return false
 
 	var ray_state: Dictionary = interactor.get_ray_state()
