@@ -142,6 +142,15 @@ untracked path now scrubs joint flags too (consumers gate on
 joint_position_valid, not has_tracking_data). All four Option A mutations
 killed, incl. get_shadow ignoring _enabled and the flag scrub removed.
 
+Task 10 prep (automatable part) DONE: measure_traces.gd committed (7247915)
+and verified against synthetic rest/motion/dropout traces -- rest wrist
+jitter -79% at defaults, cond tip bone dev 0.00007 m vs the 0.0005 m ceiling,
+dropout replay clean. Guided capture scene in the DEMO repo (abc95df,
+Godot_WebXR_gh): res://scenes/trace_capture.tscn, zero-button, records both
+hands per segment to user://hand_traces/{rest,motion,dropout}_{left,right}.res.
+NOTE: rest-trace "lag" and motion-trace "jitter" are meaningless by
+construction; read each metric only on its matching trace kind.
+
 ## NEXT ACTIONS, in order
 1. Task 10: baseline traces, tuning, WEB frame-cost measurement, on-device
    earn-in. REQUIRES DAVID IN A HEADSET. A/B on the WebGL path, not WebGPU. Task 10 requires David in a headset; 7-9 automatable.
