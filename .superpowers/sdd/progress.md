@@ -134,3 +134,23 @@ pin unconditionally (`_poke_pins[source_id] = global_transform * pinned`). The
 canvas must apply the same INF handling XRPokeable now uses - erase the entry
 rather than store INF - or `get_poke_pin` will hand Task 6's marker an infinite
 world position.
+
+Task 4: IN PROGRESS (implementer commit 1826206; fix pass 1 in flight)
+  - Canvas converted to the shared evaluator. Both suites green:
+    test_poke_fidelity and test_ui_canvas_pointer (8 hover-ownership tests
+    unchanged, which is the guard that the panel's cursor logic did not move).
+  - Implementer applied the carried-over INF correction correctly.
+  - Concern 1, being fixed: the new canvas test only proves the NEGATIVE (a
+    slide-off does not fire the Control). A no-op adapter would pass it too.
+    Adding the positive case plus a return-immediately mutation.
+  - Concern 2, NO CODE CHANGE, feeds Task 8: entry-through-face and
+    approach-angle gating are NEW to the canvas path. Strict narrowing - it can
+    only newly reject, never newly accept - but it is still a behaviour delta on
+    a surface tuned in-headset, which is a CLAUDE.md on-device-earn-in trigger.
+    Implementer is writing a concrete gesture list for the Task 8 checklist.
+
+### Carried into Task 8 (controller)
+The on-device checklist must explicitly cover UI-panel gestures that the new
+gate could newly reject - approaching a slider handle from the side, pressing a
+button near the panel edge at a shallow angle. Revert lever if it regresses:
+require_entry_through_face = false, max_approach_angle = 90.
