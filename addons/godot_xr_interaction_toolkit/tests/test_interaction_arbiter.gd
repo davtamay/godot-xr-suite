@@ -26,6 +26,7 @@ func _process(_delta: float) -> bool:
 	_test_node_accumulator_damps_flicker(_failures)
 	_test_poke_gate_only_blocks_teleport(_failures)
 	_test_poke_reach_counts_as_near(_failures)
+	_test_pinch_settle_holds_the_aim(_failures)
 	if _failures.is_empty():
 		print("XR interaction arbiter: PASS")
 		quit(0)
@@ -417,4 +418,62 @@ func _test_poke_reach_counts_as_near(failures: Array[String]) -> void:
 		failures.append("leaving poke reach must return the hand to FAR")
 
 	_unregister(trackers)
+	host.free()
+
+## A stub adapter whose aim pose we can move between frames, standing in for a
+## hand whose pinch physically shifts the joints the ray is built from.
+class StubAdapter:
+	extends Node
+	signal select_started(hand: int)
+	signal select_ended(hand: int)
+	var origin := Vector3(0.0, 1.4, 0.0)
+	var direction := Vector3(0.0, 0.0, -1.0)
+	func get_aim_pose(_hand: int) -> Dictionary:
+		return {"origin": origin, "direction": direction, "basis": Basis.IDENTITY}
+	func get_grip_pose(_hand: int) -> Dictionary:
+		return {}
+	func get_source_kind(_hand: int) -> int:
+		return 0
+
+## The pinch settle: the aim pose is latched when a select starts, so the hand
+## movement the pinch itself causes cannot drag the cursor off target. Bounded,
+## so the ray returns to live tracking and a drag still follows the hand.
+func _test_pinch_settle_holds_the_aim(failures: Array[String]) -> void:
+	var host := Node3D.new()
+	get_root().add_child(host)
+	var ray := RayInteractor.new()
+	ray.pinch_settle_sec = 0.12
+	host.add_child(ray)
+	var adapter := StubAdapter.new()
+	host.add_child(adapter)
+	ray._adapter = adapter
+
+	var aimed_at := adapter.direction
+	ray._begin_pinch_settle()
+	# The pinch swings the hand: without the latch the ray follows it instantly.
+	adapter.direction = Vector3(0.4, -0.3, -1.0).normalized()
+	ray._update_ray(1.0 / 72.0)
+	var during: Vector3 = ray._ray_state.get("direction", Vector3.ZERO)
+	if not during.is_equal_approx(aimed_at):
+		failures.append("during the settle the ray must hold the pre-pinch aim, got %s vs %s" % [during, aimed_at])
+
+	# ...and it must be bounded: past the window the ray is live again.
+	for frame in range(20):
+		ray._update_ray(1.0 / 72.0)
+	var after: Vector3 = ray._ray_state.get("direction", Vector3.ZERO)
+	if not after.is_equal_approx(adapter.direction):
+		failures.append("after the settle window the ray must track live again, got %s vs %s" % [after, adapter.direction])
+
+	# Disabled means no latching at all -- and asserting only the TIMER cannot
+	# see that, because it lands on 0 whether the guard runs or not. The
+	# observable difference is the captured pose: with the guard it is never
+	# taken, without it a stale pose is stored for nothing.
+	ray.pinch_settle_sec = 0.0
+	ray._settle_pose = {}
+	ray._begin_pinch_settle()
+	if ray._settle_time_left > 0.0:
+		failures.append("pinch_settle_sec = 0 must not arm the settle timer")
+	if not ray._settle_pose.is_empty():
+		failures.append("pinch_settle_sec = 0 must not capture a pose at all")
+
 	host.free()

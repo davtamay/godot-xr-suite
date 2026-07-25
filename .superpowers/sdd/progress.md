@@ -778,3 +778,16 @@ functional. Two bugs from the Controls scene:
 Also added MicrogestureLocomotion to control_panel_demo (David's request),
 mirroring workshop_demo's wiring. Verified on the instantiated scene:
 microgesture_driver=1 locomotion=1 arbiter=1 poke=1.
+  2. FIXED (pinch bounce): the aim pose is now LATCHED for pinch_settle_sec
+     (0.12 s default) when a select starts, then live again. Reasoning matters
+     more than the code: DAMPING IS THE WRONG TOOL here. The ray is already
+     built from conditioned joints, and a pinch is not jitter -- it is genuine
+     fast motion, which the One Euro filter is designed to FOLLOW (that is what
+     beta does). Filtering harder would fight the conditioning and add lag to
+     deliberate aiming. A bounded latch costs one transform and a timer, cannot
+     stick, and leaves drag working after the window.
+     Three mutations: latch never applied (FAIL 2), latch never expires
+     (FAIL 2), disable guard removed -- SURVIVED at first because asserting the
+     TIMER cannot see it (0 either way); the observable difference is that a
+     stale pose gets captured. Assertion moved to _settle_pose. Thirteenth
+     occurrence of asserting the wrong observable.

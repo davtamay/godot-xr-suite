@@ -58,7 +58,24 @@ extends "res://addons/godot_xr_interaction_toolkit/runtime/xr_base_interactor.gd
 ## palm normal with the direction to your head). Higher = harder to hide.
 @export_range(0.0, 1.0, 0.05) var aim_pose_palm_threshold := 0.35
 
+@export_group("Pinch Settle")
+## Holds the aim pose for a moment when a select STARTS, so the ray lands where
+## you were pointing before the pinch moved your hand.
+##
+## Pinching is a real hand movement, not jitter: thumb and index closing rotates
+## the wrist and shifts the joints the ray is built from, so the cursor jumps at
+## the exact instant you commit. Filtering harder cannot fix it -- the hand
+## conditioning already smooths these joints, and its whole job is to FOLLOW
+## fast deliberate motion, which a pinch is. So the pose is latched instead,
+## briefly and with a hard bound, rather than damped.
+##
+## 0 disables it and the ray tracks live at all times.
+@export_range(0.0, 0.5, 0.01) var pinch_settle_sec := 0.12
+
 var _ray_state := {"valid": false}
+# Aim pose captured at select start, replayed until the settle window expires.
+var _settle_pose := {}
+var _settle_time_left := 0.0
 var _poke_interactor: Node
 var _locomotion: Node
 var _grab_distance := 0.0
@@ -81,6 +98,23 @@ func _physics_process(delta: float) -> void:
 
 ## {valid: bool} when inactive, else {valid: true, origin, direction, end,
 ## hit, hovered}. All vectors are in global space.
+## Latches the aim pose the instant a select begins, so the pinch that commits
+## the selection cannot also move it. Overrides the base handler only to take
+## the snapshot BEFORE _try_select resolves, then defers to it unchanged.
+func _on_adapter_select_started(event_hand: int) -> void:
+    if event_hand == hand:
+        _begin_pinch_settle()
+    super(event_hand)
+
+func _begin_pinch_settle() -> void:
+    if pinch_settle_sec <= 0.0 or _adapter == null:
+        return
+    var pose: Dictionary = _adapter.get_aim_pose(hand)
+    if pose.is_empty():
+        return
+    _settle_pose = pose.duplicate()
+    _settle_time_left = pinch_settle_sec
+
 func get_ray_state() -> Dictionary:
     return _ray_state
 
@@ -115,6 +149,13 @@ func _suppressed_by_hand_pose() -> bool:
 
 func _update_ray(delta := 0.0) -> void:
     var pose: Dictionary = _adapter.get_aim_pose(hand) if _adapter else {}
+    # Replay the latched pose through the pinch transient. Bounded by the timer,
+    # so the ray can never stick: after the window it is live again and a drag
+    # still follows the hand.
+    if _settle_time_left > 0.0:
+        _settle_time_left = maxf(0.0, _settle_time_left - delta)
+        if not _settle_pose.is_empty():
+            pose = _settle_pose
 
     if _selected == null and (_is_suppressed_by_linked_interactor() \
             or (hand_ray_requires_aim_pose and _suppressed_by_hand_pose())):
