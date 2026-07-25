@@ -75,7 +75,7 @@ func uses_grip_grab() -> bool:
 ## ~12% on a 0.4->4.0 m/s ramp). Leaning toward the peak of the CLEAN samples
 ## recovers that without letting the corrupted release frames back in.
 ## 0 = mean (pre-bias behaviour), 1 = the fastest clean sample.
-@export_range(0.0, 1.0, 0.05) var throw_peak_bias := 0.8
+@export_range(0.0, 1.0, 0.05) var throw_peak_bias := 0.8  # David: 80% confirmed good, 2026-07-25
 
 @export_group("Two Hand Grab")
 ## Allows a second interactor to select the same object. The second hand rotates
