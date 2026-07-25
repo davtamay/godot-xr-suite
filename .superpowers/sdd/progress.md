@@ -758,3 +758,23 @@ CAVEAT: the arbiter is now the rig's ONLY arbitration path and it has still
 not been verified in a headset. If the earn-in finds a problem there is no
 fallback in the shipped rig -- that is the risk David accepted by choosing to
 do this now rather than after the session.
+
+## On-device round 1 (David, Quest Link, main menu): two findings
+Menu selection works -- the arbiter as the rig's only arbitration path is
+functional. Two bugs from the Controls scene:
+  1. REGRESSION I CAUSED, fixed: the far ray stayed drawn while poking UI.
+     The old rig hid it via suppress_on_poke; I removed that wiring, and the
+     arbiter's NEAR was derived from the GRAB interactor only -- but UI panels
+     and poke buttons are not grab interactables, so reaching for a slider
+     produced no near candidate. _has_near_candidate now takes the UNION of
+     near-field evidence (direct hover/select OR XRPokeInteractor.is_poking).
+     This is exactly the option the whole-branch reviewer offered for C1 and I
+     took the other one, which fixed poke and left this hole. Mutation-proven.
+  2. OPEN, needs a design decision: the cursor BOUNCES at pinch. Pinching
+     physically moves the hand, so the ray origin/direction move with it and
+     the reticle jumps at the moment of selection. Standard remedy is to
+     freeze or heavily damp the ray pose at select onset so the selection
+     lands where the user was pointing BEFORE the pinch disturbed it.
+Also added MicrogestureLocomotion to control_panel_demo (David's request),
+mirroring workshop_demo's wiring. Verified on the instantiated scene:
+microgesture_driver=1 locomotion=1 arbiter=1 poke=1.

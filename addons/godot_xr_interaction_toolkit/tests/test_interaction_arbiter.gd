@@ -25,6 +25,7 @@ func _process(_delta: float) -> bool:
 	_test_node_drives_modes_per_hand(_failures)
 	_test_node_accumulator_damps_flicker(_failures)
 	_test_poke_gate_only_blocks_teleport(_failures)
+	_test_poke_reach_counts_as_near(_failures)
 	if _failures.is_empty():
 		print("XR interaction arbiter: PASS")
 		quit(0)
@@ -376,4 +377,44 @@ func _test_poke_gate_only_blocks_teleport(failures: Array[String]) -> void:
 	if poke._suppressed_by_arbiter(0):
 		failures.append("a disabled arbiter must not suppress poke -- the off switch is itself a poke button")
 
+	host.free()
+
+class StubPoke:
+	extends XRPokeInteractor
+	var poking := [false, false]
+	func is_poking(hand: int) -> bool:
+		return hand >= 0 and hand < 2 and poking[hand]
+
+## Regression: the far ray must hide when a finger is at a POKE target, not
+## only at a grab interactable. UI panels and poke buttons are not grab
+## interactables, so deriving NEAR from the grab interactor alone left the ray
+## drawn over the panel the finger was already touching. The old rig got this
+## from suppress_on_poke; that wiring is gone, so the mode has to carry it.
+func _test_poke_reach_counts_as_near(failures: Array[String]) -> void:
+	var trackers := [_register_hand(0), _register_hand(1)]
+	var host := Node3D.new()
+	get_root().add_child(host)
+	var arbiter := Arbiter.new()
+	host.add_child(arbiter)
+	var poke := StubPoke.new()
+	host.add_child(poke)
+	arbiter._near_interactors.clear()
+
+	_pump(arbiter, 3)
+	if arbiter.mode_for(0) != Arbiter.Mode.FAR:
+		failures.append("with nothing in reach the hand should be FAR, got %d" % arbiter.mode_for(0))
+
+	poke.poking[0] = true
+	_pump(arbiter, 3)
+	if arbiter.mode_for(0) != Arbiter.Mode.NEAR:
+		failures.append("a finger within poke reach must select NEAR so the far ray hides, got %d" % arbiter.mode_for(0))
+	if arbiter.mode_for(1) == Arbiter.Mode.NEAR:
+		failures.append("only the poking hand may go NEAR")
+
+	poke.poking[0] = false
+	_pump(arbiter, 30)
+	if arbiter.mode_for(0) == Arbiter.Mode.NEAR:
+		failures.append("leaving poke reach must return the hand to FAR")
+
+	_unregister(trackers)
 	host.free()

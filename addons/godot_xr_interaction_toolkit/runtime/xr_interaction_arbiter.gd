@@ -140,6 +140,16 @@ func _has_near_candidate(hand: int) -> bool:
 			continue
 		if interactor.get_selected() != null or interactor.get_hovered() != null:
 			return true
+	# Poke reach counts as near-field too. NEAR cannot be derived from the GRAB
+	# interactor alone: UI panels and poke buttons are not grab interactables,
+	# so a hand reaching for a slider produced NO near candidate and the far
+	# ray stayed drawn over the panel the finger was already touching. This is
+	# the union of near-field evidence, which is what the mode is supposed to
+	# mean -- the old rig got it from suppress_on_poke, and that wiring is gone.
+	for node in get_tree().get_nodes_in_group(XRPokeInteractor.GROUP):
+		var poke := node as XRPokeInteractor
+		if poke != null and poke.is_poking(hand):
+			return true
 	return false
 
 ## Cached at _ready: the direct interactors are rig children that do not come

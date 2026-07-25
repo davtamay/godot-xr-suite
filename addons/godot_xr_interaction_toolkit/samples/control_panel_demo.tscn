@@ -1,4 +1,4 @@
-[gd_scene load_steps=46 format=3]
+[gd_scene load_steps=47 format=3]
 
 [ext_resource type="PackedScene" path="res://addons/godot_webxr_kit/xr_prefab.tscn" id="1_prefab"]
 [ext_resource type="Script" path="res://addons/godot_xr_interaction_toolkit/samples/control_panel_demo.gd" id="2_demo"]
@@ -6,6 +6,7 @@
 [ext_resource type="Script" path="res://addons/godot_xr_interaction_toolkit/runtime/xr_lever.gd" id="4_lever"]
 [ext_resource type="Script" path="res://addons/godot_xr_interaction_toolkit/runtime/xr_drawer.gd" id="5_drawer"]
 [ext_resource type="Script" path="res://addons/godot_xr_interaction_toolkit/runtime/xr_font_bake_anchor.gd" id="6_fontbake"]
+[ext_resource type="Script" path="res://addons/godot_xr_interaction_toolkit/runtime/xr_microgesture_locomotion_driver.gd" id="24_micro"]
 [ext_resource type="Script" path="res://addons/godot_xr_interaction_toolkit/runtime/xr_surface_draggable.gd" id="7_surf"]
 [ext_resource type="Script" path="res://addons/godot_xr_interaction_toolkit/runtime/xr_poke_station.gd" id="20_pokestation"]
 [ext_resource type="Script" path="res://addons/godot_xr_interaction_toolkit/runtime/xr_poke_button.gd" id="21_pokebutton"]
@@ -153,6 +154,9 @@ radius = 0.045
 
 [node name="ControlPanelDemo" type="Node3D"]
 script = ExtResource("2_demo")
+
+[node name="MicrogestureLocomotion" type="Node" parent="."]
+script = ExtResource("24_micro")
 
 [node name="WorldEnvironment" type="WorldEnvironment" parent="."]
 environment = SubResource("Env")
