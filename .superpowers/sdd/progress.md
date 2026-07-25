@@ -53,11 +53,24 @@ INSTANCE in those tests must keep values distinct from the evaluator defaults
 deliberately match the evaluator's and a default-valued profile would make the
 copy assertions pass trivially.
 
+Task 2: complete (commit dd0114d, review clean both verdicts, no Critical or
+  Important findings). XRPokeProfile shipped; the _StubPokeProfile from Task 1's
+  fix pass replaced by the real resource, so a property rename in the shipped
+  type would now break the suite.
+  - Reviewer independently confirmed all five asserted profile values differ
+    from the evaluator defaults, so none of the copy assertions are vacuous -
+    the specific trap this task carried, since XRPokeProfile's defaults
+    deliberately match XRPokeEvaluator's.
+
 ### Minor findings deferred to the final whole-branch review
 - Task 1: is_pressed() / is_source_pressed() are only exercised indirectly
   through event assertions; no direct call in any test.
 - Task 1: every fixture uses source_id 0. Multi-source independence (the
   _sources keyed dict) is implemented but has no dedicated test.
+- Task 2: test helper _make_profile() returns Resource rather than
+  XRPokeProfile - weaker typing than necessary now the concrete class exists.
+- Task 2: XRPokeProfile reuses xr_poke_interactor.svg as its @icon (specified
+  by the plan). Reads as a copy-paste leftover if a profile icon ever lands.
 
 ### Corrections to the PLAN found during execution (plan was wrong, code was not)
 - Mutation 5 (`max_approach_angle` default 180) does not loosen the gate:
