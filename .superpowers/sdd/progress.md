@@ -403,3 +403,62 @@ GF Task 4: complete (commits 0ec42bd..339d152, review clean both verdicts,
   - Minor, for follow-up (not blocking): the brief's arming condition
     (_grab_points.is_empty()) disables snap_to_attach transit object-wide once
     ANY grab point exists, including for a non-matching hand.
+GF Task 5: complete (no code/scene changes -- audit found zero policy
+  mismatches and zero live instances of the Task 4 degenerate config).
+  **Step 1 audit table** (every shipped grabbable prefab + every station/demo
+  scene that instances one; `bolt.tscn` and `samples/can.tscn` are plain
+  RigidBody3D projectile/targets with no XRGrabInteractable and are correctly
+  out of scope):
+
+  | Prefab / instance | XRGrabPoint? | snap_to_attach | Policy | Intended? |
+  |---|---|---|---|---|
+  | grabbable.tscn | no | false | hold-where-grabbed | yes (generic template) |
+  | throwable.tscn | no | false | hold-where-grabbed | yes (plain object) |
+  | coffee_cup.tscn | yes (Body/GrabPoint, handle) | n/a | authored transit | yes (authored handle grip) |
+  | pen.tscn | yes (Body/GrabPoint) | n/a | authored transit | yes (tool, per design table) |
+  | spray_can.tscn | yes (Body/GrabPoint) | n/a | authored transit | yes (tool, per design table) |
+  | blaster.tscn | yes (Body/GrabPoint) | n/a | authored transit | yes (tool, per design table) |
+  | grab_lab_station.tscn: InstantCube/SmoothSphere/RotationCyl/LayerCube/Peg1/Peg2 | no | false | hold-where-grabbed | yes (movement-type/layer demos, Task 1 territory) |
+  | grab_lab_station.tscn: SnapGripCube | no (uses attach_transform_path=GripPoint instead) | true | authored transit (snap-derived) | yes -- Task 1's confirmed intentional snap-grip demo; untouched |
+  | throw_station.tscn: Block1-4 (throwable.tscn instances) | no | false (inherited) | hold-where-grabbed | yes |
+  | draw_station.tscn: Pen, CoffeeCup (prefab instances) | inherited | n/a | authored transit | yes |
+  | shoot_station.tscn: Blaster (prefab instance) | inherited | n/a | authored transit | yes |
+  | spray_station.tscn: SprayCan (prefab instance) | inherited | n/a | authored transit | yes |
+  | webxr_starter.tscn: GrabCube (grabbable.tscn instance) | no | false | hold-where-grabbed | yes |
+
+  Every station/demo scene in the repo that instances a grabbable was
+  checked (grab_lab_station, throw_station, draw_station, shoot_station,
+  spray_station, webxr_starter, workshop_demo which only composes the five
+  stations). control_panel_demo/locomotion_playground_demo/
+  poke_playground_demo have no XRGrabInteractable-based objects (dial/lever/
+  drawer/climb-hold use their own scripts, out of this policy's scope).
+
+  **Degenerate-config check** (Task 4's carried note: `snap_to_attach=true`
+  with no `attach_transform_path` and no grab points -> `_grab_offset =
+  Transform3D.IDENTITY` -> scale silently reverts to 1 on grab): grepped
+  every `.tscn` in the repo for `snap_to_attach` -- the ONLY hit is
+  SnapGripCube above, and it has `attach_transform_path` set. Zero live
+  occurrences of the degenerate config. Nothing to fix; the pre-existing
+  behavior remains as documented for future authors.
+
+  **Tuned-value note** (`throw_sample_frames` 5->10, GF Task 2, commit
+  9704a50): confirmed by re-reading that commit's message -- a buffer-SIZE
+  increase so the consensus estimator has enough samples to do outlier
+  rejection (needs >=4 after the dead-zone), not a feel-tuning change. Left
+  untouched per plan constraint. Separately, `throwable.tscn` and
+  `throw_station.tscn`'s four Block instances still override
+  `throw_sample_frames = 3` (pre-existing, predates GF Task 2) -- an
+  on-device-tuned value per CLAUDE.md's on-device-earn-in rule; not touched,
+  not investigated further (out of this task's scope, no evidence it's
+  wrong).
+
+  **Verification** (all green, zero SCRIPT ERROR):
+  - `test_grab_feel.gd`: PASS
+  - `test_hand_conditioning.gd`: PASS
+  - `test_gesture_foundation.gd` (godot_xr_hands): PASS
+  - Demo headless boot (`--headless --xr-mode off --path . --quit-after
+    120`): exit 0, 0 SCRIPT ERROR occurrences.
+
+  Status: GF Task 5 complete. Commit: chore: prefab grab-policy audit
+  (ledger-only; no runtime/scene diffs -- the audit found nothing to fix).
+  GF Task 6 (on-device earn-in) remains David-in-headset, not started.
