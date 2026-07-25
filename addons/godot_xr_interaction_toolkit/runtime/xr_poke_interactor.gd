@@ -51,6 +51,7 @@ const _CONTROLLER_TIP_FORWARD := 0.02
 var _origin: Node3D
 var _controllers: Array = [null, null]
 var _points := [Vector3.INF, Vector3.INF]
+var _arbiter: XRInteractionArbiter
 var _markers: Array = [null, null]
 var _finger_shape := SphereShape3D.new()
 # Per hand: the poke targets touched last frame, so we can send poke_end/release
@@ -84,6 +85,17 @@ func is_poking(hand: int) -> bool:
 	return hand >= 0 and hand < 2 and not _active[hand].is_empty()
 
 
+## True when an arbiter exists and says this hand is not in NEAR mode. Poke is
+## near-field interaction, so it stands down while the hand is aiming a
+## teleport or reaching at distance. With no arbiter this is always false and
+## poke behaves exactly as before.
+func _suppressed_by_arbiter(hand: int) -> bool:
+	if _arbiter == null or not is_instance_valid(_arbiter):
+		_arbiter = XRInteractionArbiter.find_in_tree(self)
+	if _arbiter == null:
+		return false
+	return not _arbiter.is_mode_active(hand, XRInteractionArbiter.Mode.NEAR)
+
 func _physics_process(_delta: float) -> void:
 	if not enabled:
 		_points = [Vector3.INF, Vector3.INF]
@@ -92,6 +104,10 @@ func _physics_process(_delta: float) -> void:
 		_update_markers()
 		return
 	for hand in 2:
+		if _suppressed_by_arbiter(hand):
+			_points[hand] = Vector3.INF
+			_release_all(hand)
+			continue
 		_points[hand] = _resolve_point(hand)
 	# Dispatch first so _active is current: the marker only appears when the
 	# finger is actually near a pokeable, not floating on the fingertip.

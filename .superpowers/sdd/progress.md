@@ -643,3 +643,15 @@ IA Task 1: complete. XRInteractionArbiter + static resolve_mode + 5 tests.
     escaping mangled the patterns and nothing was actually mutated. A
     pattern-miss is not a result. Re-run from a script file with an explicit
     PATTERN-MISS guard.
+IA Task 2: complete. Ray and poke interactors consult the arbiter when one
+  exists; with none, every existing suppression export decides exactly as
+  before.
+  - The back-compat test is the load-bearing one and is proven non-hollow:
+    mutation N2 (treat "no arbiter" as suppressed) FAILS it. Without that
+    mutation the test could have passed vacuously.
+  - A DISABLED arbiter answers is_mode_active = true for everything rather
+    than gating, so the in-headset A/B hands control back instead of
+    stranding every interactor off. Mutation N3 proves it.
+  - Scene-based tests had to be deferred to _process: a node added to
+    get_root() during _init() is not yet inside the tree and get_tree()
+    lookups assert. Same constraint test_grab_feel.gd already documents.

@@ -67,6 +67,7 @@ var _hover_distance := 0.0
 var _pending_distance_delta := 0.0
 var _attach_pose := Transform3D.IDENTITY
 var _suppress_interactor: Node
+var _arbiter: XRInteractionArbiter
 var _last_ray_origin := Vector3.ZERO
 var _last_ray_direction := Vector3.FORWARD
 var _has_last_ray_pose := false
@@ -281,6 +282,15 @@ func _seed_last_ray_pose_from_state() -> void:
     _last_ray_direction = (_ray_state["direction"] as Vector3).normalized()
     _has_last_ray_pose = true
 
+## Cached because it is consulted every physics frame; re-resolved if the node
+## goes away, so a scene that adds or removes the arbiter at runtime still
+## behaves correctly rather than holding a freed reference.
+func _resolve_arbiter() -> XRInteractionArbiter:
+    if _arbiter != null and is_instance_valid(_arbiter):
+        return _arbiter
+    _arbiter = XRInteractionArbiter.find_in_tree(self)
+    return _arbiter
+
 func _resolve_suppression_interactor() -> void:
     _suppress_interactor = null
     if suppress_interactor_path.is_empty():
@@ -288,6 +298,14 @@ func _resolve_suppression_interactor() -> void:
     _suppress_interactor = get_node_or_null(suppress_interactor_path)
 
 func _is_suppressed_by_linked_interactor() -> bool:
+    # An arbiter, when present, owns this decision entirely -- the point of it
+    # is one rule in one place instead of the four independent branches below.
+    # With no arbiter in the scene every branch runs exactly as it did before
+    # this file learned the word, which is the back-compat contract.
+    var arbiter := _resolve_arbiter()
+    if arbiter != null:
+        return not arbiter.is_mode_active(hand, XRInteractionArbiter.Mode.FAR)
+
     # Near a pokeable/panel: hide the far ray (near-far switch). Independent of
     # the linked-direct path, so it works even without a direct interactor.
     if suppress_on_poke and _is_poking():

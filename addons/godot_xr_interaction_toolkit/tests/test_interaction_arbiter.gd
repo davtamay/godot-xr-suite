@@ -5,21 +5,31 @@ extends SceneTree
 
 const Arbiter := preload("res://addons/godot_xr_interaction_toolkit/runtime/xr_interaction_arbiter.gd")
 
+var _failures: Array[String] = []
+
 func _init() -> void:
-	var failures: Array[String] = []
-	_test_teleport_is_exclusive(failures)
-	_test_proximity_selects_near_or_far(failures)
-	_test_dwell_is_hysteresis(failures)
-	_test_flicker_does_not_strobe(failures)
-	_test_tracking_loss(failures)
-	if failures.is_empty():
+	# Pure-function tests need no tree.
+	_test_teleport_is_exclusive(_failures)
+	_test_proximity_selects_near_or_far(_failures)
+	_test_dwell_is_hysteresis(_failures)
+	_test_flicker_does_not_strobe(_failures)
+	_test_tracking_loss(_failures)
+
+## The scene-based tests are deferred here because a node added to get_root()
+## during _init() is not yet inside the tree, and get_tree() lookups assert.
+## Same constraint test_grab_feel.gd documents.
+func _process(_delta: float) -> bool:
+	_test_backcompat_without_arbiter(_failures)
+	_test_consult_with_arbiter(_failures)
+	if _failures.is_empty():
 		print("XR interaction arbiter: PASS")
 		quit(0)
-		return
-	for failure in failures:
+		return true
+	for failure in _failures:
 		push_error(failure)
-	print("XR interaction arbiter: FAIL (%d)" % failures.size())
+	print("XR interaction arbiter: FAIL (%d)" % _failures.size())
 	quit(1)
+	return true
 
 func _test_teleport_is_exclusive(failures: Array[String]) -> void:
 	# Teleport wins from EVERY other mode, including while a near candidate is
@@ -104,3 +114,67 @@ func _test_tracking_loss(failures: Array[String]) -> void:
 	# Tracking loss beats teleport too: no hand, no aiming.
 	if Arbiter.resolve_mode(Arbiter.Mode.TELEPORT, false, false, true, 10.0, 0.12) != Arbiter.Mode.NONE:
 		failures.append("an untracked hand must leave TELEPORT")
+
+const RayInteractor := preload("res://addons/godot_xr_interaction_toolkit/runtime/xr_ray_interactor.gd")
+
+## THE most important assertion in this branch. Adding the arbiter must change
+## nothing for the scenes that do not use it -- there are shipped scenes and
+## user projects relying on the existing suppression exports.
+func _test_backcompat_without_arbiter(failures: Array[String]) -> void:
+	var host := Node3D.new()
+	get_root().add_child(host)
+	var ray := RayInteractor.new()
+	host.add_child(ray)
+
+	if Arbiter.find_in_tree(ray) != null:
+		failures.append("find_in_tree must return null when no arbiter is in the scene")
+
+	# With no arbiter, no linked interactor, and nothing poking or teleporting,
+	# the ray is NOT suppressed -- the pre-change baseline.
+	if ray._is_suppressed_by_linked_interactor():
+		failures.append("with no arbiter and nothing active, the ray must not be suppressed (back-compat)")
+
+	# The existing exports must still be the thing that decides. Point the ray
+	# at a linked interactor that reports a selection: it must suppress, via the
+	# old path, with no arbiter involved.
+	var linked := RayInteractor.new()
+	host.add_child(linked)
+	ray.suppress_interactor_path = ray.get_path_to(linked)
+	ray.suppress_on_linked_select = true
+	linked._selected = Node.new()
+	if not ray._is_suppressed_by_linked_interactor():
+		failures.append("the existing suppress_on_linked_select path must still work with no arbiter")
+	ray.suppress_on_linked_select = false
+	if ray._is_suppressed_by_linked_interactor():
+		failures.append("clearing suppress_on_linked_select must still unsuppress with no arbiter")
+
+	linked._selected.free()
+	host.queue_free()
+
+## With an arbiter present it owns the decision entirely, and the old exports
+## no longer get a vote -- one rule in one place is the whole point.
+func _test_consult_with_arbiter(failures: Array[String]) -> void:
+	var host := Node3D.new()
+	get_root().add_child(host)
+	var arbiter := Arbiter.new()
+	host.add_child(arbiter)
+	var ray := RayInteractor.new()
+	host.add_child(ray)
+	ray.hand = 0
+
+	arbiter._mode[0] = Arbiter.Mode.FAR
+	if ray._is_suppressed_by_linked_interactor():
+		failures.append("FAR mode must leave the far ray unsuppressed")
+	for blocked in [Arbiter.Mode.NEAR, Arbiter.Mode.TELEPORT, Arbiter.Mode.NONE]:
+		arbiter._mode[0] = blocked
+		if not ray._is_suppressed_by_linked_interactor():
+			failures.append("mode %d must suppress the far ray" % blocked)
+
+	# A disabled arbiter must not gate anything: that is the in-headset A/B
+	# switch, and it has to hand control back rather than freeze everything off.
+	arbiter._mode[0] = Arbiter.Mode.NEAR
+	arbiter.enabled = false
+	if ray._is_suppressed_by_linked_interactor():
+		failures.append("a disabled arbiter must not suppress -- the A/B switch would strand the ray off")
+
+	host.queue_free()
