@@ -174,6 +174,14 @@ Entry-through-face also fixes `XRPokeButton`'s dropped fast poke: a source
 that WAS in front and is now below the base is clamped to full travel instead
 of skipped, because we know it came through the cap.
 
+**The sample history survives a bounds or band exit; only a lost source clears
+it.** This is load-bearing, not incidental. The fast-diagonal rescue depends
+on comparing a sample that fell OUTSIDE the face rectangle with the next one
+inside it — clearing history on the bounds exit would leave the angle test
+with a single sample and no travel vector, and the rescue case would silently
+stop working while still reading as implemented. An adapter calling
+`forget(source_id)` because the source is genuinely gone clears everything.
+
 ### Cancel
 
 While pressed: leaving bounds, or losing the source, emits `CANCELLED`.
@@ -210,7 +218,15 @@ Every evaluator parameter is exposed on all three adapters under a `Poke Feel`
 group with ranges and doc comments, AND a new `XRPokeProfile` **Resource**
 lets a project author one feel once and assign it to every poke target. This
 follows `XRFeedbackTheme`, the pattern the suite already establishes for
-scene-wide feel. Per-target exports override the profile.
+scene-wide feel.
+
+**Precedence: an assigned profile wins; the node's own exports are the
+fallback.** An earlier draft said per-target exports override the profile,
+which is not implementable — Godot cannot distinguish an export left at its
+default from one an author deliberately set to that same value, so "overrides"
+would mean "silently ignores the profile whenever the default happens to
+match". One rule, no ambiguity: `poke_profile == null` uses the node's
+exports, otherwise the profile supplies every property it carries.
 
 This is the part that has to beat parity rather than match it: a designer
 tunes press depth and gate angle in one `.tres` and the whole project moves.
