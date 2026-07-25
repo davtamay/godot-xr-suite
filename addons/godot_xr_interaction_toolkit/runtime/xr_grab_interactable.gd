@@ -52,6 +52,7 @@ func uses_grip_grab() -> bool:
 ## hand rays. true: follow the attach pose's rotation too.
 @export var track_rotation := false
 @export_range(0.0, 100.0, 0.1, "or_greater") var max_tracked_speed := 20.0
+@export_range(0.1, 10.0, 0.1) var transit_speed := 1.5
 
 @export_group("Throw")
 ## Applies the sampled attach-pose velocity to a RigidBody3D target when the
@@ -443,6 +444,25 @@ static func _mean_of(samples: Array[Vector3]) -> Vector3:
 	for sample in samples:
 		total += sample
 	return total / float(samples.size())
+
+## Perceived-distance transit timing (technique: ISDK tweened grab movement,
+## publicly described; implementation ours). A 180-degree flip counts as
+## 0.25 m so rotation-dominant attaches do not pop.
+static func transit_duration(from: Transform3D, to: Transform3D, speed: float) -> float:
+	if speed <= 0.0:
+		return 0.0
+	var translation := (to.origin - from.origin).length()
+	var rotation_deg := rad_to_deg(from.basis.get_rotation_quaternion().angle_to(to.basis.get_rotation_quaternion()))
+	var perceived := maxf(translation, rotation_deg * 0.5 / 360.0)
+	if perceived < 0.0005:
+		return 0.0
+	return perceived / speed
+
+static func transit_blend(from: Transform3D, to: Transform3D, alpha: float) -> Transform3D:
+	var t := clampf(alpha, 0.0, 1.0)
+	var from_rotation := from.basis.orthonormalized().get_rotation_quaternion()
+	var to_rotation := to.basis.orthonormalized().get_rotation_quaternion()
+	return Transform3D(Basis(from_rotation.slerp(to_rotation, t)), from.origin.lerp(to.origin, t))
 
 func _angular_velocity_between(from_basis: Basis, to_basis: Basis, delta: float) -> Vector3:
 	if delta <= 0.0:

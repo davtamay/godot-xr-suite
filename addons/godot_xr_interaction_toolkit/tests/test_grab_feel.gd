@@ -13,6 +13,8 @@ func _init() -> void:
 	_test_grab_point_bind_palm_uses_metacarpal_center(_failures)
 	_test_simulator_palm_uses_metacarpal_center(_failures)
 	_test_throw_consensus(_failures)
+	_test_transit_timing(_failures)
+	_test_transit_blend(_failures)
 	# _test_grip_pose_stays_on_palm_with_full_hand needs a live Node3D.global_transform,
 	# which asserts "!is_inside_tree()" if read this early: a node added to
 	# get_root() during _init() is not yet inside the tree (confirmed empirically -
@@ -217,3 +219,32 @@ func _test_throw_consensus(failures: Array[String]) -> void:
 	var dv := XRGrabInteractable.throw_consensus(decisive, 2, 0.35)
 	if dv.distance_to(Vector3(2, 1, 0)) > 0.05:
 		failures.append("dead-zone must keep the slowdown tail from winning consensus: %s" % dv)
+
+func _test_transit_timing(failures: Array[String]) -> void:
+	var origin := Transform3D.IDENTITY
+	# 0.3 m translation, no rotation, speed 1.5 -> 0.2 s.
+	var moved := Transform3D(Basis.IDENTITY, Vector3(0.3, 0, 0))
+	if not is_equal_approx(XRGrabInteractable.transit_duration(origin, moved, 1.5), 0.2):
+		failures.append("translation-dominant duration wrong")
+	# 180 deg rotation, no translation: perceived 180*0.5/360 = 0.25 m -> 1/6 s.
+	var flipped := Transform3D(Basis(Vector3.UP, PI), Vector3.ZERO)
+	if not is_equal_approx(XRGrabInteractable.transit_duration(origin, flipped, 1.5), 0.25 / 1.5):
+		failures.append("rotation-dominant duration wrong")
+	# Rotation must be able to DOMINATE a small translation (the ISDK point).
+	var both := Transform3D(Basis(Vector3.UP, PI), Vector3(0.05, 0, 0))
+	if not is_equal_approx(XRGrabInteractable.transit_duration(origin, both, 1.5), 0.25 / 1.5):
+		failures.append("rotation must dominate when perceived-larger")
+	if XRGrabInteractable.transit_duration(origin, moved, 0.0) != 0.0:
+		failures.append("zero speed must yield zero duration (transit skipped)")
+
+func _test_transit_blend(failures: Array[String]) -> void:
+	var from := Transform3D(Basis.IDENTITY, Vector3.ZERO)
+	var to := Transform3D(Basis(Vector3.UP, PI * 0.5), Vector3(1, 0, 0))
+	var mid := XRGrabInteractable.transit_blend(from, to, 0.5)
+	if not mid.origin.is_equal_approx(Vector3(0.5, 0, 0)):
+		failures.append("blend origin at 0.5 wrong: %s" % mid.origin)
+	var mid_angle := mid.basis.get_rotation_quaternion().angle_to(from.basis.get_rotation_quaternion())
+	if absf(mid_angle - PI * 0.25) > 0.01:
+		failures.append("blend rotation at 0.5 wrong: %f rad" % mid_angle)
+	if not XRGrabInteractable.transit_blend(from, to, 1.5).origin.is_equal_approx(to.origin):
+		failures.append("alpha must clamp at 1")
