@@ -104,27 +104,57 @@ The one thing left duplicated by design is each adapter's world→local
 conversion, because each genuinely differs. That is ~5 lines each and it is
 the part that SHOULD differ.
 
-### The gate is two tests
+### The gate is two tests, OR'd
 
-Meta's published technique is a minimum approach angle. Angle alone is the
-weaker half, so it is the secondary test here.
+Meta's published technique is a minimum approach angle. An earlier draft of
+this design made a stateful entry test the primary and demoted the angle to a
+refinement. Working the cases disproved that: **neither test dominates, and
+each covers exactly the other's false negative.** The gate arms if EITHER
+passes.
 
-1. **Entry-through-face (primary, stateful).** A source may only arm a press
-   if it was previously observed **in-bounds and in front of the press
-   plane**. A finger sliding in laterally at depth was never in front of the
-   face, so it never arms — the sweep case dies on a boolean, with no
-   trigonometry and no threshold to tune. It also fixes `XRPokeButton`'s
-   dropped fast poke for free: a source that WAS in front and is now below the
-   base is clamped to full travel instead of skipped, because we know it came
-   through the cap.
+1. **Entry-through-face (stateful).** A source may only arm if it was
+   previously observed **in-bounds and in front of the press plane**. A finger
+   that slid in laterally at depth was never in front of the face.
 
-2. **Approach angle (secondary, tunable).** At the moment of crossing the
-   press plane, require `dot(travel_dir, -Z) >= cos(max_approach_angle)` over
-   a short sample window, not a single frame. **With an abstain rule**: if
-   window displacement is under `min_approach_travel` (~3 mm), the gate passes
-   unconditionally. Without the abstain, a slow deliberate creep-in has a
-   noise-dominated direction vector and gets rejected — the worst available
-   failure, and the one that would make this feel broken.
+2. **Approach angle (directional).** At the moment of crossing the press
+   plane, require the travel vector over a short sample window — not a single
+   frame — to point inward within `max_approach_angle`.
+
+| Case | Entry-through-face | Approach angle |
+|---|---|---|
+| Lateral sweep across a button row | blocks | blocks |
+| Slide from one target to the next at depth | blocks | blocks |
+| Approach from behind the surface | blocks | blocks |
+| Steep but deliberate poke (~50 deg off normal) | arms | FALSELY REJECTS |
+| Fast diagonal poke: previous sample laterally out of bounds, next sample already past depth | FALSELY REJECTS | arms |
+
+Every rejection case is blocked by both, so `OR` does not weaken the sweep
+rejection that motivated the gate. The two false-negative rows are each
+rescued by the other test. `AND` would ship both false negatives; either test
+alone ships one.
+
+**Neither test needs a square root.** The angle comparison squares instead of
+normalizing:
+
+```
+inward := t.z <= 0
+within := t.z * t.z >= cos_max_angle_squared * t.length_squared()
+```
+
+So cost is not a reason to prefer one — a handful of multiplies on values the
+adapter has already computed. Coverage is the only reason, and it points to
+both.
+
+**Abstain rule** on the angle test: if window displacement is under
+`min_approach_travel` (~3 mm), it passes unconditionally. Without it a slow
+deliberate creep-in has a noise-dominated direction vector and is rejected —
+the worst available failure. (Entry-through-face would usually rescue that
+case through the `OR`, but the abstain is kept so the angle test is correct
+standing alone, since it is independently switchable.)
+
+Entry-through-face also fixes `XRPokeButton`'s dropped fast poke: a source
+that WAS in front and is now below the base is clamped to full travel instead
+of skipped, because we know it came through the cap.
 
 ### Cancel
 
@@ -190,13 +220,21 @@ driving the evaluator directly with synthetic point sequences:
 | Pinned point | z clamped to 0 |
 | Drag past `drag_threshold` with `interpret_drag` on | `DRAG` deltas, no terminal `RELEASED` |
 | Same motion with `interpret_drag` off | no `DRAG`, normal `RELEASED` |
+| Steep deliberate poke, ~50 deg off normal | `PRESSED` (entry test rescues it) |
+| Fast diagonal, previous sample out of bounds | `PRESSED` (angle test rescues it) |
+
+The last two rows are the whole argument for `OR` and must be written so each
+FAILS when its rescuing test is disabled alone. A suite that passes both with
+either test switched off is not testing the composition.
 
 Plus adapter-level signal-mapping tests with a fake target, confirming each
 adapter translates evaluator events to its own contract.
 
 Mutation runs that MUST fail the suite: invert `require_entry_through_face`;
 delete the abstain rule; emit `RELEASED` where `CANCELLED` is specified; widen
-`max_approach_angle` to 180°. A suite that passes against any of those is
+`max_approach_angle` to 180°; **change the gate's `OR` to `AND`** (this one
+must fail on the two rescue rows specifically, and it is the mutation most
+likely to pass a lazily written suite). A suite that passes against any of those is
 worse than none — this project has shipped two such suites and the mutation
 run caught both.
 
