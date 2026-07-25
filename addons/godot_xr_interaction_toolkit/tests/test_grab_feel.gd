@@ -12,6 +12,7 @@ func _init() -> void:
 	_test_grip_anchor_prefers_palm(_failures)
 	_test_grab_point_bind_palm_uses_metacarpal_center(_failures)
 	_test_simulator_palm_uses_metacarpal_center(_failures)
+	_test_throw_consensus(_failures)
 	# _test_grip_pose_stays_on_palm_with_full_hand needs a live Node3D.global_transform,
 	# which asserts "!is_inside_tree()" if read this early: a node added to
 	# get_root() during _init() is not yet inside the tree (confirmed empirically -
@@ -164,3 +165,42 @@ func _test_grip_pose_stays_on_palm_with_full_hand(failures: Array[String]) -> vo
 	XRServer.remove_tracker(tracker)
 	XRHandTrackerResolver._conditioned = was_conditioned
 	XRHandTrackerResolver._cache_frame = -1
+
+func _test_throw_consensus(failures: Array[String]) -> void:
+	# A clean constant-velocity throw: consensus == the velocity.
+	var clean: Array[Vector3] = []
+	for i in range(10):
+		clean.append(Vector3(2, 1, 0))
+	var v := XRGrabInteractable.throw_consensus(clean, 2, 0.35)
+	if not v.is_equal_approx(Vector3(2, 1, 0)):
+		failures.append("clean throw: expected (2,1,0), got %s" % v)
+
+	# Release corruption: last 2 samples wildly wrong (fingers peeling off).
+	# The old mean is dragged sideways; consensus must not be.
+	var corrupted: Array[Vector3] = []
+	for i in range(8):
+		corrupted.append(Vector3(2, 1, 0) + Vector3(randf(), randf(), randf()) * 0.0)  # deterministic: exact
+	corrupted.append(Vector3(-6, 0, 4))
+	corrupted.append(Vector3(0, -9, 2))
+	var cv := XRGrabInteractable.throw_consensus(corrupted, 2, 0.35)
+	if cv.distance_to(Vector3(2, 1, 0)) > 0.05:
+		failures.append("corrupted tail leaked into the estimate: %s" % cv)
+
+	# Mid-buffer outlier (tracking glitch): consensus rejects it, mean cannot.
+	var glitched: Array[Vector3] = []
+	for i in range(9):
+		glitched.append(Vector3(0, 0, -3))
+	glitched.insert(4, Vector3(8, 8, 8))
+	# dead-zone removes the newest 2 REAL samples; glitch is mid-buffer and must
+	# be rejected by consensus, not the dead-zone.
+	var gv := XRGrabInteractable.throw_consensus(glitched, 2, 0.35)
+	if gv.distance_to(Vector3(0, 0, -3)) > 0.05:
+		failures.append("mid-buffer glitch leaked into the estimate: %s" % gv)
+
+	# Degenerate: fewer than 4 usable -> plain mean fallback (documented).
+	var short: Array[Vector3] = [Vector3.ONE, Vector3.ONE, Vector3.ONE]
+	var sv := XRGrabInteractable.throw_consensus(short, 2, 0.35)
+	if not sv.is_equal_approx(Vector3.ONE):
+		failures.append("short-buffer fallback broke: %s" % sv)
+	if XRGrabInteractable.throw_consensus([], 2, 0.35) != Vector3.ZERO:
+		failures.append("empty input must return ZERO")

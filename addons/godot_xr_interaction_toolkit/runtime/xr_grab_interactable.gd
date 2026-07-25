@@ -60,9 +60,11 @@ func uses_grip_grab() -> bool:
 @export var throw_on_release := true
 @export_range(0.0, 10.0, 0.01, "or_greater") var throw_velocity_scale := 1.0
 @export_range(0.0, 100.0, 0.1, "or_greater") var max_throw_speed := 14.0
-@export_range(1, 30, 1, "or_greater") var throw_sample_frames := 5
+@export_range(1, 30, 1, "or_greater") var throw_sample_frames := 10
 @export_range(0.0, 10.0, 0.01, "or_greater") var throw_angular_velocity_scale := 1.0
 @export_range(0.0, 100.0, 0.1, "or_greater") var max_throw_angular_speed := 18.0
+@export_range(0, 5, 1) var throw_deadzone_frames := 2
+@export_range(0.05, 2.0, 0.05) var throw_consensus_tolerance := 0.35
 
 @export_group("Two Hand Grab")
 ## Allows a second interactor to select the same object. The second hand rotates
@@ -380,8 +382,11 @@ func _apply_throw_on_release() -> void:
 		return
 
 	body.sleeping = false
-	body.linear_velocity = (_throw_linear_velocity * throw_velocity_scale).limit_length(max_throw_speed)
-	body.angular_velocity = (_throw_angular_velocity * throw_angular_velocity_scale).limit_length(max_throw_angular_speed)
+	var linear_vel := throw_consensus(_throw_linear_samples, throw_deadzone_frames, throw_consensus_tolerance)
+	var sliced_angular := _throw_angular_samples.slice(0, maxi(0, _throw_angular_samples.size() - throw_deadzone_frames))
+	var angular_vel := _average_throw_samples(sliced_angular)
+	body.linear_velocity = (linear_vel * throw_velocity_scale).limit_length(max_throw_speed)
+	body.angular_velocity = (angular_vel * throw_angular_velocity_scale).limit_length(max_throw_angular_speed)
 	thrown.emit(body.linear_velocity, body.angular_velocity)
 
 func _push_throw_sample(samples: Array[Vector3], velocity: Vector3) -> void:
@@ -390,6 +395,48 @@ func _push_throw_sample(samples: Array[Vector3], velocity: Vector3) -> void:
 		samples.pop_front()
 
 func _average_throw_samples(samples: Array[Vector3]) -> Vector3:
+	if samples.is_empty():
+		return Vector3.ZERO
+	var total := Vector3.ZERO
+	for sample in samples:
+		total += sample
+	return total / float(samples.size())
+
+## Consensus throw-velocity estimate (technique: Meta ISDK release filtering,
+## as publicly described; implementation ours - see docs/grab-feel-design.md).
+## Drops the newest deadzone_frames samples (release corruption), then returns
+## the mean of the largest set of mutually agreeing samples. Two samples agree
+## when their difference is under tolerance * median sample magnitude. Ties go
+## to the more recent set. Fewer than 4 usable samples: plain mean of them.
+static func throw_consensus(samples: Array[Vector3], deadzone_frames: int, tolerance: float) -> Vector3:
+	if samples.is_empty():
+		return Vector3.ZERO
+	var usable := samples.slice(0, maxi(0, samples.size() - deadzone_frames))
+	if usable.is_empty():
+		usable = samples.duplicate()
+	if usable.size() < 4:
+		return _mean_of(usable)
+
+	var magnitudes: Array[float] = []
+	for sample in usable:
+		magnitudes.append(sample.length())
+	magnitudes.sort()
+	var median: float = magnitudes[magnitudes.size() / 2]
+	var limit := maxf(tolerance * median, 0.0001)
+
+	var best_set: Array[Vector3] = []
+	var best_anchor := -1
+	for anchor_index in range(usable.size()):
+		var agreeing: Array[Vector3] = []
+		for sample in usable:
+			if sample.distance_to(usable[anchor_index]) <= limit:
+				agreeing.append(sample)
+		if agreeing.size() > best_set.size() or (agreeing.size() == best_set.size() and anchor_index > best_anchor):
+			best_set = agreeing
+			best_anchor = anchor_index
+	return _mean_of(best_set)
+
+static func _mean_of(samples: Array[Vector3]) -> Vector3:
 	if samples.is_empty():
 		return Vector3.ZERO
 	var total := Vector3.ZERO
