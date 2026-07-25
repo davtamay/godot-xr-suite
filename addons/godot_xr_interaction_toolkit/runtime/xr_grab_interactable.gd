@@ -1,4 +1,4 @@
-﻿@icon("res://addons/godot_xr_interaction_toolkit/icons/xr_grab_interactable.svg")
+@icon("res://addons/godot_xr_interaction_toolkit/icons/xr_grab_interactable.svg")
 class_name XRGrabInteractable
 extends "res://addons/godot_xr_interaction_toolkit/runtime/xr_base_interactable.gd"
 
@@ -460,14 +460,17 @@ static func transit_duration(from: Transform3D, to: Transform3D, speed: float) -
 
 static func transit_blend(from: Transform3D, to: Transform3D, alpha: float) -> Transform3D:
 	var t := clampf(alpha, 0.0, 1.0)
-	var from_rotation := from.basis.orthonormalized().get_rotation_quaternion()
-	var to_rotation := to.basis.orthonormalized().get_rotation_quaternion()
-	var blended := Basis(from_rotation.slerp(to_rotation, t))
-	# Scale rides along: Basis(Quaternion) is pure rotation, so without this a
-	# scaled object would snap to unit scale the moment transit engaged and
-	# never recover it -- the blend must converge to `to` exactly at alpha 1.
-	blended = blended.scaled(from.basis.get_scale().lerp(to.basis.get_scale(), t))
-	return Transform3D(blended, from.origin.lerp(to.origin, t))
+	var from_rotation := from.basis.orthonormalized()
+	var to_rotation := to.basis.orthonormalized()
+	# Scale rides through untouched rather than being decomposed: a transit
+	# moves an object, it never resizes one, so `from` and `to` carry the same
+	# object scale. orthonormalized().inverse() * basis is the exact local
+	# scale/shear for ANY basis -- where get_scale() + scaled() round-tripping
+	# silently permutes which local axis gets which magnitude once the basis is
+	# rotated and the scale is non-uniform.
+	var local_scale := from_rotation.inverse() * from.basis
+	var blended := Basis(from_rotation.get_rotation_quaternion().slerp(to_rotation.get_rotation_quaternion(), t))
+	return Transform3D(blended * local_scale, from.origin.lerp(to.origin, t))
 
 func _angular_velocity_between(from_basis: Basis, to_basis: Basis, delta: float) -> Vector3:
 	if delta <= 0.0:

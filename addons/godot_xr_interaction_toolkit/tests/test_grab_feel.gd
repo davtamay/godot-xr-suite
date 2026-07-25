@@ -248,12 +248,16 @@ func _test_transit_blend(failures: Array[String]) -> void:
 		failures.append("blend rotation at 0.5 wrong: %f rad" % mid_angle)
 	if not XRGrabInteractable.transit_blend(from, to, 1.5).origin.is_equal_approx(to.origin):
 		failures.append("alpha must clamp at 1")
-	# Scale must survive transit: Basis(Quaternion) is pure rotation, so a
-	# scaled object would otherwise snap to unit scale and never recover.
-	var scaled_to := Transform3D(Basis(Vector3.UP, PI * 0.5).scaled(Vector3(2, 2, 2)), Vector3(1, 0, 0))
-	var end_state := XRGrabInteractable.transit_blend(from, scaled_to, 1.0)
-	if not end_state.basis.get_scale().is_equal_approx(Vector3(2, 2, 2)):
-		failures.append("transit must converge to the target scale, got %s" % end_state.basis.get_scale())
-	var half := XRGrabInteractable.transit_blend(from, scaled_to, 0.5)
-	if not half.basis.get_scale().is_equal_approx(Vector3(1.5, 1.5, 1.5)):
-		failures.append("transit must interpolate scale, got %s" % half.basis.get_scale())
+	# Scale rides through transit untouched, for NON-UNIFORM scale on a rotated
+	# basis -- the case where get_scale()/scaled() round-tripping permutes axes.
+	var object_scale := Basis(Vector3.UP, PI * 0.25).scaled(Vector3(2, 0.5, 3))
+	var scaled_from := Transform3D(object_scale, Vector3.ZERO)
+	var scaled_to := Transform3D(Basis(Vector3.UP, PI * 0.75) * (Basis(Vector3.UP, PI * 0.25).inverse() * object_scale), Vector3(1, 0, 0))
+	if not XRGrabInteractable.transit_blend(scaled_from, scaled_to, 0.0).basis.is_equal_approx(scaled_from.basis):
+		failures.append("alpha 0 must reproduce the source basis exactly")
+	var landed := XRGrabInteractable.transit_blend(scaled_from, scaled_to, 1.0).basis
+	if not landed.is_equal_approx(scaled_to.basis):
+		failures.append("alpha 1 must reproduce the target basis exactly for non-uniform scale, got %s vs %s" % [landed, scaled_to.basis])
+	var midway := XRGrabInteractable.transit_blend(scaled_from, scaled_to, 0.5).basis
+	if absf(midway.determinant() - object_scale.determinant()) > 0.001:
+		failures.append("transit must not change object volume mid-tween: %f vs %f" % [midway.determinant(), object_scale.determinant()])
