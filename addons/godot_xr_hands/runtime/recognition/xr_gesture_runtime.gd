@@ -13,6 +13,11 @@ const XRInputAdapter := preload("res://addons/godot_xr_interaction_toolkit/runti
 
 @export var enabled := true
 @export var process_without_xr := false
+## Feed recognition the CONDITIONED hand instead of raw joints. The
+## recognizers' thresholds were tuned against raw data, so this is an
+## on-device question, not a settled one -- flip it live from the feel-check
+## scene and compare. set_pose_source() overrides this entirely.
+@export var use_conditioned_hands := true
 @export var definitions: Array[XRGestureDefinition] = []
 
 var _pose_source: XRHandPoseSource
@@ -24,7 +29,7 @@ var _states := {}
 
 func _ready() -> void:
     if _pose_source == null:
-        _pose_source = XRTrackerHandPoseSource.new()
+        _pose_source = default_pose_source(use_conditioned_hands)
     for hand in [XRInputAdapter.Hand.LEFT, XRInputAdapter.Hand.RIGHT]:
         _frames[hand] = [XRHandFrame.new(), XRHandFrame.new()]
         _frame_indices[hand] = 0
@@ -32,6 +37,21 @@ func _ready() -> void:
 
 func set_pose_source(source: XRHandPoseSource) -> void:
     _pose_source = source
+
+## The source a runtime uses when nothing was injected. Static and free of node
+## state so the raw-vs-conditioned choice is testable headless.
+static func default_pose_source(conditioned: bool) -> XRHandPoseSource:
+    return XRConditionedHandPoseSource.new() if conditioned else XRTrackerHandPoseSource.new()
+
+## Swaps the acquisition source at runtime for A/B comparison, preserving
+## nothing: recognizers keep their own state, and the next frame simply
+## arrives from the other source. Rebuilds even when the flag is unchanged is
+## avoided so a caller driving this every frame cannot thrash the source.
+func set_use_conditioned_hands(value: bool) -> void:
+    if use_conditioned_hands == value:
+        return
+    use_conditioned_hands = value
+    _pose_source = default_pose_source(value)
 
 func get_features(hand: int) -> XRHandFeatures:
     return _features.get(hand) as XRHandFeatures

@@ -573,3 +573,36 @@ Recommend (b) first, measurable offline against the recorded traces.
 UNVERIFIED: whether the recognizer's feature runtime already receives
 conditioned data after GF Task 9 unified the gesture call sites. Check before
 designing anything.
+
+## Microgestures now read conditioned joints (David's call, 2026-07-25)
+FINDING (answers the ledger's UNVERIFIED question, and it was the opposite of
+the guess): XRGestureRuntime._ready defaulted its source to
+XRTrackerHandPoseSource -- the source GF/HC Task 9 deliberately pointed at
+resolve_raw because it FEEDS the conditioning chain. So recognition has been
+reading RAW joints all along, and Task 9 made that explicit rather than
+accidental. Every other consumer moved to conditioned; gestures did not.
+Change is purely ADDITIVE, per David's standing rule that the working
+recognizer must not regress: new XRConditionedHandPoseSource (a CONSUMER, so
+it calls get_tracker -- no feedback loop is possible, unlike the source inside
+the chain), plus XRGestureRuntime.use_conditioned_hands (default true) and
+set_use_conditioned_hands() for live A/B. Not one threshold or line of
+xr_thumb_microgesture_recognizer.gd was touched.
+RISK, explicitly unresolved: the recognizer's 17 thresholds were tuned against
+RAW joints. Conditioned input is smoother but carries 18-28 ms of lag, and
+microgestures are fast thumb motions -- this could help (David's reported
+"arc stuck on hand" is what jitter at a contact threshold produces) or hurt.
+It is an on-device question, so feel_check.tscn carries a third poke button
+that flips it live and the console line logs the mode. If conditioned loses,
+flip the default back; do NOT retune the recognizer without its own earn-in.
+Mutations proven: selection always-raw (FAIL 2), idempotence guard removed
+(FAIL 1).
+
+## Microgesture platform delegation: parked, evidenced
+XR_META_hand_tracking_microgestures is Meta-only and NOT on a standards track.
+Android XR's supported list carries EXT/KHR/ANDROID/FB/MND/META prefixes --
+including other Meta extensions (XR_FB_hand_tracking_aim,
+XR_META_vulkan_swapchain_create_info) -- but not this one, and no EXT/KHR
+equivalent exists. Promotion is possible (XR_MSFT_hand_interaction ->
+XR_EXT_hand_interaction is precedent) but nothing indicates it is in motion.
+If built later: additive only -- a selectable source beside ours, ours stays
+default until an in-headset A/B says otherwise. Buys nothing for WebXR.
