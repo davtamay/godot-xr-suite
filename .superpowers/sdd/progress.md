@@ -356,3 +356,26 @@ GF Task 2: complete (commits 9704a50..3101a13, review clean both verdicts,
   Same defect class as GF Task 1's: a test that passes for the wrong reason.
   Reviewer independently hand-traced even-size median, deadzone>=size slice
   clamp, and tie-to-recent anchor ordering -- no bugs.
+GF Task 3: complete (commits 407632b..f78df35, review clean, TWO fix rounds).
+  - Round 1: transit_blend discarded scale entirely -- Basis(Quaternion) is
+    pure rotation, so a scaled object snapped to unit scale permanently the
+    moment transit engaged. Brief's code, not implementer error.
+  - Round 2: the round-1 fix (get_scale/scaled round-trip) was ALSO unsound --
+    get_scale() returns world-axis column lengths and scaled() pre-multiplies,
+    so non-uniform scale on a ROTATED basis silently permutes which local axis
+    gets which magnitude, plus a singular basis at mid-alpha when scale crosses
+    zero. Uniform-scale tests structurally cannot see either.
+  - Sound form: stop decomposing scale at all. local_scale =
+    orthonormalized().inverse() * basis (exact for scale AND shear, verified by
+    the reviewer on sheared bases), composed as blended * local_scale. Scale
+    rides through untouched -- a transit MOVES an object, never resizes one.
+  - Same defect class a third time this branch: only non-uniform, rotated,
+    moving fixtures expose it. Three plausible-looking wrong answers in a row.
+  - CARRY INTO TASK 4 (load-bearing, reviewer-verified): transit_blend's
+    exactness depends on `from` and `to` carrying the SAME object scale. Within
+    one continuous grab that holds exactly (to.basis = dR * from.basis, proven
+    algebraically and empirically). It BREAKS across a two-hand -> one-hand
+    handoff or any grab-point reselection, because _notify_select_exited
+    recomputes _grab_offset (line ~137) -- alpha=1 then lands on a wrong but
+    plausible-looking basis with no error. Task 4 must clear/re-arm transit on
+    EVERY _compute_grab_offset recompute, not only when grabbers go empty.
