@@ -76,42 +76,98 @@ func _process(_delta: float) -> void:
 ## while touching (drag = sliders work by touch), retracting releases.
 
 @export_group("Poke Feel")
+## Assign to take press depth and the approach gate from one project-wide
+## resource. When set it WINS over the exports below.
+@export var poke_profile: XRPokeProfile
 ## How deep (metres) a fingertip must push past the surface to register a
 ## press, and how far it must retract to release (hysteresis stops flicker).
 @export var poke_press_depth := 0.012
 @export var poke_release_depth := 0.04
 ## Max distance in front of the panel that still counts as poking it.
 @export var poke_range := 0.09
+## Require the fingertip to have been seen in FRONT of the panel before it can
+## press, so a hand sweeping across the panel does not press what it crosses.
+@export var poke_require_entry_through_face := true
+@export_range(0.0, 90.0, 1.0) var poke_max_approach_angle := 60.0
+@export_range(0.0, 0.02, 0.0005) var poke_min_approach_travel := 0.003
 
-var _poke_pressed := {}
+const _PokeEvaluator := preload("res://addons/godot_xr_interaction_toolkit/runtime/poke/xr_poke_evaluator.gd")
+## Far outside any panel: where a CANCELLED release is delivered, so Godot
+## Controls clear their pressed state without emitting. This is the standard
+## Control contract - a Button fires only when the release lands in its rect.
+const _OFF_PANEL := Vector2(-10000.0, -10000.0)
+
+var _poke_evaluator: XRPokeEvaluator
+var _poke_pins := {}
+
+
+func _sync_poke_evaluator() -> void:
+	if _poke_evaluator == null:
+		_poke_evaluator = _PokeEvaluator.new()
+	_poke_evaluator.press_depth = poke_press_depth
+	_poke_evaluator.release_depth = poke_release_depth
+	_poke_evaluator.half_size = panel_size * 0.5
+	_poke_evaluator.require_entry_through_face = poke_require_entry_through_face
+	_poke_evaluator.max_approach_angle = poke_max_approach_angle
+	_poke_evaluator.min_approach_travel = poke_min_approach_travel
+	_poke_evaluator.interpret_drag = false  # The viewport already drags on motion.
+	_poke_evaluator.apply_profile(poke_profile)
+
 
 ## World-space fingertip update from a poke source (source_id per hand).
 func poke_update(source_id: int, world_point: Vector3) -> void:
 	if _viewport == null:
 		return
+	_sync_poke_evaluator()
 	var local := global_transform.affine_inverse() * world_point
-	var inside := absf(local.x) <= panel_size.x * 0.5 and absf(local.y) <= panel_size.y * 0.5
-	if not inside or local.z > poke_range or local.z < -0.06:
+	# The panel owns its own REACH test; the evaluator owns the face rectangle.
+	if local.z > poke_range or local.z < -0.06:
 		poke_end(source_id)
 		return
+	var result: Dictionary = _poke_evaluator.evaluate(source_id, local)
+	var pinned: Vector3 = result["pinned_point"]
+	if pinned == Vector3.INF:
+		_poke_pins.erase(source_id)
+	else:
+		_poke_pins[source_id] = global_transform * pinned
 	var pixels := map_local_point_to_viewport(local)
-	if _poke_pressed.get(source_id, false):
-		_push_mouse_motion(pixels)
-		if local.z > poke_release_depth:
-			_poke_pressed[source_id] = false
+	match int(result["event"]):
+		_PokeEvaluator.Event.PRESSED:
+			_push_mouse_motion(pixels)
+			_push_mouse_button(pixels, true)
+			_last_pointer_position = pixels
+		_PokeEvaluator.Event.RELEASED:
+			_push_mouse_motion(pixels)
 			_push_mouse_button(pixels, false)
-	elif local.z <= poke_press_depth:
-		_poke_pressed[source_id] = true
-		_push_mouse_motion(pixels)
-		_push_mouse_button(pixels, true)
-	_last_pointer_position = pixels
+			_last_pointer_position = pixels
+		_PokeEvaluator.Event.CANCELLED:
+			_poke_pins.erase(source_id)
+			_push_mouse_motion(_OFF_PANEL)
+			_push_mouse_button(_OFF_PANEL, false)
+		_:
+			# Per SOURCE, not is_pressed(): with two hands on the panel, one
+			# pressed hand would otherwise drag the cursor for the idle one.
+			if _poke_evaluator.is_source_pressed(source_id):
+				_push_mouse_motion(pixels)  # Drag: sliders track the finger.
+				_last_pointer_position = pixels
 
 
 ## The poke source lost its point (hand untracked / moved away).
 func poke_end(source_id: int) -> void:
-	if _poke_pressed.get(source_id, false):
-		_poke_pressed[source_id] = false
-		_push_mouse_button(_last_pointer_position, false)
+	if _poke_evaluator == null:
+		return
+	_poke_pins.erase(source_id)
+	if _poke_evaluator.forget(source_id) == _PokeEvaluator.Event.CANCELLED:
+		_push_mouse_motion(_OFF_PANEL)
+		_push_mouse_button(_OFF_PANEL, false)
+
+
+## World-space point pinned to the panel face while in contact: the raw point
+## while the source is in front of the surface, clamped onto the surface
+## (z = 0) once it pushes past it. Vector3.INF whenever the source is off the
+## face entirely - outside the panel rectangle or outside the working z-band.
+func get_poke_pin(source_id: int) -> Vector3:
+	return _poke_pins.get(source_id, Vector3.INF)
 
 
 func _unhandled_input(event: InputEvent) -> void:

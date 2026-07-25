@@ -6,6 +6,7 @@ extends SceneTree
 const XRPokeEvaluator := preload("res://addons/godot_xr_interaction_toolkit/runtime/poke/xr_poke_evaluator.gd")
 const XRPokeProfile := preload("res://addons/godot_xr_interaction_toolkit/runtime/poke/xr_poke_profile.gd")
 const XRPokeableScript := preload("res://addons/godot_xr_interaction_toolkit/runtime/xr_pokeable.gd")
+const XRUICanvasScript := preload("res://addons/godot_xr_interaction_toolkit/runtime/xr_ui_canvas_interactable.gd")
 
 var _failures: Array[String] = []
 var _tree_tests_done := false
@@ -41,6 +42,7 @@ func _process(_delta: float) -> bool:
 	_test_pokeable_pin_is_inf_without_contact(_failures)
 	_test_pokeable_pin_is_inf_when_off_face(_failures)
 	_test_pokeable_pin_is_inf_when_beyond_band(_failures)
+	_test_canvas_cancel_pushes_the_release_off_panel(_failures)
 	if _failures.is_empty():
 		print("XR poke fidelity: PASS")
 		quit(0)
@@ -173,6 +175,36 @@ func _test_pokeable_pin_is_inf_when_beyond_band(failures: Array[String]) -> void
 	_check(failures, pin == Vector3.INF,
 			"pokeable: a point beyond the working z-band must not get a pin, got %s" % [pin])
 	pokeable.get_parent().queue_free()
+
+
+## A poke that slides off the panel while pressed must CANCEL, not release at
+## the last in-panel pixel - that pixel sits inside whatever Control happens
+## to be there, so releasing there would fire it. Godot Controls only fire on
+## a release that lands in their own rect, so the fix is to deliver the
+## release far off-panel instead.
+func _test_canvas_cancel_pushes_the_release_off_panel(failures: Array[String]) -> void:
+	var panel := Node3D.new()
+	panel.set_script(XRUICanvasScript)
+	var viewport := SubViewport.new()
+	viewport.size = Vector2i(256, 256)
+	panel.add_child(viewport)
+	panel.viewport_path = panel.get_path_to(viewport)
+	panel.panel_size = Vector2(0.4, 0.4)
+	get_root().add_child(panel)
+
+	var button := Button.new()
+	button.anchor_right = 1.0
+	button.anchor_bottom = 1.0
+	viewport.add_child(button)
+	var fired := {"count": 0}
+	button.pressed.connect(func(): fired["count"] += 1)
+
+	panel.poke_update(0, Vector3(0.0, 0.0, 0.050))
+	panel.poke_update(0, Vector3(0.0, 0.0, 0.008))
+	panel.poke_update(0, Vector3(0.300, 0.0, 0.008))  # slide off the panel
+	_check(failures, fired["count"] == 0,
+			"canvas: an aborted poke must not fire the Control, fired %d" % fired["count"])
+	panel.queue_free()
 
 
 ## A default evaluator: XRPokeable's shipped thresholds.
