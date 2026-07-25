@@ -62,7 +62,8 @@ Design: `docs/poke-fidelity-design.md`. Read it before Task 1.
   `evaluate(source_id: int, point: Vector3) -> Dictionary` returning keys
   `event: Event`, `depth_ratio: float`, `pinned_point: Vector3`,
   `drag_delta: Vector2`; `forget(source_id: int) -> Event`;
-  `apply_profile(profile) -> void`.
+  `is_pressed() -> bool`; `is_source_pressed(source_id: int) -> bool`;
+  `apply_profile(profile, include_depth := true) -> void`.
 
 - [ ] **Step 1: Write the failing test file**
 
@@ -575,7 +576,8 @@ git commit -m "feat: one poke press decision, armed by either approach test"
 - Test: `addons/godot_xr_interaction_toolkit/tests/test_poke_fidelity.gd` (modify)
 
 **Interfaces:**
-- Consumes: `XRPokeEvaluator.apply_profile(profile)` from Task 1.
+- Consumes: `XRPokeEvaluator.apply_profile(profile, include_depth := true)`
+  from Task 1.
 - Produces: `XRPokeProfile` (`Resource`) with exports `press_depth: float`,
   `release_depth: float`, `require_entry_through_face: bool`,
   `max_approach_angle: float`, `min_approach_travel: float`.
