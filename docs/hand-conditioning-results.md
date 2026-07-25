@@ -53,12 +53,19 @@ design working as specified.
    no NaNs, bone dev 0.14–0.17 mm conditioned) but NOT the gate's hold path.
    Gate behaviour is covered by unit tests instead.
 
-## Remaining before Task 10 closes
+## Earn-in: PASSED (David, on-device, 2026-07-24/25)
 
-- On-device FEEL check of the tuned parameters (the earn-in gate): grab, poke,
-  gesture recognition, and the A/B toggle (`XRHandTrackerResolver.
-  set_conditioned`) — discard the first frames after each flip, the toggle
-  re-seeds the chain by design.
+Conditioning ON is the settled default. Extensive A/B via the feel-check
+workshop scene; the three discriminating tests all passed (draw-station line
+quality, dropout freeze test, throw release accuracy). Throw power settled at
+`throw_peak_bias = 0.80` in a follow-up pass. Both switches have since been
+removed from the feel-check scene — they are plain suite defaults now.
+
+Still open on-device: whether the microgesture recognizers prefer conditioned
+or raw joints (their thresholds were tuned against raw; conditioning trades
+18-28 ms of lag for a smoother signal). That A/B remains in the scene.
+
+## Remaining before Task 10 closes
 - WEB frame-cost measurement (the conditioning chain is GDScript per frame;
   web is where that cost bites).
 - Right-hand lag sits at 2 frames measured; decide whether to chase it (the

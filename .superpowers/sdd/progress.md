@@ -606,3 +606,14 @@ equivalent exists. Promotion is possible (XR_MSFT_hand_interaction ->
 XR_EXT_hand_interaction is precedent) but nothing indicates it is in motion.
 If built later: additive only -- a selectable source beside ours, ours stays
 default until an in-headset A/B says otherwise. Buys nothing for WebXR.
+
+## SETTLED on-device (David, 2026-07-25)
+Hand conditioning ON and throw_peak_bias = 0.80 are both confirmed and are now
+plain suite defaults; their feel-check dials are removed. hand-conditioning
+Task 10's earn-in gate is MET. Microgesture raw-vs-conditioned remains the one
+open on-device question and keeps its A/B switch.
+NEXT: interaction arbitration (docs/interaction-arbitration-design.md,
+approved cce374f) -> writing-plans -> subagent execution. David's cost note:
+run this one with fewer, larger tasks than grab-feel; a spend limit was hit
+mid-branch, and five task-reviews plus a whole-branch review was the expensive
+part. Keep the whole-branch review -- it found all three Criticals.
