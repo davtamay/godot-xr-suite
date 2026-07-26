@@ -71,6 +71,7 @@ var _debug_pose_was_empty := false
 var _poke_interactor: Node
 var _locomotion: Node
 var _grab_distance := 0.0
+var _far_grab_mode := XRGrabInteractable.FarGrabMode.ATTRACT
 var _grip_latched := false
 var _hover_distance := 0.0
 var _pending_distance_delta := 0.0
@@ -95,6 +96,27 @@ func get_ray_state() -> Dictionary:
 
 func get_attach_pose() -> Transform3D:
     return _attach_pose
+
+## The current held distance along the ray. Public so a mode-aware
+## interactable (or a phase-2 distance driver) can read the ray's own state
+## rather than each keeping a shadow copy.
+func get_grab_distance() -> float:
+    return _grab_distance
+
+## Public mutator for the ray's distance state, clamped the same way the
+## internal reel path clamps it. This is phase 2's entry point (a pinch/twist
+## driver adjusting distance while FIXED or REEL is held) - it exists now so
+## there is exactly one place that owns the clamp arithmetic.
+func adjust_grab_distance(delta: float) -> void:
+    _grab_distance = _clamp_grab_distance(_grab_distance + delta)
+
+## Grabbing closer than min_grab_distance keeps the true distance so the
+## object does not pop forward; min_grab_distance only floors pull-ins. Shared
+## by the reel path and the public adjust_grab_distance() mutator so there is
+## exactly one place computing this clamp.
+func _clamp_grab_distance(value: float) -> float:
+    var floor_distance := minf(min_grab_distance, _grab_distance)
+    return clampf(value, floor_distance, max_distance)
 
 ## Unity/Meta hand-ray gate: hide a BARE hand's ray unless it's tracked and the
 ## palm faces away from the head (an aiming posture). Controllers never gate.
@@ -236,7 +258,17 @@ func _intersect(origin: Vector3, direction: Vector3) -> Dictionary:
 func _notify_select_granted(interactable) -> void:
     # Grabbing closer than min_grab_distance keeps the true distance so the
     # object does not pop forward; min_grab_distance only floors pull-ins.
-    _grab_distance = minf(_hover_distance, max_distance)
+    var hit_distance := minf(_hover_distance, max_distance)
+    # Read defensively: a third-party interactable without far_grab_mode still
+    # works and behaves as ATTRACT, the default.
+    _far_grab_mode = interactable.far_grab_mode if interactable != null and "far_grab_mode" in interactable else XRGrabInteractable.FarGrabMode.ATTRACT
+    if _far_grab_mode == XRGrabInteractable.FarGrabMode.ATTRACT:
+        # ATTRACT sets the held distance to the same floor the reel-to-grip
+        # path already uses, so the existing transit tween carries the object
+        # in and the existing grip latch holds it - no new motion path.
+        _grab_distance = minf(min_grab_distance, hit_distance)
+    else:
+        _grab_distance = hit_distance
     _pending_distance_delta = 0.0
     _grip_latched = false
     _seed_last_ray_pose_from_state()
@@ -246,9 +278,14 @@ func _notify_select_released(interactable) -> void:
     super(interactable)
     _pending_distance_delta = 0.0
     _grip_latched = false
+    _far_grab_mode = XRGrabInteractable.FarGrabMode.ATTRACT
     _seed_last_ray_pose_from_state()
 
 func _apply_motion_distance_manipulation(origin: Vector3, _direction: Vector3, delta: float) -> void:
+    # Reeling is a REEL-only behaviour now; ATTRACT and FIXED never wind
+    # distance in or out from hand motion.
+    if _far_grab_mode != XRGrabInteractable.FarGrabMode.REEL:
+        return
     if not enable_motion_distance_manipulation or not _has_last_ray_pose:
         return
 
@@ -270,7 +307,7 @@ func _apply_motion_distance_manipulation(origin: Vector3, _direction: Vector3, d
 
     var floor_distance := minf(min_grab_distance, _grab_distance)
     var previous := _grab_distance
-    _grab_distance = clampf(_grab_distance + step, floor_distance, max_distance)
+    _grab_distance = _clamp_grab_distance(_grab_distance + step)
     _pending_distance_delta -= _grab_distance - previous
     if is_equal_approx(_grab_distance, floor_distance) or is_equal_approx(_grab_distance, max_distance):
         _pending_distance_delta = 0.0

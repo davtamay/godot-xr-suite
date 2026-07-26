@@ -31,6 +31,13 @@ signal use_changed(value: float)
 @export var target_path: NodePath
 
 @export_group("Grab")
+## What a FAR (ray) grab does with this object. Near/direct grab is unaffected.
+## ATTRACT: comes to your hand and stays - the common "I want that thing".
+## FIXED: holds the distance it was grabbed at and follows your aim.
+## REEL: hand motion along the ray winds it in and out.
+enum FarGrabMode { ATTRACT, FIXED, REEL }
+@export var far_grab_mode := FarGrabMode.ATTRACT
+
 ## Bare-hand grab gesture: PINCH (default) or GRIP (curl the lower fingers, index
 ## free). See HandGrab. A gun/blaster uses GRIP so the index can pull a trigger.
 @export var hand_grab_style: HandGrab = HandGrab.PINCH
