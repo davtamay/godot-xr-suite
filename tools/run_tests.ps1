@@ -2,6 +2,18 @@
 # non-zero exit. A suite's own PASS line is not sufficient: a test that hits
 # a runtime error aborts silently, the runner continues, and the summary
 # still says PASS. Verified on Godot 4.7.stable.
+#
+# Godot writes "SCRIPT ERROR:" / "ERROR:" to stderr, not stdout. Plain
+# `$out = & $Godot ...` in Windows PowerShell 5.1 only captures stdout --
+# stderr passes straight to the console and is invisible to $out, so the
+# scripterrors check below would silently never fire. Confirmed empirically
+# with a probe script that crashes and still prints its own PASS line: with
+# a plain capture, scripterrors=0 and exit=0 even though the crash happened.
+# Piping through `cmd /c "... 2>&1"` merges stderr into stdout at the OS
+# level before PowerShell sees it, so the merged text lands in $out. Do not
+# "fix" this by adding `2>&1` directly on the native call instead -- in
+# PowerShell 5.1 that wraps each stderr line as an ErrorRecord and can flip
+# $? to failure even on a clean exit; the OS-level cmd merge avoids that.
 param(
 	[Parameter(Mandatory = $true)][string[]]$Suite,
 	[string]$Godot = 'C:\tmp\Godot47\Godot_v4.7-stable_win64_console.exe',
@@ -9,7 +21,8 @@ param(
 )
 $failed = 0
 foreach ($s in $Suite) {
-	$out = & $Godot --headless --xr-mode off --path $Demo --script "res://addons/$s.gd"
+	$cmdLine = "`"$Godot`" --headless --xr-mode off --path `"$Demo`" --script res://addons/$s.gd 2>&1"
+	$out = cmd /c $cmdLine
 	$code = $LASTEXITCODE
 	$errors = ($out | Select-String -Pattern 'SCRIPT ERROR|^ERROR:' -AllMatches).Count
 	$verdict = ($out | Select-String -Pattern 'PASS|FAILURE' | Select-Object -First 1)
