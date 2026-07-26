@@ -154,3 +154,19 @@ The on-device checklist must explicitly cover UI-panel gestures that the new
 gate could newly reject - approaching a slider handle from the side, pressing a
 button near the panel edge at a shallow angle. Revert lever if it regresses:
 require_entry_through_face = false, max_approach_angle = 90.
+  - Review Important (plan-mandated): the brief's own code stopped updating
+    _last_pointer_position on pure hover frames. Inert today - every reader
+    sets it before reading - but a divergence on an earned-in path, and the
+    stated goal for this file was to move the DECISION without moving the
+    BEHAVIOUR. Controller chose to fix rather than accept: restoring the
+    pre-conversion continuous assignment fulfils the plan's intent, so this is
+    not a plan contradiction needing the human.
+  - Review Minor, also closed: the per-source drag branch
+    (is_source_pressed vs is_pressed) had no guard, so a regression back to
+    is_pressed would have passed both suites. Fixed in f2ab751 with a
+    _MotionProbe Control capturing the actual pushed InputEventMouseMotion.
+    The fixer correctly REJECTED _last_pointer_position as the observable - it
+    is shared across sources and now unconditional, so it cannot distinguish
+    hovered from dragged.
+  - Pre-existing warnings (no XRInteractionManager, ObjectDB leaked) confirmed
+    against a stashed baseline as predating this branch, not introduced here.
