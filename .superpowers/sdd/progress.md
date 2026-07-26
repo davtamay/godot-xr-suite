@@ -186,3 +186,28 @@ Task 4: complete (commits 1826206..4f4e4be, review clean after three fix
   - Fix pass 3 mutation reproduced the predicted symptom exactly: dropping the
     `inside` guard stored pixel x=1024.0 (u clamped to 1.0) where 512.0 was
     correct. That is the spurious edge pixel the finding described.
+
+Task 5: IN PROGRESS (implementer commit 5c9aa45; fix pass 1 in flight)
+  - Implementer disabled require_entry_through_face on the button to make the
+    fast-poke test pass. That switches the gate OFF entirely for buttons -
+    _entry_passes returns true unconditionally, so the OR is always satisfied.
+    Reversed. But the underlying problem it papered over was real:
+  - ROOT CAUSE (xr_poke_button.gd:98): the cylinder test called poke_end ->
+    forget(), which CLEARS the sample history. The evaluator's own bounds exit
+    keeps it (_exit(state, true)). History survival is what lets the angle test
+    rescue a fast approach whose previous sample fell outside the shape, so the
+    button was destroying its own rescue and leaving the entry test to carry
+    the gate alone.
+  - Fix: new evaluator method leave_bounds(source_id) - a shape exit that keeps
+    history, the counterpart of forget(). Cylinder test uses it; the reach test
+    (>5cm above the cap) keeps forget(), which is correct there.
+  - The brief's fast-poke FIXTURE was also wrong: it started at local.y=0.120,
+    outside the reach guard at cap_rest_top+0.05 = 0.098, so the first sample
+    forgot the source. That is a 14cm jump in one physics frame (~8.4 m/s), not
+    a poke anyone performs. Corrected to 0.060 (~4.8 m/s, a hard slap).
+  - Accepted deviation: emission moved from _physics_process into
+    poke_update/poke_end. Better - it emits at the point of decision, and in
+    production poke_update is called from _physics_process anyway.
+  - Noted for on-device: two concurrent hands on ONE cap now arm per-source
+    rather than sharing one aggregate-depth hysteresis. Low probability given
+    the cap radius, but a real difference.
