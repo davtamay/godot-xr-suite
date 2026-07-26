@@ -28,6 +28,27 @@ func _ready() -> void:
 			loco.anchors_only = true
 
 
+## The TWIST sphere does nothing without a pinch-twist driver in the scene, and
+## a demo object that silently does nothing reads as a broken feature rather
+## than a missing node. Added here so the bench is self-contained; guarded so a
+## project that already placed one does not get two fighting over the same
+## distance.
+func _ensure_twist_driver() -> void:
+	const DRIVER := "res://addons/godot_xr_interaction_toolkit/runtime/xr_pinch_twist_distance_driver.gd"
+	if not ResourceLoader.exists(DRIVER):
+		return
+	var script := load(DRIVER) as GDScript
+	if script == null:
+		return
+	for child in get_children():
+		if child.get_script() == script:
+			return
+	var driver := Node.new()
+	driver.name = "PinchTwistDistance"
+	driver.set_script(script)
+	add_child(driver)
+
+
 ## Built from the shipped grabbable block rather than hand-assembled: it already
 ## auto-fits its collision to whatever mesh is swapped in, so a sphere gets a
 ## correctly sized shape for free and there is no way to end up with a
@@ -46,7 +67,15 @@ func _build_far_grab_bench() -> void:
 			"caption": "FIXED\nholds its distance, follows your aim"},
 		{"mode": 2, "name": "REEL", "color": Color(1.0, 0.65, 0.25),
 			"caption": "REEL\npull your hand to wind it in"},
+		{"mode": 3, "name": "TWIST", "color": Color(0.75, 0.55, 1.0),
+			"caption": "TWIST\nroll your wrist to throttle it in/out"},
 	]
+
+	# TWIST needs its driver present or that sphere is inert - and an inert
+	# demo object is indistinguishable from a broken feature in a headset.
+	# Drivers in this suite are per-scene rather than rig-default (see
+	# MicrogestureLocomotion in this scene), so the bench brings its own.
+	_ensure_twist_driver()
 
 	var bench := Node3D.new()
 	bench.name = "FarGrabBench"
