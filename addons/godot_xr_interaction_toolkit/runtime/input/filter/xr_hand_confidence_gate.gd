@@ -12,8 +12,15 @@ const _HANDS := 2
 
 ## How long a lost hand keeps reporting its last good pose before going invalid.
 @export var hold_duration_sec := 0.25
-## Below this many valid joints the hand counts as lost.
-@export var min_valid_joints := 1
+## Below this many TRACKED joints (POSITION_VALID and POSITION_TRACKED both
+## set -- see XRHandTrackerResolver.joint_position_tracked, the per-joint
+## primitive this mirrors at the frame level) the hand counts as lost.
+## Deliberately NOT valid_joint_count: OpenXR sets POSITION_VALID on a joint it
+## is merely PREDICTING, so a hand out of view keeps every joint "valid" for
+## as long as it stays unseen -- checking valid_joint_count here meant this
+## gate never fired for exactly the case it exists to catch (confirmed
+## empirically; see .superpowers/sdd/ray-through-conditioning-report.md).
+@export var min_tracked_joints := 1
 
 var _inner: XRHandPoseSource
 var _raw := XRHandFrame.new()
@@ -40,7 +47,7 @@ func capture(hand: int, timestamp_usec: int, target: XRHandFrame) -> bool:
 		return false
 
 	var tracked := _inner.capture(hand, timestamp_usec, _raw)
-	if tracked and _raw.valid_joint_count < min_valid_joints:
+	if tracked and _raw.tracked_joint_count < min_tracked_joints:
 		tracked = false
 
 	var now := _raw.timestamp_usec if _raw.timestamp_usec > 0 else timestamp_usec

@@ -237,12 +237,22 @@ const PokeInteractor := preload("res://addons/godot_xr_interaction_toolkit/runti
 
 ## A headless run has no tracked hands at all, and _hand_tracked is now part of
 ## the path under test, so the node-level tests must supply real trackers.
+##
+## Carries POSITION_TRACKED alongside POSITION_VALID: _hand_tracked reads
+## XRHandTrackerResolver.get_tracker(), which (conditioning on by default)
+## runs this raw tracker through the real XRConditionedHandPublisher chain --
+## and the confidence gate now counts TRACKED joints, not just VALID ones
+## (predicted-only means "out of view", not "live"). VALID-only here would
+## have the gate reject this fixture's very first capture as an untracked
+## hand and scrub the shadow's has_tracking_data to false, which is exactly
+## what _hand_tracked reads -- these tests mean a genuinely tracked hand, not
+## a predicted one.
 func _register_hand(hand: int) -> XRHandTracker:
 	var tracker := XRHandTracker.new()
 	tracker.name = "/user/hand_tracker/%s" % ("left" if hand == 0 else "right")
 	tracker.hand = XRPositionalTracker.TRACKER_HAND_LEFT if hand == 0 else XRPositionalTracker.TRACKER_HAND_RIGHT
 	tracker.has_tracking_data = true
-	var valid := XRHandTracker.HAND_JOINT_FLAG_POSITION_VALID | XRHandTracker.HAND_JOINT_FLAG_ORIENTATION_VALID
+	var valid := XRHandTracker.HAND_JOINT_FLAG_POSITION_VALID | XRHandTracker.HAND_JOINT_FLAG_ORIENTATION_VALID | XRHandTracker.HAND_JOINT_FLAG_POSITION_TRACKED
 	for joint in range(XRHandTracker.HAND_JOINT_MAX):
 		tracker.set_hand_joint_transform(joint, Transform3D(Basis.IDENTITY, Vector3(0.1, 1.0, -0.3)))
 		tracker.set_hand_joint_flags(joint, valid)

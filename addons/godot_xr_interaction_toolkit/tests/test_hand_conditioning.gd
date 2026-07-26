@@ -16,6 +16,7 @@ func _init() -> void:
 	_test_hand_filter(failures)
 	_test_hand_filter_dedup(failures)
 	_test_confidence_gate(failures)
+	_test_confidence_gate_predicted_only_counts_as_lost(failures)
 	_test_publisher(failures)
 	_test_publisher_republish_cache(failures)
 	_test_publisher_tracker_registration(failures)
@@ -605,6 +606,11 @@ func _dedup_probe_frame(wrist_x: float, tip_z: float, step: int) -> XRHandFrame:
 	return frame
 
 ## Pose source emitting a scripted validity pattern: `pattern[i]` true = tracked.
+## "Tracked" means genuinely OBSERVED, not merely predicted -- OpenXR sets
+## POSITION_VALID on a joint it is only extrapolating too, so a fixture meaning
+## "this hand is live" must carry POSITION_TRACKED as well or the gate (which
+## counts TRACKED joints, not just VALID ones -- see xr_hand_confidence_gate.gd)
+## reads every "tracked" sample here as a predicted, out-of-view hand instead.
 class _ScriptedSource extends XRHandPoseSource:
 	var pattern: Array = []
 	var index := 0
@@ -620,7 +626,7 @@ class _ScriptedSource extends XRHandPoseSource:
 			target.set_joint(
 				XRHandTracker.HAND_JOINT_WRIST,
 				Transform3D(Basis.IDENTITY, Vector3(0.5, 0, 0)),
-				0.01, XRHandTracker.HAND_JOINT_FLAG_POSITION_VALID)
+				0.01, XRHandTracker.HAND_JOINT_FLAG_POSITION_VALID | XRHandTracker.HAND_JOINT_FLAG_POSITION_TRACKED)
 			target.tracking_valid = true
 			return true
 		target.tracking_valid = false
@@ -689,6 +695,106 @@ func _test_confidence_gate(failures: Array[String]) -> void:
 		still_valid = expiring.capture(1, 0, expiring_frame)
 	if still_valid:
 		failures.append("gate held past hold_duration_sec instead of reporting invalid")
+
+## Pose source for the predicted-vs-tracked liveness test. _ScriptedSource
+## above only has two states (tracked / nothing at all) and so cannot express
+## a hand that is VALID but not TRACKED -- the exact "predicting, not
+## observing" state OpenXR keeps reporting for an out-of-view hand, and the
+## whole reason min_tracked_joints exists rather than valid_joint_count.
+class _LivenessScriptedSource extends XRHandPoseSource:
+	enum State { LOST, PREDICTED, TRACKED }
+	var pattern: Array = []
+	var index := 0
+	var step_usec := 13888
+
+	func capture(hand: int, _timestamp_usec: int, target: XRHandFrame) -> bool:
+		if index >= pattern.size():
+			return false
+		var state: int = pattern[index]
+		target.begin_capture(hand, index * step_usec, index)
+		index += 1
+		if state == State.LOST:
+			target.tracking_valid = false
+			return false
+		var flags := XRHandTracker.HAND_JOINT_FLAG_POSITION_VALID
+		# PREDICTED gets a DIFFERENT position than TRACKED (0.5,0,0) --
+		# standing in for the wandering extrapolation a hand out of view
+		# actually produces. If the gate ever let a predicted sample through
+		# as "held", the wrist position in the captured frame would move to
+		# this one instead of staying pinned at the last genuinely tracked
+		# pose, which is exactly what the held-pose assertion below checks for.
+		var position := Vector3(0.5, 0, 0)
+		if state == State.TRACKED:
+			flags |= XRHandTracker.HAND_JOINT_FLAG_POSITION_TRACKED
+		else:
+			position = Vector3(0.5 + 0.2 * index, 0, 0)
+		target.set_joint(
+			XRHandTracker.HAND_JOINT_WRIST,
+			Transform3D(Basis.IDENTITY, position),
+			0.01, flags)
+		target.tracking_valid = true
+		return true
+
+## The capability min_tracked_joints adds that valid_joint_count could not
+## express at all: a hand reporting purely PREDICTED joints (POSITION_VALID,
+## never POSITION_TRACKED -- OpenXR's out-of-view extrapolation signal) must
+## count as LOST, exactly like a genuine dropout -- held for hold_duration_sec,
+## then invalid. Same shape as _test_confidence_gate above (tracked, tracked,
+## LOST, LOST, tracked / then a short-hold expiry gate), with PREDICTED
+## standing in for "no data" to prove the gate distinguishes "unseen but still
+## reporting" from "unseen and silent" not at all -- both must be caught.
+func _test_confidence_gate_predicted_only_counts_as_lost(failures: Array[String]) -> void:
+	var source := _LivenessScriptedSource.new()
+	source.pattern = [
+		_LivenessScriptedSource.State.TRACKED,
+		_LivenessScriptedSource.State.TRACKED,
+		_LivenessScriptedSource.State.PREDICTED,
+		_LivenessScriptedSource.State.PREDICTED,
+		_LivenessScriptedSource.State.TRACKED,
+	]
+	var gate := XRHandConfidenceGate.new(source)
+	gate.hold_duration_sec = 0.25   # ~18 frames at 72 Hz, so both gaps are held
+	var frame := XRHandFrame.new()
+
+	if not gate.capture(1, 0, frame):
+		failures.append("gate rejected a genuinely tracked frame")
+	gate.capture(1, 0, frame)
+
+	# The whole point of the correction: a hand reporting PREDICTED (VALID,
+	# not TRACKED) joints must be treated like a dropout, not a live hand --
+	# held steady, not passed through as if the wandering extrapolation were
+	# real data.
+	if not gate.capture(1, 0, frame):
+		failures.append("gate did not hold the last good frame through predicted-only joints -- min_tracked_joints is not actually gating on TRACKED")
+	if not frame.joint_transforms[XRHandTracker.HAND_JOINT_WRIST].origin.is_equal_approx(Vector3(0.5, 0, 0)):
+		failures.append("held frame during predicted-only loss did not carry the last good pose")
+	gate.capture(1, 0, frame)
+
+	gate.capture(1, 0, frame)
+	if not gate.consume_discontinuity(1):
+		failures.append("gate did not raise a discontinuity on reacquisition after predicted-only joints")
+
+	# Sustained predicted-only past hold_duration_sec must go invalid, not
+	# hold forever -- the same expiry contract a genuine dropout gets.
+	var expiring_source := _LivenessScriptedSource.new()
+	expiring_source.pattern = [
+		_LivenessScriptedSource.State.TRACKED,
+		_LivenessScriptedSource.State.PREDICTED,
+		_LivenessScriptedSource.State.PREDICTED,
+		_LivenessScriptedSource.State.PREDICTED,
+		_LivenessScriptedSource.State.PREDICTED,
+		_LivenessScriptedSource.State.PREDICTED,
+	]
+	var expiring := XRHandConfidenceGate.new(expiring_source)
+	expiring.hold_duration_sec = 0.02   # ~1.4 frames at 72 Hz
+	var expiring_frame := XRHandFrame.new()
+	expiring.capture(1, 0, expiring_frame)
+	expiring.capture(1, 0, expiring_frame)
+	var still_valid_predicted := true
+	for step in range(4):
+		still_valid_predicted = expiring.capture(1, 0, expiring_frame)
+	if still_valid_predicted:
+		failures.append("gate held past hold_duration_sec on sustained predicted-only joints instead of reporting invalid")
 
 func _test_publisher(failures: Array[String]) -> void:
 	var frame := XRHandFrame.new()
@@ -836,6 +942,14 @@ func _test_publisher_null_contract(failures: Array[String]) -> void:
 ## resolver will actually score as valid. The resolver only counts a joint when
 ## POSITION_VALID is set AND the origin is off the world origin, so degenerate
 ## zero transforms would score 0 and resolve to null.
+##
+## Carries POSITION_TRACKED alongside POSITION_VALID: every caller of this
+## helper uses it to arm a genuinely live, observed hand (resolver scoring,
+## conditioned routing, the publisher's feedback-loop and scan-exclusion
+## guards, the gate-rejection contract) through the real
+## XRConditionedHandPublisher chain, never a predicted/out-of-view one -- and
+## the gate now counts TRACKED joints, not just VALID ones (see
+## xr_hand_confidence_gate.gd), so VALID-only here would arm nothing.
 func _make_raw_tracker(hand: int) -> XRHandTracker:
 	var tracker := XRHandTracker.new()
 	tracker.name = XRConditionedHandPublisher._RAW_NAMES[hand]
@@ -845,7 +959,7 @@ func _make_raw_tracker(hand: int) -> XRHandTracker:
 		tracker.set_hand_joint_transform(joint, Transform3D(Basis(), Vector3(0.1 + 0.001 * joint, 0.2, -0.3)))
 		tracker.set_hand_joint_radius(joint, 0.01)
 		tracker.set_hand_joint_flags(joint,
-			XRHandTracker.HAND_JOINT_FLAG_POSITION_VALID | XRHandTracker.HAND_JOINT_FLAG_ORIENTATION_VALID)
+			XRHandTracker.HAND_JOINT_FLAG_POSITION_VALID | XRHandTracker.HAND_JOINT_FLAG_ORIENTATION_VALID | XRHandTracker.HAND_JOINT_FLAG_POSITION_TRACKED)
 	XRServer.add_tracker(tracker)
 	return tracker
 
