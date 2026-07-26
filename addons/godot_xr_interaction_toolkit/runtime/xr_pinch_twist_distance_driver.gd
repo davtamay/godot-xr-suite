@@ -58,7 +58,32 @@ const XRInputAdapter := preload("res://addons/godot_xr_interaction_toolkit/runti
 ## across a room-scale gap in one twist without needing to re-grab, small
 ## enough that the jitter a comfortable ~90 degree twist amplifies stays in
 ## the low centimetres. Order-of-magnitude, owed on-device tuning.
+##
+## Governs OUTWARD deflection unconditionally, and INWARD deflection only when
+## twist_pull_reaches_hand is false -- see that export for why inward has its
+## own, engagement-distance-dependent span by default.
 @export_range(0.05, 10.0, 0.01, "or_greater") var twist_span_metres := 2.0
+
+## Reported on device: full inward twist only closed about three quarters of
+## the distance to the hand, because twist_span_metres is a FIXED offset --
+## engage at 3 m and full inward twist lands at 1 m (3/4 of the way in); engage
+## at 10 m and the same fixed span barely moves it proportionally. When true
+## (default), full inward deflection instead maps to the ray's
+## min_grab_distance -- all the way to the hand -- REGARDLESS of how far away
+## the object was when TWIST engaged, so the gesture feels the same whether
+## the grab happened at 1 m or 6 m. This is the closer analogue of Meta's own
+## design: PinchAndTwistEventSource emits a NORMALIZED value and leaves the
+## consumer to map it onto its own range (a slider maps to its authored
+## min/max); ours maps the same normalized inward deflection onto min_grab_distance
+## as its "min" (read for technique only, per CLAUDE.md -- no code copied).
+##
+## OUTWARD deflection always uses twist_span_metres, regardless of this flag:
+## "bring it to me" has a natural endpoint (the hand) that "push it away" does
+## not, so only the inward side gets the hand-reaching remap.
+##
+## When false, inward uses twist_span_metres exactly like outward, i.e. the
+## pre-authoring-fix behaviour this export exists to make optional.
+@export var twist_pull_reaches_hand := true
 
 ## Degrees of roll (away from the captured neutral) at which the offset
 ## reaches +/- twist_span_metres. Beyond it the offset clamps -- twisting
@@ -169,9 +194,24 @@ func _drive_hand(hand: int, delta: float) -> void:
 
 	var neutral: Dictionary = _neutral[hand]
 	var roll := twist_angle(neutral["rotation"], current_rotation, neutral["axis"])
+	# INWARD span only: when twist_pull_reaches_hand is on, full inward
+	# deflection must land on min_grab_distance regardless of how far the
+	# object was when TWIST engaged, so the span it scales against is
+	# (engagement_distance - min_grab_distance) -- computed fresh here, not
+	# cached in _neutral, so a runtime change to min_grab_distance takes effect
+	# immediately. Outward is untouched: twist_offset only consults this value
+	# for a NEGATIVE (inward) fraction. `interactor` is the generic Node
+	# _held_by returns, so `.min_grab_distance` resolves dynamically the same
+	# way `.max_distance_change_per_second` does below.
+	var engagement_distance: float = neutral["engagement_distance"]
+	var inward_span := twist_span_metres
+	if twist_pull_reaches_hand:
+		var min_grab_distance: float = interactor.min_grab_distance
+		inward_span = maxf(engagement_distance - min_grab_distance, 0.0)
 	var offset := twist_offset(roll, deg_to_rad(twist_start_threshold_degrees),
-			deg_to_rad(twist_deadband_degrees), deg_to_rad(twist_full_angle_degrees), twist_span_metres)
-	var target: float = neutral["engagement_distance"] + offset
+			deg_to_rad(twist_deadband_degrees), deg_to_rad(twist_full_angle_degrees),
+			twist_span_metres, inward_span)
+	var target: float = engagement_distance + offset
 	# interactor is typed as the generic Node _held_by returns, so its method
 	# calls resolve dynamically -- explicit `: float` (not `:=`) is required
 	# here, or the compiler cannot infer a type from a Variant-returning call.
@@ -233,10 +273,21 @@ static func twist_angle(neutral_rotation: Quaternion, current_rotation: Quaterni
 ##    subtracted from the roll before scaling, so rolling exactly back to the
 ##    captured neutral retraces to exactly zero offset rather than leaving a
 ##    residual sliver from tracking noise sitting right at neutral.
-## Linear from there to +/- span_metres at +/- full_angle_radians, clamped
-## beyond it -- twisting further than full_angle never overshoots the span.
+## Linear from there to +/- full_angle_radians, clamped beyond it -- twisting
+## further than full_angle never overshoots.
+##
+## `span_metres` scales a POSITIVE (outward) fraction; `inward_span_metres`
+## scales a NEGATIVE (inward) fraction instead, when given. Defaults to -1.0,
+## a sentinel meaning "use span_metres for both directions" -- the original
+## symmetric mapping, and what every caller that only cares about one span
+## (this file's own pure-math test included) still gets by passing 5 args.
+## twist_pull_reaches_hand is what gives callers a REASON to pass a different
+## inward_span_metres: full inward deflection should reach min_grab_distance
+## regardless of engagement distance, which is a span that depends on the
+## engagement distance and so cannot be the fixed twist_span_metres constant.
 static func twist_offset(roll_radians: float, start_threshold_radians: float,
-		deadband_radians: float, full_angle_radians: float, span_metres: float) -> float:
+		deadband_radians: float, full_angle_radians: float, span_metres: float,
+		inward_span_metres := -1.0) -> float:
 	if absf(roll_radians) < start_threshold_radians:
 		return 0.0
 	var excess := 0.0
@@ -246,7 +297,10 @@ static func twist_offset(roll_radians: float, start_threshold_radians: float,
 		excess = roll_radians + deadband_radians
 	var usable_span := maxf(full_angle_radians - deadband_radians, 0.0001)
 	var fraction := clampf(excess / usable_span, -1.0, 1.0)
-	return fraction * span_metres
+	var span_for_fraction := span_metres
+	if fraction < 0.0 and inward_span_metres >= 0.0:
+		span_for_fraction = inward_span_metres
+	return fraction * span_for_fraction
 
 
 ## The frozen roll axis for a fresh neutral capture: the ray's current aim

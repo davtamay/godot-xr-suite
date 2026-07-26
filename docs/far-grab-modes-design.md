@@ -355,3 +355,39 @@ copied; the constants we ship are ours and are named below.
   range-clamps, it does not rate-limit — which is what keeps a target that
   jumps (crossing the start threshold, or a noisy tracking sample) from
   snapping instead of smoothing in.
+
+## `twist_pull_reaches_hand`: full inward twist should be able to reach the hand (2026-07-26)
+
+Reported: "when i twist is gets close to the hand like 3/4 of the way, provide
+a way to adjust that for authoring, if meta goes all the way to the hand with
+this adjust it".
+
+`twist_span_metres` is a **fixed offset**, so full inward deflection's landing
+distance depends on how far away the object was when TWIST engaged: engage at
+3 m and it lands at 1 m — three quarters of the way in, exactly the symptom
+reported. Engage at 10 m and the same fixed span barely moves it
+proportionally.
+
+**Fix:** `twist_pull_reaches_hand` (default **true**). When true, full inward
+deflection maps to `min_grab_distance` instead — all the way to the hand —
+**regardless of engagement distance**, computed fresh each frame as
+`engagement_distance - min_grab_distance`. When false, inward uses
+`twist_span_metres` exactly like outward — the pre-fix behaviour, kept
+available for authoring.
+
+**Outward is untouched by the flag either way** — it always uses
+`twist_span_metres`. The asymmetry is deliberate, the same one this document
+already draws for the reel-vs-attract split: "bring it to me" has a natural
+endpoint (the hand); "push it away" does not.
+
+This is the closer analogue of Meta's own design: `PinchAndTwistEventSource`
+emits a **normalized** twist value and leaves the mapping to the consumer (a
+slider maps it onto its own authored min/max); ours now maps the same
+normalized inward deflection onto `min_grab_distance` as its "min" — read for
+technique only, per `CLAUDE.md`, nothing copied.
+
+Implementation note: `XRPinchTwistDistanceDriver.twist_offset` takes an
+optional `inward_span_metres` parameter (sentinel `-1.0` meaning "same as
+outward", preserving the original symmetric call for anyone still using the
+5-argument form) so a negative (inward) fraction can scale against a different
+span than a positive (outward) one.

@@ -142,6 +142,10 @@ func _init() -> void:
 	_test_twist_offset_engages_scales_and_clamps(_failures)
 	_test_twist_angle_extracts_roll_independent_of_swing(_failures)
 	_test_twist_full_deflection_settles_at_span_and_clamps_beyond(_failures)
+	_test_twist_pull_reaches_hand_default_reaches_min_grab_distance_from_multiple_engagement_distances(_failures)
+	_test_twist_pull_reaches_hand_false_uses_span_instead(_failures)
+	_test_twist_pull_reaches_hand_flag_does_not_affect_outward(_failures)
+	_test_twist_pull_reaches_hand_rolling_back_still_retraces(_failures)
 	_test_twist_rolling_back_to_neutral_returns_to_engagement_distance(_failures)
 	_test_twist_opposite_rolls_move_opposite_ways_from_engagement(_failures)
 	_test_twist_inside_deadband_nothing_moves(_failures)
@@ -936,6 +940,148 @@ func _test_twist_full_deflection_settles_at_span_and_clamps_beyond(failures: Arr
 	_drive_twist_until_settled(driver, ray, XRInputAdapter.Hand.LEFT)
 	if not is_equal_approx(ray.get_grab_distance(), expected_full):
 		failures.append("twisting past the full angle must clamp at engagement_distance + twist_span_metres (%f), got %f -- it must not keep growing" % [expected_full, ray.get_grab_distance()])
+
+	_unregister_wrist_tracker(tracker)
+	ray.free()
+	stub.free()
+	driver.free()
+
+## ---------------------------------------------------------------------------
+## twist_pull_reaches_hand (David, in-headset: "when i twist is gets close to
+## the hand like 3/4 of the way, provide a way to adjust that for authoring, if
+## meta goes all the way to the hand with this adjust it"). twist_span_metres
+## is a FIXED offset, so full inward twist landing distance depends on how far
+## away the object was when TWIST engaged -- engage at 3 m and it lands at 1 m
+## (3/4 of the way in, the exact symptom reported); engage at 10 m and the same
+## fixed span barely moves it. The flag defaults true: full inward deflection
+## must reach min_grab_distance from ANY engagement distance -- proven here
+## from two clearly different ones, 2 m and 6 m, so a mutation that leaves the
+## inward span fixed can pass at most one of them.
+func _test_twist_pull_reaches_hand_default_reaches_min_grab_distance_from_multiple_engagement_distances(failures: Array[String]) -> void:
+	for engagement_distance in [2.0, 6.0]:
+		var stub := TwistInteractableStub.new()
+		var ray := _make_twist_ray(XRInputAdapter.Hand.LEFT, Vector3(0, 0, -1), engagement_distance)
+		stub._notify_select_entered(ray)
+
+		var driver := XRPinchTwistDistanceDriver.new()
+		driver._interactable = stub
+		if not driver.twist_pull_reaches_hand:
+			failures.append("twist_pull_reaches_hand must default to true")
+
+		var axis := Vector3(0, 0, -1)
+		var tracker := _register_wrist_tracker(XRInputAdapter.Hand.LEFT, Basis.IDENTITY)
+		driver._drive_hand(XRInputAdapter.Hand.LEFT, 1.0 / 60.0)  # capture neutral + engagement distance
+
+		# Negative roll is INWARD (confirmed by _test_twist_opposite_rolls_move_opposite_ways_from_engagement:
+		# a negative roll settles BELOW the engagement distance).
+		_set_wrist_roll(tracker, Basis(axis, -deg_to_rad(driver.twist_full_angle_degrees)))
+		_drive_twist_until_settled(driver, ray, XRInputAdapter.Hand.LEFT)
+		if not is_equal_approx(ray.get_grab_distance(), ray.min_grab_distance):
+			failures.append("full inward twist engaged at %f m must reach min_grab_distance (%f) when twist_pull_reaches_hand is true, got %f" % [engagement_distance, ray.min_grab_distance, ray.get_grab_distance()])
+
+		_unregister_wrist_tracker(tracker)
+		ray.free()
+		stub.free()
+		driver.free()
+
+## Companion: with the flag OFF, inward reverts to the pre-authoring-fix
+## behaviour -- twist_span_metres, exactly like outward. Engagement distance
+## (3 m) is picked so engagement - twist_span_metres (1 m) and min_grab_distance
+## (0.25 m) are clearly different numbers, so this cannot pass by coincidence
+## against Mutation "make the pull span fixed regardless of the flag".
+func _test_twist_pull_reaches_hand_false_uses_span_instead(failures: Array[String]) -> void:
+	var stub := TwistInteractableStub.new()
+	var ray := _make_twist_ray(XRInputAdapter.Hand.LEFT, Vector3(0, 0, -1), 3.0)
+	stub._notify_select_entered(ray)
+
+	var driver := XRPinchTwistDistanceDriver.new()
+	driver._interactable = stub
+	driver.twist_pull_reaches_hand = false
+
+	var axis := Vector3(0, 0, -1)
+	var tracker := _register_wrist_tracker(XRInputAdapter.Hand.LEFT, Basis.IDENTITY)
+	driver._drive_hand(XRInputAdapter.Hand.LEFT, 1.0 / 60.0)
+	var engagement_distance := ray.get_grab_distance()
+
+	_set_wrist_roll(tracker, Basis(axis, -deg_to_rad(driver.twist_full_angle_degrees)))
+	_drive_twist_until_settled(driver, ray, XRInputAdapter.Hand.LEFT)
+	var expected := engagement_distance - driver.twist_span_metres
+	if not is_equal_approx(ray.get_grab_distance(), expected):
+		failures.append("with twist_pull_reaches_hand false, full inward twist must settle at engagement_distance - twist_span_metres (%f), got %f" % [expected, ray.get_grab_distance()])
+	if is_equal_approx(ray.get_grab_distance(), ray.min_grab_distance):
+		failures.append("with twist_pull_reaches_hand false, full inward twist must NOT reach min_grab_distance (%f) -- that is the true-flag behaviour" % ray.min_grab_distance)
+
+	_unregister_wrist_tracker(tracker)
+	ray.free()
+	stub.free()
+	driver.free()
+
+## The flag is documented to change ONLY inward behaviour -- outward must
+## settle at the identical engagement_distance + twist_span_metres whether the
+## flag is true or false. Mutation "make the flag also change outward
+## behaviour" fails this directly.
+func _test_twist_pull_reaches_hand_flag_does_not_affect_outward(failures: Array[String]) -> void:
+	var outward_distances: Array[float] = []
+	for flag_value in [true, false]:
+		var stub := TwistInteractableStub.new()
+		var ray := _make_twist_ray(XRInputAdapter.Hand.LEFT, Vector3(0, 0, -1), 3.0)
+		stub._notify_select_entered(ray)
+
+		var driver := XRPinchTwistDistanceDriver.new()
+		driver._interactable = stub
+		driver.twist_pull_reaches_hand = flag_value
+
+		var axis := Vector3(0, 0, -1)
+		var tracker := _register_wrist_tracker(XRInputAdapter.Hand.LEFT, Basis.IDENTITY)
+		driver._drive_hand(XRInputAdapter.Hand.LEFT, 1.0 / 60.0)
+		var engagement_distance := ray.get_grab_distance()
+
+		_set_wrist_roll(tracker, Basis(axis, deg_to_rad(driver.twist_full_angle_degrees)))
+		_drive_twist_until_settled(driver, ray, XRInputAdapter.Hand.LEFT)
+		var expected := engagement_distance + driver.twist_span_metres
+		if not is_equal_approx(ray.get_grab_distance(), expected):
+			failures.append("outward with twist_pull_reaches_hand=%s must settle at engagement_distance + twist_span_metres (%f), got %f" % [flag_value, expected, ray.get_grab_distance()])
+		outward_distances.append(ray.get_grab_distance())
+
+		_unregister_wrist_tracker(tracker)
+		ray.free()
+		stub.free()
+		driver.free()
+
+	if not is_equal_approx(outward_distances[0], outward_distances[1]):
+		failures.append("outward deflection must land at the SAME distance regardless of twist_pull_reaches_hand: true=%f, false=%f" % [outward_distances[0], outward_distances[1]])
+
+## Rolling all the way back to neutral after a full INWARD (hand-reaching)
+## twist must still retrace to exactly the engagement distance -- the
+## headline absolute-mapping guarantee (see
+## _test_twist_rolling_back_to_neutral_returns_to_engagement_distance above)
+## must keep holding once inward uses a different, engagement-distance-
+## dependent span. Mutation "make the pull span fixed regardless of the flag"
+## would still likely retrace correctly (it is symmetric in that failure mode),
+## so this test's real job is confirming the fix does not BREAK retracing --
+## paired with the two tests above, which confirm the fix's actual effect.
+func _test_twist_pull_reaches_hand_rolling_back_still_retraces(failures: Array[String]) -> void:
+	var stub := TwistInteractableStub.new()
+	var ray := _make_twist_ray(XRInputAdapter.Hand.LEFT, Vector3(0, 0, -1), 5.0)
+	stub._notify_select_entered(ray)
+
+	var driver := XRPinchTwistDistanceDriver.new()
+	driver._interactable = stub
+
+	var axis := Vector3(0, 0, -1)
+	var tracker := _register_wrist_tracker(XRInputAdapter.Hand.LEFT, Basis.IDENTITY)
+	driver._drive_hand(XRInputAdapter.Hand.LEFT, 1.0 / 60.0)
+	var engagement_distance := ray.get_grab_distance()
+
+	_set_wrist_roll(tracker, Basis(axis, -deg_to_rad(driver.twist_full_angle_degrees)))
+	_drive_twist_until_settled(driver, ray, XRInputAdapter.Hand.LEFT)
+	if not is_equal_approx(ray.get_grab_distance(), ray.min_grab_distance):
+		failures.append("fixture broken: full inward twist at 5 m engagement must reach min_grab_distance, got %f" % ray.get_grab_distance())
+
+	_set_wrist_roll(tracker, Basis.IDENTITY)
+	_drive_twist_until_settled(driver, ray, XRInputAdapter.Hand.LEFT)
+	if not is_equal_approx(ray.get_grab_distance(), engagement_distance):
+		failures.append("rolling back to neutral after a hand-reaching inward twist must retrace to the engagement distance (%f), got %f" % [engagement_distance, ray.get_grab_distance()])
 
 	_unregister_wrist_tracker(tracker)
 	ray.free()
