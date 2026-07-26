@@ -3,6 +3,8 @@ extends SceneTree
 ## Headless tests for the hand conditioning layer.
 ## Run: godot --headless --path <demo> --script res://addons/godot_xr_interaction_toolkit/tests/test_hand_conditioning.gd
 
+const XRControllerHandAdapter := preload("res://addons/godot_xr_interaction_toolkit/runtime/input/xr_controller_hand_adapter.gd")
+
 func _init() -> void:
 	var failures: Array[String] = []
 	_test_joint_hierarchy(failures)
@@ -10,6 +12,10 @@ func _init() -> void:
 	_test_one_euro_behaviour(failures)
 	_test_one_euro_robustness(failures)
 	_test_rotation_filter(failures)
+	_test_hand_aim_smoothing_reduces_stationary_jitter(failures)
+	_test_hand_aim_smoothing_tracks_fast_sweep_within_bound(failures)
+	_test_hand_aim_smoothing_off_switch_is_exact(failures)
+	_test_hand_aim_smoothing_state_is_per_hand(failures)
 	_test_trace_round_trip(failures)
 	_test_recorder_dedup_guard(failures)
 	_test_trace_metrics(failures)
@@ -1428,3 +1434,137 @@ func _test_pose_source_flag_picks_the_path(failures: Array[String]) -> void:
 	XRConditionedHandPublisher.set_enabled(was_enabled)
 	XRHandTrackerResolver._conditioned = was_conditioned
 	_clear_conditioning_state(hand)
+
+## Hand-ray aim smoothing (docs/ray-smoothing-report.md). Reported on device:
+## a hand tracked in PERIPHERAL vision has a far ray that "bounces all over
+## the place" -- but every liveness flag (valid/tracked/confidence-gate)
+## reads healthy while it happens, so no tracking-flag gate can catch it; only
+## the derived aim DIRECTION itself is noisy. These drive
+## XRControllerHandAdapter._smoothed_hand_aim_direction directly, with an
+## explicit dt, rather than standing up a live rig -- an XR session cannot be
+## stood up headless, and the method takes dt as a parameter for exactly this
+## reason.
+##
+## Drives min_cutoff=0.4 / beta=1.2 / d_cutoff=1.0 -- the shipped defaults --
+## at 72 Hz throughout, so these numbers double as the measurement recorded
+## in the report: stationary variance falls to roughly 3% of raw, and an 80
+## degree sweep over 0.25s lags by 1-2 frames (~14-28ms).
+func _test_hand_aim_smoothing_reduces_stationary_jitter(failures: Array[String]) -> void:
+	var dt := 1.0 / 72.0
+	var adapter := XRControllerHandAdapter.new()
+	var hand_id := XRControllerHandAdapter.Hand.RIGHT
+
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 1001  # deterministic: this test must not flake
+	var base := Vector3(0, 0, 1)
+	var raw_samples := PackedVector3Array()
+	var filtered_samples := PackedVector3Array()
+	for i in range(120):
+		var jitter := Vector3(rng.randf_range(-0.06, 0.06), rng.randf_range(-0.06, 0.06), 0.0)
+		var sample := (base + jitter).normalized()
+		var out := adapter._smoothed_hand_aim_direction(hand_id, sample, dt)
+		if i >= 20:  # skip the seeding transient, same convention as _test_one_euro_behaviour
+			raw_samples.append(sample)
+			filtered_samples.append(out)
+
+	var raw_variance := pow(XRHandTraceMetrics.rest_jitter(raw_samples), 2.0)
+	var filtered_variance := pow(XRHandTraceMetrics.rest_jitter(filtered_samples), 2.0)
+	if raw_variance <= 0.0:
+		failures.append("stationary jitter fixture produced zero raw variance; test cannot measure a reduction")
+		adapter.free()
+		return
+	var ratio := filtered_variance / raw_variance
+	if ratio > 0.5:
+		failures.append("hand-aim smoothing left %.1f%% of the stationary variance (raw %.6f, filtered %.6f); expected <= 50%%" % [ratio * 100.0, raw_variance, filtered_variance])
+	adapter.free()
+
+## The guard against the rigidity complaint: a fast, deliberate sweep must not
+## lag the raw pose by more than a couple of frames. Bound is tight enough to
+## fail a heavy fixed lerp (measured separately at ~5-8 frames for alpha
+## 0.08-0.15) while comfortably passing the adaptive filter's measured 1-2
+## frames at these parameters.
+func _test_hand_aim_smoothing_tracks_fast_sweep_within_bound(failures: Array[String]) -> void:
+	var dt := 1.0 / 72.0
+	var adapter := XRControllerHandAdapter.new()
+	var hand_id := XRControllerHandAdapter.Hand.LEFT
+
+	var start_dir := Vector3(0, 0, 1)
+	var end_dir := start_dir.rotated(Vector3.UP, deg_to_rad(80.0)).normalized()
+	# Settle at rest first so the sweep measurement starts from a converged
+	# state, not the seeding transient.
+	for i in range(30):
+		adapter._smoothed_hand_aim_direction(hand_id, start_dir, dt)
+
+	var raw_samples := PackedVector3Array()
+	var filtered_samples := PackedVector3Array()
+	var sweep_seconds := 0.25
+	var steps := int(sweep_seconds / dt)
+	for i in range(steps):
+		var t := float(i) / float(steps - 1)
+		var sample := start_dir.slerp(end_dir, t)
+		var out := adapter._smoothed_hand_aim_direction(hand_id, sample, dt)
+		raw_samples.append(sample)
+		filtered_samples.append(out)
+
+	var lag := XRHandTraceMetrics.motion_lag_seconds(raw_samples, filtered_samples, dt, 30)
+	var bound_seconds := 0.04
+	if lag > bound_seconds:
+		failures.append("hand-aim smoothing lagged a fast sweep by %.4fs (%d frames), expected <= %.4fs" % [lag, int(round(lag / dt)), bound_seconds])
+	adapter.free()
+
+## smooth_hand_aim = false must be a true pass-through -- not merely "less
+## smoothing" -- even immediately after the filter has built up state from
+## earlier smoothed samples on the SAME hand, since that is exactly when a
+## partial disable would still show a blended result.
+func _test_hand_aim_smoothing_off_switch_is_exact(failures: Array[String]) -> void:
+	var dt := 1.0 / 72.0
+	var adapter := XRControllerHandAdapter.new()
+	var hand_id := XRControllerHandAdapter.Hand.RIGHT
+
+	# Build up smoothed state first, so the off switch has something to
+	# override.
+	adapter.smooth_hand_aim = true
+	for i in range(10):
+		adapter._smoothed_hand_aim_direction(hand_id, Vector3(0.1 * i, 0, 1).normalized(), dt)
+
+	adapter.smooth_hand_aim = false
+	var probe_directions := [
+		Vector3(0, 0, 1),
+		Vector3(1, 0, 0),
+		Vector3(0.3, 0.6, 0.2).normalized(),
+	]
+	for direction in probe_directions:
+		var out: Vector3 = adapter._smoothed_hand_aim_direction(hand_id, direction, dt)
+		if not out.is_equal_approx(direction):
+			failures.append("smooth_hand_aim = false must return the input unchanged, got %s for input %s" % [out, direction])
+	adapter.free()
+
+## Regression guard for "share one filter across both hands": each hand's
+## channel must seed independently. If LEFT's settled state ever leaked into
+## RIGHT, RIGHT's very first sample would blend toward LEFT's direction
+## instead of passing through as a fresh seed (XROneEuroFilter's own seed
+## contract -- see _test_one_euro_behaviour #1 and #5 above, exercised here
+## through the adapter's actual per-hand wiring rather than the filter alone).
+func _test_hand_aim_smoothing_state_is_per_hand(failures: Array[String]) -> void:
+	var dt := 1.0 / 72.0
+	var adapter := XRControllerHandAdapter.new()
+	var left := XRControllerHandAdapter.Hand.LEFT
+	var right := XRControllerHandAdapter.Hand.RIGHT
+
+	var left_direction := Vector3(0, 0, 1)
+	var settled := left_direction
+	for i in range(40):
+		settled = adapter._smoothed_hand_aim_direction(left, left_direction, dt)
+	if not settled.is_equal_approx(left_direction):
+		failures.append("LEFT hand did not settle onto its own steady input: %s" % settled)
+
+	var right_direction := Vector3(1, 0, 0)
+	var right_first := adapter._smoothed_hand_aim_direction(right, right_direction, dt)
+	if not right_first.is_equal_approx(right_direction):
+		failures.append("RIGHT hand's first-ever sample was not a clean seed (got %s, expected %s) -- state leaked from LEFT" % [right_first, right_direction])
+
+	# LEFT must be undisturbed by RIGHT's read.
+	var left_after := adapter._smoothed_hand_aim_direction(left, left_direction, dt)
+	if not left_after.is_equal_approx(left_direction):
+		failures.append("LEFT hand's settled state was disturbed by RIGHT's read: %s" % left_after)
+	adapter.free()

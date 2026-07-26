@@ -47,6 +47,56 @@ const SYNTHETIC_SELECT := "synthetic"
 ## window the ray is live again and manoeuvring works normally.
 @export_range(0.0, 1.0, 0.01) var stabilize_hand_select_sec := 0.18
 
+@export_group("Hand Ray Smoothing")
+## Adaptive (One Euro) smoothing over the derived hand-ray DIRECTION, applied
+## on EVERY frame -- unlike Select Stabilization above, this is not bounded to
+## the pinch transient and does not require a select to be down.
+##
+## Why this exists: a hand tracked in PERIPHERAL vision can report every
+## liveness flag healthy (valid/tracked/confidence-gate all true, measured on
+## Quest over Link) while the JOINT POSE ITSELF is noisy -- no tracking-flag
+## gate can see that, because there is nothing untracked to gate on. The ray
+## direction is knuckle-minus-wrist, an ~8cm baseline (see
+## XRHandGestureProvider.get_hand_ray_pose), so a few mm of independent joint
+## jitter becomes several degrees of angular error, which is tens of cm of
+## swing at a multi-metre ray -- the geometry amplifies the noise.
+##
+## David has already rejected an over-stabilized aim once, on device, in this
+## codebase ("their movement is more rigid, i cant manuever things" --
+## stabilize_hand_select_sec above exists because of that report). This must
+## not repeat it: default conservatively, and prefer raising hand_aim_beta
+## over lowering hand_aim_min_cutoff if smoothing ever reads as laggy.
+@export var smooth_hand_aim := true
+## Cutoff in Hz at (near) zero hand speed -- how hard a STILL hand is
+## smoothed. This is where the peripheral jitter lives, so it is kept low:
+## lower = steadier while still, at the cost of more lag in the instant a
+## still hand starts moving (the adaptive beta term below takes a few frames
+## to catch up once real motion starts).
+@export_range(0.05, 5.0, 0.01) var hand_aim_min_cutoff := 0.4
+## How fast the cutoff rises with hand speed. This is the dial for "rigid,
+## can't manoeuvre": raise it if deliberate aiming ever feels laggy, rather
+## than lowering min_cutoff (which would let more peripheral jitter back in
+## at rest). Measured (see docs/ray-smoothing-report.md): at the shipped
+## defaults a fast ~horizontal sweep lags the raw pose by 1-2 frames (~14-28ms
+## at 72Hz), while a stationary hand's jitter variance drops to roughly 3% of
+## unfiltered.
+@export_range(0.0, 5.0, 0.01) var hand_aim_beta := 1.2
+## Cutoff for smoothing the internal speed estimate the beta term reads.
+## Matches XRHandFilter's un-overridden default; rarely needs tuning.
+@export_range(0.1, 5.0, 0.01) var hand_aim_d_cutoff := 1.0
+
+## Per-hand One Euro filter over the derived aim direction. ONE instance,
+## two channels (Hand.LEFT = 0, Hand.RIGHT = 1) -- not two instances, not a
+## shared single channel -- so each hand seeds and adapts independently and a
+## hand cannot see the other's history (XROneEuroFilter's channels are
+## independent by construction; see test_hand_conditioning.gd).
+var _hand_aim_direction_filter := _make_hand_aim_direction_filter()
+# dt for the aim filter comes from _process's engine-provided delta, not a
+# per-hand wall-clock read: get_aim_pose has no delta parameter (ray/grab
+# interactors just call it whenever they update), and _process already runs
+# once a frame for the select-hold-time accounting below.
+var _last_process_delta := 1.0 / 72.0
+
 var _origin: Node3D
 var _controllers := {}
 var _select_down := {
@@ -102,6 +152,7 @@ func _resolve_rig() -> void:
 
 
 func _process(_delta: float) -> void:
+	_last_process_delta = _delta
 	for hand_id in [Hand.LEFT, Hand.RIGHT]:
 		if _select_down.get(hand_id, false):
 			_select_held_time[hand_id] = _select_held_time.get(hand_id, 0.0) + _delta
@@ -110,6 +161,16 @@ func _process(_delta: float) -> void:
 	if synthesize_pinch_select:
 		_update_synthetic_pinch_select(Hand.LEFT)
 		_update_synthetic_pinch_select(Hand.RIGHT)
+
+
+## Field-initializer helper for _hand_aim_direction_filter (GDScript field
+## defaults run before _ready, so this cannot depend on _resolve_rig having
+## run -- tests new the adapter directly without a scene tree, same as
+## resolve_grip_anchor's callers do).
+static func _make_hand_aim_direction_filter() -> XROneEuroFilter:
+	var filter := XROneEuroFilter.new()
+	filter.resize(2)  # Hand.LEFT, Hand.RIGHT
+	return filter
 
 
 func get_aim_pose(hand_id: int) -> Dictionary:
@@ -181,11 +242,33 @@ func _hand_aim_pose(hand_id: int) -> Dictionary:
 
 	var origin_xf := _origin.global_transform
 	var direction := (origin_xf.basis * (local_pose["direction"] as Vector3)).normalized()
+	# Smoothed BEFORE the basis is built, so every ray consumer (hover, select,
+	# _stabilized_hand_pose downstream) inherits the smoothed direction rather
+	# than each needing its own pass over the raw one.
+	direction = _smoothed_hand_aim_direction(hand_id, direction)
 	return {
 		"origin": origin_xf * (local_pose["origin"] as Vector3),
 		"direction": direction,
 		"basis": XRHandGestureProvider.basis_from_forward(direction),
 	}
+
+
+## Adaptive smoothing on the derived hand-ray direction -- see the "Hand Ray
+## Smoothing" export group above for why this exists and the constraint it
+## must respect. `dt` is exposed as a parameter (rather than read internally
+## from a clock) specifically so this is unit-testable headless with
+## controlled, deterministic timing -- see test_hand_conditioning.gd.
+func _smoothed_hand_aim_direction(hand_id: int, direction: Vector3, dt: float = _last_process_delta) -> Vector3:
+	if not smooth_hand_aim or not _valid_hand(hand_id):
+		return direction
+
+	_hand_aim_direction_filter.min_cutoff = hand_aim_min_cutoff
+	_hand_aim_direction_filter.beta = hand_aim_beta
+	_hand_aim_direction_filter.d_cutoff = hand_aim_d_cutoff
+	# hand_id IS the channel: Hand.LEFT = 0, Hand.RIGHT = 1 (see Hand enum in
+	# xr_input_adapter.gd), so this can never accidentally alias both hands
+	# onto the same channel.
+	return _hand_aim_direction_filter.filter(hand_id, direction, dt)
 
 
 ## Palm-first, wrist-fallback grip joint selection, in TRACKER-LOCAL space
