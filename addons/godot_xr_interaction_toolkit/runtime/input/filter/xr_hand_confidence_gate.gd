@@ -54,7 +54,16 @@ const _HANDS := 2
 ## SEE on screen is still well inside this cone. Narrow this only after
 ## on-device verification (CLAUDE.md's on-device-earn-in rule): a value this
 ## load-bearing is exactly the kind of tuned constant that rule protects.
-@export_range(1.0, 179.0, 0.5) var fov_half_angle_deg := 80.0
+## MEASURED on device, not reasoned from the display FOV: hands in ORDINARY
+## use sit at 50-92 degrees off the head's forward axis, because a hand at
+## your waist or out to your side is far off-centre even while you are looking
+## straight ahead. An 80 degree cone therefore cut into normal use and
+## suppressed hands the user could see -- the exact regression this value's
+## own warning predicted. Quest carries downward- and outward-facing cameras
+## specifically to see hands at waist height, so real coverage is far wider
+## than the display. A hand genuinely behind the user is ~180 degrees, so 120
+## still catches the drift case with a wide margin on either side.
+@export_range(1.0, 179.0, 0.5) var fov_half_angle_deg := 120.0
 
 var _inner: XRHandPoseSource
 var _raw := XRHandFrame.new()
