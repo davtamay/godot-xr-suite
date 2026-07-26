@@ -15,7 +15,12 @@ extends RefCounted
 ## whose previous sample fell outside the bounds is falsely rejected by the
 ## entry test. Every case the gate exists to reject is rejected by both.
 
-enum Event { NONE, PRESSED, RELEASED, CANCELLED, DRAG }
+## DRAG_ENDED is the terminal event for a drag: interpret_drag suppresses the
+## activation a retracting drag would otherwise fire (RELEASED), but a
+## consumer still needs SOME signal that the drag is over - without one, a
+## target that only reacts to PRESSED/RELEASED/CANCELLED (e.g. resetting a
+## held colour) never hears about it and sticks in its held state.
+enum Event { NONE, PRESSED, RELEASED, CANCELLED, DRAG, DRAG_ENDED }
 
 ## Samples kept per source for the approach vector. Four is enough to span a
 ## real approach at 60-90 Hz without lagging a direction change.
@@ -36,8 +41,9 @@ var require_entry_through_face := true
 ## 90 makes it accept any inward motion.
 var max_approach_angle := 60.0
 ## Below this window displacement the direction is noise and the angle test
-## ABSTAINS (passes). Without this a slow deliberate creep-in is rejected,
-## which is the worst failure this gate can produce.
+## ABSTAINS - which defers to require_entry_through_face rather than passing
+## outright (see _travel_is_inward). Without this a slow deliberate creep-in
+## the entry test cannot rescue would be needlessly rejected.
 var min_approach_travel := 0.003
 
 ## Opt-in: in-plane travel past drag_threshold while pressed reports DRAG and
@@ -111,7 +117,10 @@ func evaluate(source_id: int, point: Vector3) -> Dictionary:
 				if releasing:
 					state["pressed"] = false
 					state["dragging"] = false
-					return result  # NONE: a drag does not activate on let-go.
+					# DRAG_ENDED, not NONE: a drag does not activate on let-go,
+					# but a consumer still needs to hear that it is over.
+					result["event"] = Event.DRAG_ENDED
+					return result
 				result["event"] = Event.DRAG
 				result["drag_delta"] = planar
 				return result
@@ -197,17 +206,45 @@ func _entry_passes(state: Dictionary) -> bool:
 	return bool(state["in_front"])
 
 
-## Squared comparison, so no square root: for travel t and inward normal -Z,
-## cos(angle) = -t.z / |t|, and requiring cos(angle) >= cos(max) with both
-## sides non-negative squares to t.z^2 >= cos(max)^2 * |t|^2.
+## Passes if EITHER the travel over the whole sample window, OR just the most
+## recent step, points inward within max_approach_angle. The full window is
+## enough for a normal approach; a source that skims laterally within
+## press_depth of the surface (so require_entry_through_face never arms) and
+## then sharply changes direction inward needs the recent step alone, because
+## the lateral skim baked into the rest of the window dilutes that direction
+## change below the limit even though the last STEP is a clean, steep poke.
 func _angle_passes(state: Dictionary) -> bool:
 	var history: PackedVector3Array = state["history"]
 	if history.size() < 2:
 		return false
-	var travel := history[history.size() - 1] - history[0]
+	if _travel_is_inward(history[history.size() - 1] - history[0]):
+		return true
+	if history.size() >= 3:
+		if _travel_is_inward(history[history.size() - 1] - history[history.size() - 2]):
+			return true
+	return false
+
+
+## Squared comparison, so no square root: for travel t and inward normal -Z,
+## cos(angle) = -t.z / |t|, and requiring cos(angle) >= cos(max) with both
+## sides non-negative squares to t.z^2 >= cos(max)^2 * |t|^2.
+##
+## ABSTAIN, below min_approach_travel: the direction is noise at this scale.
+## Abstaining means DEFERRING to the entry test, not passing outright - it
+## returns `not require_entry_through_face`. With entry-through-face required
+## (the default), a bare pass here would arm the gate on its own: a source
+## that swept in laterally and then held still would press once its early,
+## clearly-lateral samples aged out of the four-entry history window, with no
+## sample ever having been in front of the face - exactly the sweep the gate
+## exists to reject. A genuine slow creep-in is still armed, just by the
+## entry test (it WAS seen in front) rather than by this abstention. Only with
+## require_entry_through_face turned OFF does the abstain pass outright, since
+## then the angle test is the only gate left and a slow deliberate motion
+## should not be rejected purely for lacking speed.
+func _travel_is_inward(travel: Vector3) -> bool:
 	var travel_sq := travel.length_squared()
 	if travel_sq < min_approach_travel * min_approach_travel:
-		return true  # Abstain: the direction is noise at this scale.
+		return not require_entry_through_face
 	if travel.z > 0.0:
 		return false  # Moving outward, away from the surface.
 	var cos_max := cos(deg_to_rad(max_approach_angle))

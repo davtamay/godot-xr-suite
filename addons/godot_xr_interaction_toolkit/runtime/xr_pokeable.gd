@@ -12,6 +12,14 @@ extends Node3D
 ## Self-wiring like the affordances: walks up to the collision body and marks
 ## it. Per-object poke direction + depth live here, so different buttons can
 ## face different ways.
+##
+## PLACEMENT: the press plane is this node's OWN origin plane (local z = 0 for
+## poke_face's normal), not the body's centre. Place this node ON the visible
+## face you want pokeable, not at the middle of the box/body it is parented
+## to - three targets in XRPokeStation shipped at the body centre by mistake
+## before this was written down, which fires the press before a finger
+## visually reaches the surface and clamps the marker pin to a plane inside
+## the body.
 
 ## Which local face the finger approaches from (the outward normal). Default
 ## +Z = the front of a panel/button facing -Z.
@@ -24,6 +32,11 @@ signal released(hand: int)
 signal cancelled(hand: int)
 ## Opt-in drag reporting, in metres along the face's own u/v axes.
 signal dragged(hand: int, delta: Vector2)
+## A drag ended (retracted past release_depth) without activating. Distinct
+## from `released`/`cancelled` because interpret_drag suppresses those on a
+## drag's terminal retraction - without THIS signal nothing tells a consumer
+## the drag is over at all.
+signal drag_ended(hand: int)
 
 const _Evaluator := preload("res://addons/godot_xr_interaction_toolkit/runtime/poke/xr_poke_evaluator.gd")
 
@@ -151,6 +164,8 @@ func _emit(hand: int, result: Dictionary) -> void:
 			cancelled.emit(hand)
 		_Evaluator.Event.DRAG:
 			dragged.emit(hand, result["drag_delta"])
+		_Evaluator.Event.DRAG_ENDED:
+			drag_ended.emit(hand)
 
 
 ## Outward face normal in local space (the finger presses toward -normal).
@@ -166,7 +181,13 @@ func _local_normal() -> Vector3:
 
 func _plane_u(normal: Vector3) -> Vector3:
 	var up := Vector3.UP if absf(normal.dot(Vector3.UP)) < 0.99 else Vector3.RIGHT
-	return normal.cross(up).normalized()
+	# up.cross(normal), not normal.cross(up): for the default Z_PLUS face the
+	# latter yields u = -X, v = -Y - a 180 degree rotation about the normal
+	# from the body's own frame, so a drag reported world +X came back
+	# negated. up.cross(normal) gives u = +X, v = +Y for Z_PLUS, still
+	# right-handed (u.cross(v) == normal), and the drag axes now agree with
+	# the body's own.
+	return up.cross(normal).normalized()
 
 
 func _plane_v(normal: Vector3) -> Vector3:

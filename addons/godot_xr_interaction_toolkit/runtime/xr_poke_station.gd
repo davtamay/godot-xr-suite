@@ -202,6 +202,10 @@ func _build_dense_row(parent: Node3D) -> void:
 		pokeable.poke_face = XRPokeable.Face.Z_PLUS
 		pokeable.half_size = Vector2(0.015, 0.015)
 		body.add_child(pokeable)
+		# XRPokeable's press plane is its OWN origin, not the body's centre -
+		# put it on the box's front face, or the key fires before a finger
+		# visually reaches it.
+		pokeable.position.z = _KEY_SIZE.z * 0.5
 
 		pokeable.pressed.connect(func(_hand: int) -> void: material.albedo_color = pressed_color)
 		pokeable.released.connect(func(_hand: int) -> void: material.albedo_color = rest_color)
@@ -226,6 +230,10 @@ func _build_drag_handle(parent: Node3D) -> void:
 	pokeable.drag_threshold = 0.01
 	pokeable.half_size = Vector2(0.06, 0.01)
 	body.add_child(pokeable)
+	# XRPokeable's press plane is its OWN origin, not the body's centre - put
+	# it on the box's front face, or the handle grabs before a finger visually
+	# reaches it.
+	pokeable.position.z = _HANDLE_SIZE.z * 0.5
 
 	pokeable.pressed.connect(func(_hand: int) -> void: material.albedo_color = held_color)
 	pokeable.released.connect(func(_hand: int) -> void: material.albedo_color = rest_color)
@@ -233,7 +241,9 @@ func _build_drag_handle(parent: Node3D) -> void:
 	# The visible payload: the cap slides along the face's own u-axis as you
 	# drag, and - the whole point of this target - let-go never fires
 	# pressed/released once dragging has started (see the evaluator's
-	# interpret_drag branch), so nothing here waits for a terminal signal.
+	# interpret_drag branch). The colour DOES wait for a terminal signal,
+	# though: drag_ended (not pressed/released/cancelled) is what puts it back
+	# to rest_color once the finger retracts.
 	# `dragged`'s delta is the CUMULATIVE offset since the press began (the
 	# evaluator captures press_planar once, at press, and every subsequent
 	# poke_update - one per physics tick while held - re-emits point - that
@@ -244,18 +254,20 @@ func _build_drag_handle(parent: Node3D) -> void:
 	var rest_x := mesh_instance.position.x
 	pokeable.dragged.connect(func(_hand: int, delta: Vector2) -> void:
 		mesh_instance.position.x = clampf(rest_x + delta.x, -0.04, 0.04))
+	pokeable.drag_ended.connect(func(_hand: int) -> void: material.albedo_color = rest_color)
 
 	body.add_child(_make_gate_caption("DRAG ME - a handle does not fire on let-go", Vector3(0, 0.035, 0)))
 
 
-## Default XRPokeable settings: this is the plain gate, no per-target
-## overrides. Pressing all the way through and releasing shows green (fired);
-## pressing then sliding off the face shows red (cancelled, never fired).
-## Deliberate: the default half_size (0.05) is left as-is, so the poke
-## rectangle extends ~0.02 m past each edge of the visible 0.06 m box - this
-## is what "default settings" means here, not an oversight, but it does mean
-## the finger has to slide further than the box looks like it should before
-## a poke leaving the rectangle counts as a slide-off.
+## Otherwise-default XRPokeable settings: this is the plain gate, no
+## per-target approach-gate overrides. Pressing all the way through and
+## releasing shows green (fired); pressing then sliding off the face shows red
+## (cancelled, never fired). half_size IS set here, to the box's own
+## half-extents rather than left at XRPokeable's default (0.05): the default
+## is ~0.02 m larger per side than this box's visible 0.06 m, which read as
+## an unreadable cancel demo once the press plane sits on the front face
+## instead of the box's mid-plane - sliding off the visible edge would still
+## be "inside" a rectangle 0.02 m past it.
 func _build_cancel_target(parent: Node3D) -> void:
 	var rest_color := Color(0.8, 0.8, 0.85)
 	var fired_color := Color(0.4, 1.0, 0.6)
@@ -267,7 +279,12 @@ func _build_cancel_target(parent: Node3D) -> void:
 	parent.add_child(body)
 
 	var pokeable := XRPokeable.new()
+	pokeable.half_size = Vector2(_CANCEL_SIZE.x * 0.5, _CANCEL_SIZE.y * 0.5)
 	body.add_child(pokeable)
+	# XRPokeable's press plane is its OWN origin, not the body's centre - put
+	# it on the box's front face, or the target fires before a finger visually
+	# reaches it and the marker pin clamps to a plane inside the box.
+	pokeable.position.z = _CANCEL_SIZE.z * 0.5
 
 	pokeable.released.connect(func(_hand: int) -> void: material.albedo_color = fired_color)
 	pokeable.cancelled.connect(func(_hand: int) -> void: material.albedo_color = cancelled_color)
