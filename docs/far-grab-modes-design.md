@@ -243,3 +243,56 @@ Both of this document's original "composes existing machinery" claims were made
 by reading code without checking its preconditions, and both were false in
 practice. Three device sessions and four green suites passed while ATTRACT never
 once worked.
+
+## Phase 2: TWIST (approved 2026-07-26, David)
+
+A fourth `far_grab_mode`, not a replacement for REEL. REEL keeps its
+hand-motion driver and its earned-in behaviour untouched; TWIST is a distinct
+declaration an object makes. Maximum authorability, zero risk to what already
+works.
+
+### Rate control, not absolute mapping
+
+Wrist roll away from a captured neutral drives the RATE of distance change, not
+the distance itself. Twist and hold and the object keeps travelling; return to
+neutral and it stops.
+
+Absolute mapping was rejected for the same reason hand-to-shoulder was: a fixed
+input range against a 0.25-6 m output range forces a gain high enough to
+amplify tracking jitter, and it runs out of travel. Rate control has no range
+limit at all — it is a throttle, and a small sustained twist reaches any
+distance. It is also the kinder option ergonomically, which matters because
+sustained pronation under a held pinch is the known risk here: you hold a small
+angle briefly rather than a large one for the whole traverse.
+
+### Neutral is captured at grab, not absolute
+
+The same decision as the reel axis: whatever roll the wrist happens to have at
+the moment of select becomes zero. Otherwise the usable range depends on how
+your wrist happened to be oriented when you grabbed, and a comfortable grab
+pose could start mid-throttle.
+
+### Boundaries
+
+- The driver only acts on a held object whose mode is TWIST. A FIXED object
+  stays fixed; that decision is not being re-opened.
+- It lives in the toolkit and is inert without `godot_xr_hands`, following
+  `xr_microgesture_locomotion_driver.gd` exactly. `xr.interaction` keeps
+  `requires=[]`.
+- It drives the ray's existing public `adjust_grab_distance()`, so the clamps
+  (`min_grab_distance`, `max_distance`, `max_distance_change_per_second`)
+  already apply and are not reimplemented.
+- Controllers have no pinch and no wrist joint. TWIST is hand-only, and an
+  object authored TWIST held by a controller simply holds its distance —
+  behaving as FIXED rather than breaking.
+
+### Earn-in questions this cannot answer headlessly
+
+- Is sustained twist under a pinch tiring over a real placement session?
+- Does the deadzone let you aim without drifting the distance?
+- Does roll survive hand-tracking at the angles a pinch already imposes? A
+  pinched hand rolled 45 deg is a self-occlusion risk, and if the tracker loses
+  the wrist the throttle stops responding.
+
+The third is the one most likely to sink the technique, and no test can raise
+it.
