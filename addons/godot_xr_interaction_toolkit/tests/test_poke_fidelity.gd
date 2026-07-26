@@ -8,6 +8,7 @@ const XRPokeProfile := preload("res://addons/godot_xr_interaction_toolkit/runtim
 const XRPokeableScript := preload("res://addons/godot_xr_interaction_toolkit/runtime/xr_pokeable.gd")
 const XRUICanvasScript := preload("res://addons/godot_xr_interaction_toolkit/runtime/xr_ui_canvas_interactable.gd")
 const XRPokeButtonScript := preload("res://addons/godot_xr_interaction_toolkit/runtime/xr_poke_button.gd")
+const XRPokeInteractorScript := preload("res://addons/godot_xr_interaction_toolkit/runtime/xr_poke_interactor.gd")
 
 ## Records every mouse motion the panel pushes into its viewport -- used by
 ## the two-source drag test to prove the poke_update drag branch (its `_:`
@@ -68,6 +69,7 @@ func _process(_delta: float) -> bool:
 	_test_poke_button_thresholds_are_unchanged(_failures)
 	_test_poke_button_lateral_sweep_never_presses(_failures)
 	_test_poke_button_fast_diagonal_rescued_by_history(_failures)
+	_test_poke_button_source_ids_survive_group_reordering(_failures)
 	if _failures.is_empty():
 		print("XR poke fidelity: PASS")
 		quit(0)
@@ -776,6 +778,59 @@ func _test_poke_button_fast_diagonal_rescued_by_history(failures: Array[String])
 	_check(failures, fired["count"] == 1,
 			"poke button: a fast diagonal rescued via surviving history must fire once, fired %d" % fired["count"])
 	button.queue_free()
+
+
+## Drives the button through its REAL _physics_process group-iteration path
+## (not poke_update directly) with two real XRPokeInteractor nodes, to prove
+## source_id stays tied to a given (interactor, hand) pair even when the
+## interactor SET's membership changes between frames - the scenario
+## position-based ids (assigned by loop order) cannot survive.
+##
+## Tick 1: interactor A alone in the group; its hand 0 gets a sample that is
+## IN FRONT (arms in_front for A's source_id) but not deep enough to press.
+## A then leaves the group WITHOUT ever reporting Vector3.INF first (a
+## controller reconnecting, an interactor freed) - nothing tells the button
+## A's source is gone, so its armed state simply sits there.
+##
+## Tick 2: a brand-new interactor B is now the sole (and therefore
+## first-by-position) group member. Its hand 0 sends a single DEEP sample -
+## its very first contact ever. Under position-keying this lands on the SAME
+## source_id A's hand 0 used in tick 1 (both are "the first (source, hand)
+## pair found"), inheriting A's leftover in_front=true and pressing off a
+## single sample B never itself approached through - a wrong-hand press.
+## Under stable per-(interactor, hand) ids, B gets its own fresh id with no
+## armed in_front and no history, so a lone deep sample cannot press.
+func _test_poke_button_source_ids_survive_group_reordering(failures: Array[String]) -> void:
+	var button := Node3D.new()
+	button.set_script(XRPokeButtonScript)
+	get_root().add_child(button)
+	var fired := {"count": 0}
+	button.pressed.connect(func(): fired["count"] += 1)
+
+	var interactor_a := Node.new()
+	interactor_a.set_script(XRPokeInteractorScript)
+	get_root().add_child(interactor_a)
+	interactor_a.set_physics_process(false)  # deterministic: no real XR tracking to overwrite _points
+	interactor_a._points[0] = button.global_transform * Vector3(0.0, 0.060, 0.0)
+	interactor_a._points[1] = Vector3.INF
+	button._physics_process(0.0)
+	_check(failures, fired["count"] == 0,
+			"reordering setup: arming in_front alone must not press, fired %d" % fired["count"])
+
+	interactor_a.remove_from_group(XRPokeInteractorScript.GROUP)
+	var interactor_b := Node.new()
+	interactor_b.set_script(XRPokeInteractorScript)
+	get_root().add_child(interactor_b)
+	interactor_b.set_physics_process(false)
+	interactor_b._points[0] = button.global_transform * Vector3(0.0, -0.020, 0.0)
+	interactor_b._points[1] = Vector3.INF
+	button._physics_process(0.0)
+	_check(failures, fired["count"] == 0,
+			"reordering: a new source must not inherit another source's armed state after a group-membership change, fired %d" % fired["count"])
+
+	button.queue_free()
+	interactor_a.queue_free()
+	interactor_b.queue_free()
 
 
 func _test_poke_button_thresholds_are_unchanged(failures: Array[String]) -> void:

@@ -49,6 +49,10 @@ var _pressed_sources := {}
 var _pins := {}
 var _penetrations := {}
 
+## (instance_id, hand) key -> a stable, dense source_id. See _stable_source_id.
+var _source_ids := {}
+var _next_source_id := 0
+
 
 func _ready() -> void:
 	_build_visuals()
@@ -112,6 +116,13 @@ func poke_update(source_id: int, world_point: Vector3) -> void:
 	var canonical := Vector3(local.x, local.z, travel - penetration)
 	var result: Dictionary = _evaluator.evaluate(source_id, canonical)
 	var pinned: Vector3 = result["pinned_point"]
+	# Defensive: unreachable today. canonical.z is always clamped to
+	# [0, travel], travel's @export_range caps at 0.06, and evaluate()'s three
+	# INF paths need half_size bounds (zero here - the button does its own
+	# round bounds test above) or a z-band exit beyond release_depth * 6
+	# (0.0858) / below -release_depth - neither of which this adapter's own
+	# clamped canonical.z can reach. Kept so the adapter stays correct if
+	# travel's range or half_size ever changes.
 	if pinned == Vector3.INF:
 		_pins.erase(source_id)
 	else:
@@ -167,18 +178,46 @@ func _update_pressed_state() -> void:
 		released.emit()
 
 
+## A stable id for one (interactor, hand) pair, independent of iteration
+## order. Position-based ids (0, 1, 2... assigned by loop position over the
+## group) broke the moment the interactor set's membership or order changed
+## between physics frames - a controller reconnecting, or one interactor
+## freed while another remained: every later index would shift, and a
+## physical hand could inherit another source's stale hysteresis/history
+## (_penetrations, _pins, _pressed_sources, and the evaluator's own in_front/
+## history/pressed state) - a wrong-hand press. Keyed by a DENSE counter
+## rather than get_instance_id() directly: Godot's object ids can carry the
+## high "is RefCounted" bit set, so scaling or shifting them as plain 64-bit
+## signed integers risks overflow. A given (interactor, hand) always maps to
+## the same source_id here regardless of group order; two different
+## interactors can never collide.
+##
+## Entries for an interactor that later disappears from the group are never
+## reclaimed - deliberately: reusing a slot is exactly the bug this fixes.
+## In normal use this does not grow unbounded: a rig has a small, effectively
+## fixed set of XRPokeInteractor node INSTANCES for the life of a session (one
+## per rig, reused across reconnects), so this dictionary settles at a couple
+## of entries and stays there. It would only grow further if a project
+## repeatedly destroyed and recreated interactor nodes, not per-frame.
+func _stable_source_id(instance_id: int, hand: int) -> int:
+	var key := "%d_%d" % [instance_id, hand]
+	if not _source_ids.has(key):
+		_source_ids[key] = _next_source_id
+		_next_source_id += 1
+	return _source_ids[key]
+
+
 func _physics_process(_delta: float) -> void:
 	if not enabled or _cap == null:
 		return
-	var source_id := 0
 	for source in get_tree().get_nodes_in_group(XRPokeInteractor.GROUP):
 		for hand in 2:
+			var source_id := _stable_source_id(source.get_instance_id(), hand)
 			var point: Vector3 = source.get_poke_point(hand)
 			if point == Vector3.INF:
 				poke_end(source_id)
 			else:
 				poke_update(source_id, point)
-			source_id += 1
 
 	var depth := 0.0
 	for penetration in _penetrations.values():
