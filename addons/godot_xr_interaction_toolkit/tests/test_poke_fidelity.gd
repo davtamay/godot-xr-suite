@@ -70,6 +70,8 @@ func _process(_delta: float) -> bool:
 	_test_poke_button_lateral_sweep_never_presses(_failures)
 	_test_poke_button_fast_diagonal_rescued_by_history(_failures)
 	_test_poke_button_source_ids_survive_group_reordering(_failures)
+	_test_marker_prefers_the_pinned_point(_failures)
+	_test_marker_falls_back_when_pin_is_inf(_failures)
 	if _failures.is_empty():
 		print("XR poke fidelity: PASS")
 		quit(0)
@@ -831,6 +833,53 @@ func _test_poke_button_source_ids_survive_group_reordering(failures: Array[Strin
 	button.queue_free()
 	interactor_a.queue_free()
 	interactor_b.queue_free()
+
+
+## Task 6: the aiming dot must stop ON the surface once the target reports a
+## pin instead of sinking to the raw fingertip depth. The pokeable only starts
+## pinning once the finger has crossed the surface, so the sequence below
+## first arms entry with a sample in front, then pushes past the surface to
+## get a pin - the same geometry _test_pokeable_reports_a_pin uses.
+func _test_marker_prefers_the_pinned_point(failures: Array[String]) -> void:
+	var interactor := Node.new()
+	interactor.set_script(XRPokeInteractorScript)
+	get_root().add_child(interactor)
+	var pokeable := _make_pokeable()
+	pokeable.poke_update(0, Vector3(0.0, 0.0, 0.050))
+	pokeable.poke_update(0, Vector3(0.0, 0.0, -0.030))
+	# GDScript has no true privacy - the underscore is convention - so the test
+	# sets the dispatch state directly rather than adding a test seam to
+	# production code.
+	interactor._active[0] = {pokeable: true}
+	interactor._points[0] = Vector3(0.0, 0.0, -0.030)
+	var marker: Vector3 = interactor.get_marker_point(0)
+	_check(failures, is_equal_approx(marker.z, 0.0),
+			"marker: expected the pinned point on the surface, got z=%f" % marker.z)
+	interactor.queue_free()
+	pokeable.get_parent().queue_free()
+
+
+## Companion to the test above: an active target whose pin is Vector3.INF (no
+## contact yet, per _test_pokeable_pin_is_inf_without_contact) must NOT freeze
+## the marker at INF - it must fall through to the raw fingertip point. This
+## is what actually exercises the INF guard: without this case, a mutation
+## that returned the pin unconditionally (dropping the `pin != Vector3.INF`
+## check) would still pass the test above, since that test's pokeable DOES
+## have a pin.
+func _test_marker_falls_back_when_pin_is_inf(failures: Array[String]) -> void:
+	var interactor := Node.new()
+	interactor.set_script(XRPokeInteractorScript)
+	get_root().add_child(interactor)
+	var pokeable := _make_pokeable()
+	# No poke_update at all, so pokeable.get_poke_pin(0) is Vector3.INF.
+	interactor._active[0] = {pokeable: true}
+	var raw_point := Vector3(0.020, 0.030, 0.008)
+	interactor._points[0] = raw_point
+	var marker: Vector3 = interactor.get_marker_point(0)
+	_check(failures, marker.is_equal_approx(raw_point),
+			"marker: expected fallback to the raw point when the pin is INF, got %s" % [marker])
+	interactor.queue_free()
+	pokeable.get_parent().queue_free()
 
 
 func _test_poke_button_thresholds_are_unchanged(failures: Array[String]) -> void:

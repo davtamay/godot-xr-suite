@@ -202,6 +202,18 @@ func _release_all(hand: int) -> void:
 	_active[hand] = {}
 
 
+## The point the aiming dot should sit at: the surface-pinned contact when any
+## active target reports one, else the raw fingertip. Pinning is what makes the
+## dot STOP on a button face instead of sinking through it.
+func get_marker_point(hand: int) -> Vector3:
+	for target in _active[hand]:
+		if is_instance_valid(target) and target.has_method("get_poke_pin"):
+			var pin: Vector3 = target.get_poke_pin(hand)
+			if pin != Vector3.INF:
+				return pin
+	return _points[hand]
+
+
 func _update_markers() -> void:
 	for hand in 2:
 		# Show the aiming dot only when the finger is within reach of a pokeable
@@ -226,4 +238,4 @@ func _update_markers() -> void:
 			add_child(marker)
 			_markers[hand] = marker
 		(_markers[hand] as Node3D).visible = true
-		(_markers[hand] as Node3D).global_position = _points[hand]
+		(_markers[hand] as Node3D).global_position = get_marker_point(hand)
