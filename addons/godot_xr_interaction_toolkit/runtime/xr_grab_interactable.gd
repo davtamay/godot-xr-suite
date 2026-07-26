@@ -35,7 +35,12 @@ signal use_changed(value: float)
 ## ATTRACT: comes to your hand and stays - the common "I want that thing".
 ## FIXED: holds the distance it was grabbed at and follows your aim.
 ## REEL: hand motion along the ray winds it in and out.
-enum FarGrabMode { ATTRACT, FIXED, REEL }
+## TWIST: wrist roll away from the roll captured at grab drives the RATE of
+## distance change (a throttle, not a dial) - needs a bare hand and an
+## XRPinchTwistDistanceDriver parented inside this interactable (godot_xr_hands
+## required). Held by a controller (no wrist joint) it simply holds its
+## distance, like FIXED. See docs/far-grab-modes-design.md, "Phase 2: TWIST".
+enum FarGrabMode { ATTRACT, FIXED, REEL, TWIST }
 @export var far_grab_mode := FarGrabMode.ATTRACT
 
 ## Metres of PERCEIVED distance per second for an ATTRACT far-grab's transit

@@ -99,6 +99,17 @@ const CLOSE_HIT_DISTANCE := 0.35
 ## fixture is what makes it fire.
 const VERY_CLOSE_HIT_DISTANCE := 0.20
 
+## Minimal XRBaseInteractable stand-in for the phase-2 TWIST driver's tests:
+## only needs far_grab_mode (duck-typed by the driver's `"far_grab_mode" in
+## _interactable` check) plus the base class's own
+## get_selecting_interactors()/_notify_select_entered. Never added to the
+## tree (same reasoning as ModeStub etc. above -- these tests drive the
+## driver's private methods directly), so none of XRBaseInteractable's
+## manager-registration notifications ever fire.
+class TwistInteractableStub:
+	extends XRBaseInteractable
+	var far_grab_mode: int = XRGrabInteractable.FarGrabMode.TWIST
+
 var _failures: Array[String] = []
 
 func _init() -> void:
@@ -114,6 +125,29 @@ func _init() -> void:
 	_test_reel_axis_frozen_survives_aim_rotation(_failures)
 	_test_ray_get_hand_grip_pose_proxies_the_adapter(_failures)
 	_test_far_grab_attract_standoff_is_comfortably_inside_hide_ray_when_held_within(_failures)
+	# TWIST (phase 2, docs/far-grab-modes-design.md "Phase 2: TWIST"): none of
+	# these touch a Node3D.global_transform, so -- like the tests above --
+	# they run tree-independent from _init(). Conditioning off for the
+	# duration: XRConditionedHandPublisher's shadow is memoized per RENDERED
+	# frame (Engine.get_process_frames()), which never advances across this
+	# whole _init() call -- so the very first resolve of a hand would publish
+	# a shadow ONCE and freeze it there, and every later mutation to the raw
+	# tracker these tests make (rolling the wrist frame to frame) would be
+	# invisible to the driver. set_conditioned(false) is the resolver's own
+	# documented test knob for exactly this (test_hand_conditioning.gd uses
+	# it the same way) -- it makes get_tracker fall through to resolve_raw,
+	# which re-scans XRServer's live trackers on every call.
+	var _twist_was_conditioned := XRHandTrackerResolver.is_conditioned()
+	XRHandTrackerResolver.set_conditioned(false)
+	_test_twist_distance_rate_respects_deadzone_and_gain(_failures)
+	_test_twist_angle_extracts_roll_independent_of_swing(_failures)
+	_test_twist_roll_beyond_deadzone_changes_distance_and_reverses(_failures)
+	_test_twist_roll_inside_deadzone_produces_no_change(_failures)
+	_test_twist_rate_is_sustained_across_frames(_failures)
+	_test_twist_neutral_captured_at_select_not_absolute(_failures)
+	_test_twist_fixed_and_reel_unaffected_by_twist(_failures)
+	_test_twist_controller_with_no_wrist_joint_is_inert(_failures)
+	XRHandTrackerResolver.set_conditioned(_twist_was_conditioned)
 	# The remaining tests need a node genuinely inside the tree
 	# (XRGrabInteractable._arm_transit calls get_target(), which asserts
 	# "!is_inside_tree()") -- a node added to get_root() during _init() is not
@@ -518,14 +552,16 @@ func _test_far_grab_attract_standoff_is_comfortably_inside_hide_ray_when_held_wi
 	grab.free()
 	ray.free()
 
-## Companion to the test above: the same plain grabbable in FIXED or REEL mode
-## must NOT arm a transit -- the guard's "attracting" clause requires
-## far_grab_mode == ATTRACT, so _arm_transit must still return early for these
-## two modes, leaving _transit_from untouched at the class default. Catches
-## Mutation "drop the mode gate entirely" (not one of Round 2's three, but
-## still guarded by this fixture from Round 1).
+## Companion to the test above: the same plain grabbable in FIXED, REEL, or
+## TWIST mode must NOT arm a transit -- the guard's "attracting" clause
+## requires far_grab_mode == ATTRACT, so _arm_transit must still return early
+## for these modes, leaving _transit_from untouched at the class default.
+## Catches Mutation "drop the mode gate entirely" (not one of Round 2's three,
+## but still guarded by this fixture from Round 1). TWIST added alongside the
+## phase-2 driver: it is a distance-rate mode like REEL, not a delivery mode
+## like ATTRACT, so it must not arm a transit either.
 func _test_fixed_and_reel_do_not_arm_transit_for_a_plain_grabbable(failures: Array[String]) -> void:
-	for mode in [XRGrabInteractable.FarGrabMode.FIXED, XRGrabInteractable.FarGrabMode.REEL]:
+	for mode in [XRGrabInteractable.FarGrabMode.FIXED, XRGrabInteractable.FarGrabMode.REEL, XRGrabInteractable.FarGrabMode.TWIST]:
 		var grab := XRGrabInteractable.new()
 		var body := Node3D.new()
 		grab.add_child(body)
@@ -707,3 +743,324 @@ func _test_ray_get_hand_grip_pose_proxies_the_adapter(failures: Array[String]) -
 
 	ray.free()
 	adapter.free()
+
+## ---------------------------------------------------------------------------
+## TWIST (phase 2): wrist-roll RATE control, driven by
+## xr_pinch_twist_distance_driver.gd. docs/far-grab-modes-design.md,
+## "Phase 2: TWIST" -- rate control (not absolute mapping), neutral captured
+## at select (not absolute), roll measured around the ray/forward axis frozen
+## at select, and inert (not broken) with no wrist joint (the controller
+## case). Every fixture below drives the driver's private methods/static math
+## directly, per the docs' own testing section for this feature -- no XR
+## session, no rig, no adapter.
+
+## A ray with no adapter/manager behind it -- just the two fields the driver
+## reads (hand, and whatever get_attach_pose()/adjust_grab_distance() need).
+## _attach_pose and _grab_distance are set directly, matching how the mode-
+## dispatch tests above seed a ray's state without going through _update_ray.
+func _make_twist_ray(hand: int, forward: Vector3, distance: float) -> XRRayInteractor:
+	var ray := XRRayInteractor.new()
+	ray.hand = hand
+	# XRHandGestureProvider.basis_from_forward(direction) is built on
+	# Basis.looking_at(direction, ...), whose local -Z axis points along
+	# `direction` -- i.e. -basis.z == direction, matching how
+	# xr_controller_hand_adapter.gd constructs both the "direction" field AND
+	# the "basis" field from the SAME direction (see _roll_axis's doc comment
+	# in the driver). Pass `forward` through UNCHANGED, not negated, or the
+	# resulting attach pose's -Z ends up pointing the opposite way from what
+	# the caller asked for.
+	ray._attach_pose = Transform3D(XRHandGestureProvider.basis_from_forward(forward), Vector3(0, 1, -distance))
+	ray._grab_distance = distance
+	return ray
+
+## Registers a real, resolvable XRHandTracker under the canonical path
+## XRHandTrackerResolver scores first (XRHandTrackerResolver.TRACKER_PATHS),
+## with only the WRIST joint populated -- the driver never reads any other
+## joint. Tests must pair this with _unregister_wrist_tracker so a tracker
+## from one test can never leak into the next (XRHandTrackerResolver caches
+## its resolution per Engine.get_process_frames(), which does not advance
+## between two calls in the same _init(), so a stale cache entry would
+## otherwise silently outlive the test that built it).
+func _register_wrist_tracker(hand: int, wrist_basis: Basis) -> XRHandTracker:
+	var tracker := XRHandTracker.new()
+	tracker.name = XRHandTrackerResolver.TRACKER_PATHS[hand]
+	tracker.hand = XRPositionalTracker.TRACKER_HAND_LEFT if hand == XRInputAdapter.Hand.LEFT else XRPositionalTracker.TRACKER_HAND_RIGHT
+	tracker.has_tracking_data = true
+	var valid := XRHandTracker.HAND_JOINT_FLAG_POSITION_VALID | XRHandTracker.HAND_JOINT_FLAG_ORIENTATION_VALID
+	tracker.set_hand_joint_transform(XRHandTracker.HAND_JOINT_WRIST, Transform3D(wrist_basis, Vector3(0, 1, -0.3)))
+	tracker.set_hand_joint_flags(XRHandTracker.HAND_JOINT_WRIST, valid)
+	XRServer.add_tracker(tracker)
+	return tracker
+
+func _unregister_wrist_tracker(tracker: XRHandTracker) -> void:
+	XRServer.remove_tracker(tracker)
+	XRHandTrackerResolver._cache_frame = -1  # force a fresh scan for the next test
+
+## Rolls the wrist tracker built by _register_wrist_tracker to a new absolute
+## basis in place (the resolver caches the TRACKER OBJECT, not a value, so
+## mutating it here is visible on the driver's very next read).
+func _set_wrist_roll(tracker: XRHandTracker, wrist_basis: Basis) -> void:
+	var valid := XRHandTracker.HAND_JOINT_FLAG_POSITION_VALID | XRHandTracker.HAND_JOINT_FLAG_ORIENTATION_VALID
+	tracker.set_hand_joint_transform(XRHandTracker.HAND_JOINT_WRIST, Transform3D(wrist_basis, Vector3(0, 1, -0.3)))
+	tracker.set_hand_joint_flags(XRHandTracker.HAND_JOINT_WRIST, valid)
+
+## Pure math, no tracker/interactor at all: distance_rate is zero inside the
+## deadzone (both directions -- aiming, which does not hold the wrist still,
+## must not drift the distance) and linear in the EXCESS beyond it. Mutation
+## "remove the deadzone" (use roll_radians directly) fails the first two
+## assertions: distance_rate(0.05, ...) would return a small nonzero value.
+func _test_twist_distance_rate_respects_deadzone_and_gain(failures: Array[String]) -> void:
+	if not is_equal_approx(XRPinchTwistDistanceDriver.distance_rate(0.05, 0.12, 1.5), 0.0):
+		failures.append("distance_rate must be zero for roll (0.05) inside the deadzone (0.12)")
+	if not is_equal_approx(XRPinchTwistDistanceDriver.distance_rate(-0.05, 0.12, 1.5), 0.0):
+		failures.append("distance_rate must be zero for roll (-0.05) inside the deadzone, either direction")
+	var positive := XRPinchTwistDistanceDriver.distance_rate(0.32, 0.12, 1.5)
+	var expected_positive := (0.32 - 0.12) * 1.5
+	if not is_equal_approx(positive, expected_positive):
+		failures.append("distance_rate(0.32, 0.12, 1.5) must be gain * excess-beyond-deadzone (%f), got %f" % [expected_positive, positive])
+	var negative := XRPinchTwistDistanceDriver.distance_rate(-0.32, 0.12, 1.5)
+	var expected_negative := (-0.32 + 0.12) * 1.5
+	if not is_equal_approx(negative, expected_negative):
+		failures.append("distance_rate(-0.32, 0.12, 1.5) must be gain * excess-beyond-deadzone (%f), got %f" % [expected_negative, negative])
+	if sign(positive) == sign(negative):
+		failures.append("opposite roll must produce opposite-signed rates: got %f and %f" % [positive, negative])
+
+## The swing-twist extraction (XRPinchTwistDistanceDriver.twist_angle) must
+## recover the TWIST angle around `axis` regardless of whatever SWING
+## (rotation around a perpendicular axis -- what aiming looks like from the
+## wrist's own orientation) rides along with it. Composes a known 0.4 rad
+## twist around axis with a known 0.3 rad swing around a perpendicular axis
+## (order matters: swing * twist, twist applied first -- see the driver's own
+## doc comment on twist_angle for the algebra) and asserts the extracted
+## angle is the twist ALONE. A mutation that measured roll from the wrist's
+## RAW rotation angle (ignoring axis entirely, e.g. current_rotation.get_angle())
+## would instead see the compound ~0.5 rad rotation and fail this.
+func _test_twist_angle_extracts_roll_independent_of_swing(failures: Array[String]) -> void:
+	var axis := Vector3(0, 0, 1)
+	var swing_axis := Vector3(1, 0, 0)  # perpendicular to axis, by construction
+	var twist_only := Quaternion(axis, 0.4)
+	var swing_only := Quaternion(swing_axis, 0.3)
+	var composed := swing_only * twist_only  # twist applied first, then swing
+	var extracted := XRPinchTwistDistanceDriver.twist_angle(Quaternion.IDENTITY, composed, axis)
+	if not is_equal_approx(extracted, 0.4):
+		failures.append("twist_angle must extract the 0.4 rad TWIST alone from a twist+swing compound, got %f" % extracted)
+
+	# The reverse twist, same swing, must give the reverse angle -- confirms
+	# sign survives the swing contamination too, not just magnitude.
+	var reverse_composed := swing_only * Quaternion(axis, -0.4)
+	var reverse_extracted := XRPinchTwistDistanceDriver.twist_angle(Quaternion.IDENTITY, reverse_composed, axis)
+	if not is_equal_approx(reverse_extracted, -0.4):
+		failures.append("twist_angle must extract -0.4 rad for the reversed twist (same swing), got %f" % reverse_extracted)
+
+## Full wiring, through _drive_hand: roll well beyond the deadzone changes
+## get_grab_distance() in the matching direction, and rolling the other way
+## (relative to the SAME captured neutral) reverses it. Mutation "flip the
+## roll sign" fails this directly -- the direction assertions, not just "some
+## change occurred", are the point.
+func _test_twist_roll_beyond_deadzone_changes_distance_and_reverses(failures: Array[String]) -> void:
+	var stub := TwistInteractableStub.new()
+	var ray := _make_twist_ray(XRInputAdapter.Hand.LEFT, Vector3(0, 0, -1), 3.0)
+	stub._notify_select_entered(ray)
+
+	var driver := XRPinchTwistDistanceDriver.new()
+	driver._interactable = stub
+
+	var axis := Vector3(0, 0, -1)  # matches _make_twist_ray's forward above
+	var tracker := _register_wrist_tracker(XRInputAdapter.Hand.LEFT, Basis.IDENTITY)
+
+	# Frame 1: neutral capture only -- nothing should move yet.
+	driver._drive_hand(XRInputAdapter.Hand.LEFT, 1.0 / 60.0)
+	var after_capture := ray.get_grab_distance()
+	if not is_equal_approx(after_capture, 3.0):
+		failures.append("the neutral-capture frame must not itself change distance, got %f" % after_capture)
+
+	# Roll +0.4 rad around the frozen axis (well beyond the 0.12 default
+	# deadzone) and hold it for a frame.
+	_set_wrist_roll(tracker, Basis(axis, 0.4))
+	driver._drive_hand(XRInputAdapter.Hand.LEFT, 1.0 / 60.0)
+	var after_positive := ray.get_grab_distance()
+	if not (after_positive > after_capture):
+		failures.append("a +0.4 rad roll must increase distance, went from %f to %f" % [after_capture, after_positive])
+
+	# Roll to -0.4 rad (relative to the SAME captured neutral, still Basis.IDENTITY)
+	# -- the opposite roll must reverse the direction of change.
+	_set_wrist_roll(tracker, Basis(axis, -0.4))
+	driver._drive_hand(XRInputAdapter.Hand.LEFT, 1.0 / 60.0)
+	var after_negative := ray.get_grab_distance()
+	if not (after_negative < after_positive):
+		failures.append("a -0.4 rad roll must decrease distance from the +0.4 rad reading, went from %f to %f" % [after_positive, after_negative])
+
+	_unregister_wrist_tracker(tracker)
+	ray.free()
+	stub.free()
+	driver.free()
+
+## Roll inside the deadzone (well under the 0.12 rad default) must produce NO
+## change -- this is the guard that lets you aim without the distance
+## drifting, since aiming does not hold the wrist perfectly still. Mutation
+## "remove the deadzone" fails this directly.
+func _test_twist_roll_inside_deadzone_produces_no_change(failures: Array[String]) -> void:
+	var stub := TwistInteractableStub.new()
+	var ray := _make_twist_ray(XRInputAdapter.Hand.LEFT, Vector3(0, 0, -1), 3.0)
+	stub._notify_select_entered(ray)
+
+	var driver := XRPinchTwistDistanceDriver.new()
+	driver._interactable = stub
+
+	var axis := Vector3(0, 0, -1)
+	var tracker := _register_wrist_tracker(XRInputAdapter.Hand.LEFT, Basis.IDENTITY)
+	driver._drive_hand(XRInputAdapter.Hand.LEFT, 1.0 / 60.0)  # capture neutral
+	var before := ray.get_grab_distance()
+
+	_set_wrist_roll(tracker, Basis(axis, 0.05))  # well inside the 0.12 rad default deadzone
+	driver._drive_hand(XRInputAdapter.Hand.LEFT, 1.0 / 60.0)
+	var after := ray.get_grab_distance()
+	if not is_equal_approx(after, before):
+		failures.append("a 0.05 rad roll (inside the 0.12 rad default deadzone) must not change distance: was %f, now %f" % [before, after])
+
+	_unregister_wrist_tracker(tracker)
+	ray.free()
+	stub.free()
+	driver.free()
+
+## A constant roll held across several frames must keep producing change EVERY
+## frame -- a THROTTLE, not a dial. A test that only checks one frame cannot
+## tell a rate control apart from a one-shot absolute jump; this holds the
+## SAME roll for 5 consecutive frames and asserts each one moves the distance
+## by a comparable amount, not just the first.
+func _test_twist_rate_is_sustained_across_frames(failures: Array[String]) -> void:
+	var stub := TwistInteractableStub.new()
+	var ray := _make_twist_ray(XRInputAdapter.Hand.LEFT, Vector3(0, 0, -1), 3.0)
+	stub._notify_select_entered(ray)
+
+	var driver := XRPinchTwistDistanceDriver.new()
+	driver._interactable = stub
+
+	var axis := Vector3(0, 0, -1)
+	var tracker := _register_wrist_tracker(XRInputAdapter.Hand.LEFT, Basis.IDENTITY)
+	driver._drive_hand(XRInputAdapter.Hand.LEFT, 1.0 / 60.0)  # capture neutral
+
+	_set_wrist_roll(tracker, Basis(axis, 0.4))  # held constant for every frame below
+	var deltas: Array[float] = []
+	var previous := ray.get_grab_distance()
+	for frame in range(5):
+		driver._drive_hand(XRInputAdapter.Hand.LEFT, 1.0 / 60.0)
+		var now := ray.get_grab_distance()
+		deltas.append(now - previous)
+		previous = now
+
+	for i in deltas.size():
+		if deltas[i] <= 0.0:
+			failures.append("frame %d: a held +0.4 rad roll must keep increasing distance, delta was %f" % [i, deltas[i]])
+	# Sustained, not just non-zero: consecutive per-frame deltas at a fixed
+	# roll and fixed delta-time must be close to each other (a throttle at a
+	# steady rate), not decaying toward zero (which is what a one-shot "jump
+	# then stop" implementation would look like beyond its first frame).
+	for i in range(1, deltas.size()):
+		if not is_equal_approx(deltas[i], deltas[0]):
+			failures.append("frame %d: held-roll delta (%f) must match frame 0's delta (%f) -- rate is not steady" % [i, deltas[i], deltas[0]])
+
+	_unregister_wrist_tracker(tracker)
+	ray.free()
+	stub.free()
+	driver.free()
+
+## Neutral is captured AT SELECT, not absolute: a wrist held at the SAME
+## nonzero absolute orientation from before the grab through the whole hold
+## must produce NO motion, because that orientation IS neutral for this grab.
+## Mutation "use absolute roll instead of roll-relative-to-captured-neutral"
+## (e.g. measuring against Quaternion.IDENTITY / Vector3.FORWARD instead of
+## the captured neutral) fails this: the wrist here never returns to world
+## identity, so an absolute-roll implementation would read a constant ~0.7
+## rad roll the entire time and never stop driving.
+func _test_twist_neutral_captured_at_select_not_absolute(failures: Array[String]) -> void:
+	var stub := TwistInteractableStub.new()
+	var ray := _make_twist_ray(XRInputAdapter.Hand.LEFT, Vector3(0, 0, -1), 3.0)
+	stub._notify_select_entered(ray)
+
+	var driver := XRPinchTwistDistanceDriver.new()
+	driver._interactable = stub
+
+	var axis := Vector3(0, 0, -1)
+	# The wrist is already rolled 0.7 rad in world space at the moment of
+	# grab -- an ordinary "grabbed with the wrist turned" pose, not the world
+	# rest orientation.
+	var held_roll := Basis(axis, 0.7)
+	var tracker := _register_wrist_tracker(XRInputAdapter.Hand.LEFT, held_roll)
+	driver._drive_hand(XRInputAdapter.Hand.LEFT, 1.0 / 60.0)  # captures 0.7 rad as neutral
+	var before := ray.get_grab_distance()
+
+	# Wrist stays at the EXACT same absolute orientation for several frames.
+	for _frame in range(5):
+		driver._drive_hand(XRInputAdapter.Hand.LEFT, 1.0 / 60.0)
+	var after := ray.get_grab_distance()
+	if not is_equal_approx(after, before):
+		failures.append("a wrist held at a CONSTANT absolute roll (never returning to world identity) must not drive distance once neutral is captured there: was %f, now %f" % [before, after])
+
+	_unregister_wrist_tracker(tracker)
+	ray.free()
+	stub.free()
+	driver.free()
+
+## FIXED and REEL objects are untouched by twist -- that decision is not
+## being re-opened (coordinator brief). Same large roll that drives a TWIST
+## object in the test above; asserts it does nothing for either mode.
+## Mutation "let the driver act regardless of mode" fails this directly.
+func _test_twist_fixed_and_reel_unaffected_by_twist(failures: Array[String]) -> void:
+	for mode in [XRGrabInteractable.FarGrabMode.FIXED, XRGrabInteractable.FarGrabMode.REEL]:
+		var stub := TwistInteractableStub.new()
+		stub.far_grab_mode = mode
+		var ray := _make_twist_ray(XRInputAdapter.Hand.LEFT, Vector3(0, 0, -1), 3.0)
+		stub._notify_select_entered(ray)
+
+		var driver := XRPinchTwistDistanceDriver.new()
+		driver._interactable = stub
+
+		var axis := Vector3(0, 0, -1)
+		var tracker := _register_wrist_tracker(XRInputAdapter.Hand.LEFT, Basis.IDENTITY)
+		driver._drive_hand(XRInputAdapter.Hand.LEFT, 1.0 / 60.0)
+		var before := ray.get_grab_distance()
+
+		_set_wrist_roll(tracker, Basis(axis, 0.4))
+		for _frame in range(3):
+			driver._drive_hand(XRInputAdapter.Hand.LEFT, 1.0 / 60.0)
+		var after := ray.get_grab_distance()
+		if not is_equal_approx(after, before):
+			failures.append("mode %d: a large sustained roll must not change distance outside TWIST, was %f, now %f" % [mode, before, after])
+
+		_unregister_wrist_tracker(tracker)
+		ray.free()
+		stub.free()
+		driver.free()
+
+## Controllers (and a hand that has dropped out of tracking) have no
+## resolvable wrist joint. No tracker is registered for this hand at all --
+## XRHandTrackerResolver.get_tracker must return null, and the driver must
+## hold distance (like FIXED) rather than error. The suite's own PASS/FAIL
+## gate is part of what this proves: a crash here would abort the script
+## before printing PASS at all (see tools/run_tests.ps1's scripterrors check).
+func _test_twist_controller_with_no_wrist_joint_is_inert(failures: Array[String]) -> void:
+	var stub := TwistInteractableStub.new()
+	var ray := _make_twist_ray(XRInputAdapter.Hand.LEFT, Vector3(0, 0, -1), 3.0)
+	stub._notify_select_entered(ray)
+
+	var driver := XRPinchTwistDistanceDriver.new()
+	driver._interactable = stub
+
+	# Defensive: make sure nothing left a tracker registered for this hand
+	# from an earlier test (each tracker-registering test above unregisters
+	# its own, but this guards the fixture rather than trusting ordering).
+	var leaked := XRHandTrackerResolver.get_tracker(XRInputAdapter.Hand.LEFT)
+	if leaked != null:
+		failures.append("fixture broken: a wrist tracker is already resolvable for LEFT before this test registered one")
+
+	var before := ray.get_grab_distance()
+	for _frame in range(3):
+		driver._drive_hand(XRInputAdapter.Hand.LEFT, 1.0 / 60.0)
+	var after := ray.get_grab_distance()
+	if not is_equal_approx(after, before):
+		failures.append("with no resolvable wrist joint, distance must hold (FIXED-like), was %f, now %f" % [before, after])
+
+	ray.free()
+	stub.free()
+	driver.free()
