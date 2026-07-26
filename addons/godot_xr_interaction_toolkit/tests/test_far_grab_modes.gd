@@ -42,6 +42,17 @@ class GripStub:
 ## exists (same trap as HIT_DISTANCE above, applied to this mechanism).
 const CLOSE_HIT_DISTANCE := 0.35
 
+## Below min_grab_distance (0.25): a FIXED grab here is the fixture that
+## makes the LATCH half of the gate load-bearing. floor_distance =
+## minf(min_grab_distance, _grab_distance) collapses to _grab_distance itself
+## once _grab_distance < min_grab_distance, which forces
+## t = inverse_lerp(reel_to_grip_distance, floor_distance, floor_distance) to
+## exactly 1.0 -- the full LATCH branch, not the t=0.5 partial blend
+## CLOSE_HIT_DISTANCE produces. At CLOSE_HIT_DISTANCE the latch assertion
+## never fires either way (confirmed by the Fix pass 1 mutation run); this
+## fixture is what makes it fire.
+const VERY_CLOSE_HIT_DISTANCE := 0.20
+
 var _failures: Array[String] = []
 
 func _init() -> void:
@@ -53,6 +64,7 @@ func _init() -> void:
 	_test_unspecified_mode_behaves_as_attract(_failures)
 	_test_fixed_does_not_blend_or_latch_within_reel_to_grip_distance(_failures)
 	_test_attract_still_latches_within_reel_to_grip_distance(_failures)
+	_test_fixed_does_not_latch_when_grabbed_below_min_grab_distance(_failures)
 	if _failures.is_empty():
 		print("XR far grab modes: PASS")
 		quit(0)
@@ -189,6 +201,30 @@ func _test_attract_still_latches_within_reel_to_grip_distance(failures: Array[St
 		failures.append("ATTRACT within reel_to_grip_distance must still blend/latch toward the grip: got %s, expected %s" % [result.origin, grip.pose.origin])
 	if not ray._grip_latched:
 		failures.append("ATTRACT within reel_to_grip_distance must still latch -- the gate must only narrow FIXED")
+	ray.free()
+	stub.free()
+	grip.free()
+
+## Closes the gap the Fix pass 1 mutation run exposed: at CLOSE_HIT_DISTANCE
+## the un-gated blend only reaches t=0.5, so a mutation that removes the
+## mode gate is caught by the pose assertion but NOT by _grip_latched -- that
+## assertion never fires either way at that distance. VERY_CLOSE_HIT_DISTANCE
+## (below min_grab_distance) forces the full t=1.0 LATCH branch instead, so
+## this is the fixture where the latch check is actually load-bearing.
+func _test_fixed_does_not_latch_when_grabbed_below_min_grab_distance(failures: Array[String]) -> void:
+	var ray := _make_ray()
+	ray._hover_distance = VERY_CLOSE_HIT_DISTANCE
+	var stub := ModeStub.new()
+	stub.far_grab_mode = XRGrabInteractable.FarGrabMode.FIXED
+	ray._notify_select_granted(stub)  # distance = VERY_CLOSE_HIT_DISTANCE (0.20), below min_grab_distance
+	var grip := GripStub.new()
+	ray._suppress_interactor = grip
+	var ray_attach := Transform3D(Basis.IDENTITY, Vector3(0, 1, -0.20))
+	var result := ray._resolve_grab_pose(ray_attach)
+	if not result.origin.is_equal_approx(ray_attach.origin):
+		failures.append("FIXED grabbed below min_grab_distance must return the ray pose unchanged, got %s, expected %s" % [result.origin, ray_attach.origin])
+	if ray._grip_latched:
+		failures.append("FIXED grabbed below min_grab_distance must never latch (t would be exactly 1.0 unguarded)")
 	ray.free()
 	stub.free()
 	grip.free()
