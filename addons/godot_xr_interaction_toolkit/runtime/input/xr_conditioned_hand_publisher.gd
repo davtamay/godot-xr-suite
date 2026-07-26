@@ -166,17 +166,33 @@ static func _probe(hand: int, gate_says_tracked: bool) -> void:
 		"present": raw != null, "data": has_data,
 		"valid": valid, "tracked": tracked_joints, "gate": gate_says_tracked,
 	}
+	# Also report when the WRIST MOVES far while the flags say nothing changed:
+	# that is the signature of a hand being extrapolated, and it is invisible to
+	# a flags-only change gate.
+	var wrist_now := Vector3.ZERO
+	if raw != null:
+		wrist_now = raw.get_hand_joint_transform(XRHandTracker.HAND_JOINT_WRIST).origin
+	state["wrist"] = wrist_now
 	var previous: Dictionary = _probe_last[hand]
 	if not previous.is_empty() \
 			and previous["present"] == state["present"] \
 			and previous["data"] == state["data"] \
 			and previous["gate"] == state["gate"] \
 			and absi(int(previous["valid"]) - valid) < 3 \
-			and absi(int(previous["tracked"]) - tracked_joints) < 3:
+			and absi(int(previous["tracked"]) - tracked_joints) < 3 \
+			and (previous.get("wrist", Vector3.ZERO) as Vector3).distance_to(wrist_now) < 0.05:
 		return
 	_probe_last[hand] = state
-	print("[hand-probe] hand=%d raw_present=%s has_data=%s valid=%d tracked=%d gate_tracked=%s" % [
-		hand, raw != null, has_data, valid, tracked_joints, gate_says_tracked])
+	# The wrist POSITION matters as much as the flags now. If a hand the user
+	# cannot see still reports tracked=26 while its wrist wanders, then
+	# POSITION_TRACKED is not an "observed" signal on this runtime at all and
+	# no threshold on it can work -- the gate would need a motion-plausibility
+	# test instead. Printing the position is what tells those two apart.
+	var wrist := Vector3.INF
+	if raw != null:
+		wrist = raw.get_hand_joint_transform(XRHandTracker.HAND_JOINT_WRIST).origin
+	print("[hand-probe] hand=%d has_data=%s valid=%d tracked=%d gate=%s wrist=(%.3f, %.3f, %.3f)" % [
+		hand, has_data, valid, tracked_joints, gate_says_tracked, wrist.x, wrist.y, wrist.z])
 
 ## Copies a conditioned frame into a tracker. Static and dependency-free so it
 ## can be unit-tested without touching XRServer.
