@@ -103,6 +103,23 @@ func get_ray_state() -> Dictionary:
 func get_attach_pose() -> Transform3D:
     return _attach_pose
 
+## The adapter's own grip pose for this ray's hand -- the physical
+## hand/controller transform, independent of anything about the ray itself
+## (raycast distance, hover state, selection, _grab_distance). This is what
+## XRGrabInteractable's ATTRACT far-grab path delivers the object onto: it
+## needs no scene wiring, unlike _resolve_grab_pose's reel-to-grip blend
+## (suppress_interactor_path), which is set in no scene in this repository
+## and so never actually fires (see docs/far-grab-modes-design.md's
+## amendment). {"valid": false} when there is no adapter, or the adapter has
+## no grip pose to report (hand/controller not tracked).
+func get_hand_grip_pose() -> Dictionary:
+    if _adapter == null or not _adapter.has_method("get_grip_pose"):
+        return {"valid": false}
+    var grip: Dictionary = _adapter.get_grip_pose(hand)
+    if grip.is_empty():
+        return {"valid": false}
+    return {"valid": true, "origin": grip["origin"], "basis": grip.get("basis", Basis.IDENTITY)}
+
 ## The current held distance along the ray. Public so a mode-aware
 ## interactable (or a phase-2 distance driver) can read the ray's own state
 ## rather than each keeping a shadow copy.
@@ -249,14 +266,16 @@ func _update_ray(delta := 0.0) -> void:
         "hit": hit_anything,
         "hovered": hovered,
         "grab_distance": _grab_distance,
-        # Once the held object has arrived in the grip this is no longer a far
-        # interaction - it is a hand-hold that happens to have started as one.
-        # Consumers (the line visual) use this to stop drawing a beam to
-        # something already in your fist. David, on device: "we still see the
-        # far ray cast ... i thought we should have seen the grabed item going
-        # smoothly towards to hand to be on the grip, not showing any far
-        # raycast".
-        "grip_latched": _grip_latched,
+        # grip_latched used to be reported here for the line visual to hide
+        # on. Removed: it could never be observed true (the moment
+        # _grip_latched flips, the early-return above already replaces
+        # _ray_state with {"valid": false, ...} before this dict is ever
+        # built - confirmed empirically, see far-grab-guards-report.md) and
+        # it duplicated hide_ray_when_held_within (_held_object_is_in_hand,
+        # commit 2944a22, predating this branch), which hides the ray by
+        # comparing the held object's actual position against the adapter's
+        # real grip origin - a signal that works whether or not the
+        # reel-to-grip latch ever fires at all.
     }
     _last_ray_origin = origin
     _last_ray_direction = direction

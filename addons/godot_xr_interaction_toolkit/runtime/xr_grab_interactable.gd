@@ -38,6 +38,17 @@ signal use_changed(value: float)
 enum FarGrabMode { ATTRACT, FIXED, REEL }
 @export var far_grab_mode := FarGrabMode.ATTRACT
 
+## Metres of PERCEIVED distance per second for an ATTRACT far-grab's transit
+## specifically -- separate from transit_speed (Movement, below) because that
+## value is shared with near-grab feel already earned in on device, and moving
+## it would drag settled behaviour along with it. Default picked from the
+## complaint, not from feel: David, on device, "as far as fast, anything
+## appealing to the eye, it is too snappy, maybe thats something to expose an
+## authoring field". transit_speed (1.5 m/s) gives a 3 m attract ~2 s, which is
+## the reported problem, not a fix; Meta's distance grab lands nearer 0.5 s.
+## 3.0 m / 0.5 s = 6.0 m/s.
+@export_range(0.1, 20.0, 0.1, "or_greater") var far_grab_attract_speed := 6.0
+
 ## Bare-hand grab gesture: PINCH (default) or GRIP (curl the lower fingers, index
 ## free). See HandGrab. A gun/blaster uses GRIP so the index can pull a trigger.
 @export var hand_grab_style: HandGrab = HandGrab.PINCH
@@ -130,6 +141,11 @@ var use_value := 0.0
 var _transit_time_left := 0.0
 var _transit_duration := 0.0
 var _transit_from := Transform3D.IDENTITY
+## Whether the CURRENTLY ARMED transit is an ATTRACT delivery, so
+## _physics_process can ease only that one -- transit_blend/transit_duration
+## are shared with authored-grip/snap_to_attach transits already earned in on
+## device, and easing them too is a feel change nobody has verified.
+var _transit_is_attract := false
 
 ## Called by whatever is driving USE on this object -- today the bare-hand
 ## XRHandActivator, which already computes a normalized pull. `source_hand` is
@@ -206,7 +222,7 @@ func _notify_select_entered(interactor) -> void:
 		_grab_offset = _compute_grab_offset(interactor)
 		_two_hand_active = false
 		_set_body_frozen(true)
-		_reset_throw_sample(_attach_pose_for(interactor))
+		_reset_throw_sample(_movement_target_pose_for(interactor))
 		_arm_transit(interactor)
 		grabbed.emit(interactor)
 	elif _grabbers.size() == 2:
@@ -244,7 +260,7 @@ func _notify_select_exited(interactor) -> void:
 	_grabbing = _grabbers[0]
 	_grab_offset = _compute_grab_offset(_grabbing)
 	_two_hand_active = false
-	_reset_throw_sample(_attach_pose_for(_grabbing))
+	_reset_throw_sample(_movement_target_pose_for(_grabbing))
 	_arm_transit(_grabbing)
 
 func _physics_process(delta: float) -> void:
@@ -267,12 +283,17 @@ func _physics_process(delta: float) -> void:
 	if _grabbing == null:
 		return
 
-	var attach_pose := _attach_pose_for(_grabbing)
+	var attach_pose := _movement_target_pose_for(_grabbing)
 	var desired: Transform3D = attach_pose * _grab_offset
 	var follow_rotation := track_rotation or _point_grab
 	if _transit_time_left > 0.0:
 		_transit_time_left = maxf(0.0, _transit_time_left - delta)
 		var alpha := 1.0 - (_transit_time_left / _transit_duration)
+		# Eased ONLY for the ATTRACT delivery -- transit_blend/transit_duration
+		# are shared with authored-grip/snap_to_attach transits already earned
+		# in on device at a linear pace, and this must not touch their feel.
+		if _transit_is_attract:
+			alpha = ease_out_cubic(alpha)
 		var blended := transit_blend(_transit_from, desired, alpha)
 		_apply_movement(target, blended, delta, follow_rotation, track_position or _point_grab)
 	else:
@@ -295,6 +316,7 @@ func in_transit() -> bool:
 func _arm_transit(interactor) -> void:
 	_transit_duration = 0.0
 	_transit_time_left = 0.0
+	_transit_is_attract = false
 	# ATTRACT is a travel operation by definition, so it needs the tween even
 	# with no authored grip. The original guard only armed for point grabs and
 	# snap_to_attach, because an ordinary grab keeps the object where it already
@@ -311,7 +333,14 @@ func _arm_transit(interactor) -> void:
 	# make the object tween in from world origin the moment it was re-parented.
 	if target_node == null or not target_node.is_inside_tree():
 		return
-	var desired := _attach_pose_for(interactor) * _grab_offset
+	# _movement_target_pose_for, not _attach_pose_for: for ATTRACT this is what
+	# actually makes the transit travel. _compute_grab_offset already collapsed
+	# _grab_offset to IDENTITY (free grab) or to the authored-point offset for
+	# an ATTRACT far-grab -- either way `desired` here is now genuinely
+	# different from the object's CURRENT transform, where the un-collapsed
+	# free-grab offset made them identical by construction (see the comment on
+	# _compute_grab_offset's ATTRACT branch).
+	var desired := _movement_target_pose_for(interactor) * _grab_offset
 	_transit_from = target_node.global_transform
 	# When this grab does not follow rotation, _apply_movement discards the
 	# blended basis anyway -- so letting the rotation term set the pace would
@@ -320,8 +349,13 @@ func _arm_transit(interactor) -> void:
 	var timed_to := desired
 	if not (track_rotation or _point_grab):
 		timed_to.basis = _transit_from.basis
-	_transit_duration = transit_duration(_transit_from, timed_to, transit_speed)
+	# far_grab_attract_speed, not the shared transit_speed, whenever this is an
+	# ATTRACT far-grab (point or free) -- see far_grab_attract_speed's doc
+	# comment for the arithmetic behind its default.
+	var speed := far_grab_attract_speed if attracting else transit_speed
+	_transit_duration = transit_duration(_transit_from, timed_to, speed)
 	_transit_time_left = _transit_duration
+	_transit_is_attract = attracting
 
 func _compute_grab_offset(interactor) -> Transform3D:
 	var target := get_target()
@@ -355,6 +389,23 @@ func _compute_grab_offset(interactor) -> Transform3D:
 			return _grab_offset
 		if attach_node:
 			return attach_node.global_transform.affine_inverse() * target.global_transform
+		return Transform3D.IDENTITY
+	if interactor is XRRayInteractor and far_grab_mode == FarGrabMode.ATTRACT:
+		# ATTRACT is snap_to_attach for far grabs: the destination is the
+		# grip itself, not wherever the object happened to be relative to
+		# the ray when grabbed. The free-grab formula below,
+		# `interactor.get_attach_pose()^-1 * target.global_transform`,
+		# preserves the object's CURRENT displacement from the ray EXACTLY
+		# -- for a 3 m far grab that displacement IS the 3 m gap ATTRACT
+		# exists to close, and _arm_transit's `desired` collapses right
+		# back to the object's own current transform
+		# (A * (A^-1 * X) == X for any A, X), leaving nothing to travel
+		# and a duration of exactly zero (confirmed empirically -- see
+		# far-grab-guards-report.md). Collapsing the offset to IDENTITY,
+		# the same way snap_to_attach does with no attach_node, is what
+		# gives the transit real distance to cover: _movement_target_pose_for
+		# supplies the actual destination (the adapter's grip pose) for
+		# both this line and _arm_transit/_physics_process.
 		return Transform3D.IDENTITY
 	return interactor.get_attach_pose().affine_inverse() * target.global_transform
 
@@ -465,6 +516,30 @@ func _attach_pose_for(interactor) -> Transform3D:
 	if interactor != null and interactor.has_method("get_attach_pose"):
 		return interactor.get_attach_pose()
 	return Transform3D.IDENTITY
+
+## The per-frame pose XRGrabInteractable's OWN movement/transit code tracks --
+## deliberately NOT the same thing as _attach_pose_for, which _best_grab_point
+## (matching which authored point the ray is nearest) and the two-hand math
+## also call, for their own unrelated purposes, and which must keep seeing the
+## interactor's raw attach pose there.
+##
+## For an ATTRACT far-grab this is the adapter's own grip pose -- the physical
+## hand/controller transform -- rather than a point along the ray:
+## _resolve_grab_pose's reel-to-grip blend sources its target from
+## suppress_interactor_path, which is set in no scene in this repository, so
+## it never actually delivers the object to the hand (see
+## docs/far-grab-modes-design.md's "Amendment" section). The adapter's grip
+## pose needs no scene wiring and is available whenever the hand/controller is
+## tracked. Falls back to the interactor's normal attach pose whenever the
+## grip pose isn't available (not ATTRACT, not a ray, or genuinely untracked),
+## so ATTRACT degrades to "follow the ray" rather than freezing.
+func _movement_target_pose_for(interactor) -> Transform3D:
+	if interactor is XRRayInteractor and far_grab_mode == FarGrabMode.ATTRACT \
+			and interactor.has_method("get_hand_grip_pose"):
+		var grip: Dictionary = interactor.get_hand_grip_pose()
+		if grip.get("valid", false):
+			return Transform3D(grip.get("basis", Basis.IDENTITY) as Basis, grip["origin"] as Vector3)
+	return _attach_pose_for(interactor)
 
 func _rotation_between_vectors(from_vector: Vector3, to_vector: Vector3) -> Basis:
 	var from_dir := from_vector.normalized()
@@ -684,6 +759,16 @@ static func transit_blend(from: Transform3D, to: Transform3D, alpha: float) -> T
 	var local_scale := from_rotation.inverse() * from.basis
 	var blended := Basis(from_rotation.get_rotation_quaternion().slerp(to_rotation.get_rotation_quaternion(), t))
 	return Transform3D(blended * local_scale, from.origin.lerp(to.origin, t))
+
+## Cubic ease-out: fast start, soft settle into the hand -- reads as arriving
+## rather than colliding. David, on device, on the linear pace transit_blend
+## gives every transit: "too snappy". Applied ONLY to the ATTRACT transit's
+## alpha (see _transit_is_attract in _physics_process); transit_blend itself
+## stays linear and untouched so authored-grip/snap_to_attach transits already
+## earned in on device keep their existing pace.
+static func ease_out_cubic(t: float) -> float:
+	var clamped := clampf(t, 0.0, 1.0)
+	return 1.0 - pow(1.0 - clamped, 3.0)
 
 func _angular_velocity_between(from_basis: Basis, to_basis: Basis, delta: float) -> Vector3:
 	if delta <= 0.0:
