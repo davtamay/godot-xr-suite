@@ -277,3 +277,10 @@ Task 7: IN PROGRESS (implementer commit cd63218; fix pass 1 in flight)
   - Nothing the implementer ran could have caught it: the liveness verifier
     asserted static state (interpret_drag == true) and never exercised a drag.
     Fix pass adds an evaluator-level test pinning the cumulative contract.
+  - Fix pass 1 (0722540). The implementer confirmed the evaluator-level test
+    did NOT catch the handler bug (it asserts the signal, not the consumer),
+    said so, and closed the gap with a SECOND station-level end-to-end test
+    that did catch it - failing at the exact predicted accumulate-then-clamp
+    value (0.040 vs 0.030). That is the response the finding needed.
+
+Task 7: complete (commits cd63218..0722540, review clean after one fix pass).
