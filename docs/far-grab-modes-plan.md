@@ -15,7 +15,7 @@ Design: `docs/far-grab-modes-design.md`. Read it before Task 1.
 - **Godot:** `C:\tmp\Godot47\Godot_v4.7-stable_win64_console.exe` (full path; not on PATH).
 - **`--xr-mode off` on EVERY headless invocation**, or Godot hangs forever.
 - **Demo project:** `C:\Users\davta\Repos\Godot_WebXR_gh\demo`. `addons/*` are symlinks into this repo, so edits are live.
-- **INDENTATION IS PER FILE AND THIS PLAN SPANS BOTH.** `xr_ray_interactor.gd` and `xr_grab_interactable.gd` are **4-SPACE** indented. `xr_pokeable.gd` and most of the poke code are **TABS**. Check the file you are editing before you type. Mixing inside one file is a parse error.
+- **INDENTATION IS PER FILE AND THIS PLAN SPANS BOTH — VERIFIED, not inferred.** `xr_ray_interactor.gd` is **4-SPACE** (260 lines). `xr_grab_interactable.gd` is **TABS** (432 lines). An earlier draft of this plan claimed both were 4-space; that was inferred from one file and was wrong. Check with a count before you type. Mixing inside one file is a parse error.
 - **Suites, via the error-checking runner** (a crashed test still prints PASS, so the `scripterrors` column is the proof, not the PASS text):
   `powershell -ExecutionPolicy Bypass -File tools/run_tests.ps1 -Suite godot_xr_interaction_toolkit/tests/test_grab_feel,godot_xr_interaction_toolkit/tests/test_poke_fidelity,godot_xr_interaction_toolkit/tests/test_interaction_arbiter`
   Note `powershell`, not `pwsh` — PowerShell 7 is not installed.
@@ -30,7 +30,7 @@ Design: `docs/far-grab-modes-design.md`. Read it before Task 1.
 ### Task 1: The mode enum and ray dispatch
 
 **Files:**
-- Modify: `addons/godot_xr_interaction_toolkit/runtime/xr_grab_interactable.gd` (4-space)
+- Modify: `addons/godot_xr_interaction_toolkit/runtime/xr_grab_interactable.gd` (TABS)
 - Modify: `addons/godot_xr_interaction_toolkit/runtime/xr_ray_interactor.gd` (4-space)
 - Test: `addons/godot_xr_interaction_toolkit/tests/test_far_grab_modes.gd` (new)
 
@@ -64,7 +64,7 @@ Expected: FAIL — `FarGrabMode` and `get_grab_distance` do not exist.
 
 - [ ] **Step 3: Add the enum to the interactable**
 
-In `xr_grab_interactable.gd` (4-SPACE), in the `Grab` export group:
+In `xr_grab_interactable.gd` (TABS), in the `Grab` export group:
 
 ```gdscript
 ## What a FAR (ray) grab does with this object. Near/direct grab is unaffected.
