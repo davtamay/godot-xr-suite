@@ -131,15 +131,19 @@ func poke_update(source_id: int, world_point: Vector3) -> void:
 	else:
 		_poke_pins[source_id] = global_transform * pinned
 	var pixels := map_local_point_to_viewport(local)
+	# Unconditional on every in-range call - including plain hover frames where
+	# the source is in front of the panel but has not yet crossed the press
+	# plane - so a reader consulting this during a poke hover gets the current
+	# point instead of stale data from the last PRESSED/RELEASED/drag event.
+	# Do NOT move this back into the branches below.
+	_last_pointer_position = pixels
 	match int(result["event"]):
 		_PokeEvaluator.Event.PRESSED:
 			_push_mouse_motion(pixels)
 			_push_mouse_button(pixels, true)
-			_last_pointer_position = pixels
 		_PokeEvaluator.Event.RELEASED:
 			_push_mouse_motion(pixels)
 			_push_mouse_button(pixels, false)
-			_last_pointer_position = pixels
 		_PokeEvaluator.Event.CANCELLED:
 			_poke_pins.erase(source_id)
 			_push_mouse_motion(_OFF_PANEL)
@@ -149,7 +153,6 @@ func poke_update(source_id: int, world_point: Vector3) -> void:
 			# pressed hand would otherwise drag the cursor for the idle one.
 			if _poke_evaluator.is_source_pressed(source_id):
 				_push_mouse_motion(pixels)  # Drag: sliders track the finger.
-				_last_pointer_position = pixels
 
 
 ## The poke source lost its point (hand untracked / moved away).

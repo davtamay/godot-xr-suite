@@ -8,6 +8,22 @@ const XRPokeProfile := preload("res://addons/godot_xr_interaction_toolkit/runtim
 const XRPokeableScript := preload("res://addons/godot_xr_interaction_toolkit/runtime/xr_pokeable.gd")
 const XRUICanvasScript := preload("res://addons/godot_xr_interaction_toolkit/runtime/xr_ui_canvas_interactable.gd")
 
+## Records every mouse motion the panel pushes into its viewport -- used by
+## the two-source drag test to prove the poke_update drag branch (its `_:`
+## default case) gates on is_source_pressed(source_id), not is_pressed().
+## _last_pointer_position is not usable for that assertion: finding 1 makes
+## it track unconditionally on every in-range call regardless of WHICH
+## source called poke_update, so it always reflects whichever source called
+## in last and cannot distinguish "source 1 was merely looked at" from
+## "source 1 dragged the cursor". Only the actual InputEventMouseMotion
+## reaching the viewport proves whether the cursor moved.
+class _MotionProbe extends Control:
+	var positions: Array[Vector2] = []
+
+	func _input(event: InputEvent) -> void:
+		if event is InputEventMouseMotion:
+			positions.append((event as InputEventMouseMotion).position)
+
 var _failures: Array[String] = []
 var _tree_tests_done := false
 
@@ -44,6 +60,8 @@ func _process(_delta: float) -> bool:
 	_test_pokeable_pin_is_inf_when_beyond_band(_failures)
 	_test_canvas_cancel_pushes_the_release_off_panel(_failures)
 	_test_canvas_press_fires_the_control(_failures)
+	_test_canvas_hover_tracks_last_pointer_position(_failures)
+	_test_canvas_drag_is_gated_per_source(_failures)
 	if _failures.is_empty():
 		print("XR poke fidelity: PASS")
 		quit(0)
@@ -235,6 +253,79 @@ func _test_canvas_press_fires_the_control(failures: Array[String]) -> void:
 	panel.poke_update(0, Vector3(0.0, 0.0, 0.050))  # retract past release_depth, still over the panel
 	_check(failures, fired["count"] == 1,
 			"canvas: a straight-on poke through the panel must fire the Control, fired %d" % fired["count"])
+	panel.queue_free()
+
+
+## Finding 1: _last_pointer_position must track on EVERY in-range poke_update
+## call, including a pure hover -- in front of the panel, in range, but has
+## NOT yet crossed the press plane (event NONE, no PRESSED/RELEASED/CANCELLED
+## and not pressed, so the drag branch does not fire either). Before the fix
+## this variable was only assigned inside the PRESSED/RELEASED branches and
+## the pressed-only default branch, so a lone hover sample left it at its
+## initial Vector2.ZERO instead of the hover's own projected pixel.
+func _test_canvas_hover_tracks_last_pointer_position(failures: Array[String]) -> void:
+	var panel := Node3D.new()
+	panel.set_script(XRUICanvasScript)
+	var viewport := SubViewport.new()
+	viewport.size = Vector2i(256, 256)
+	panel.add_child(viewport)
+	panel.viewport_path = panel.get_path_to(viewport)
+	panel.panel_size = Vector2(0.4, 0.4)
+	get_root().add_child(panel)
+
+	# In front (z=0.050 > press_depth) and inside the face rectangle, so this
+	# is the source's very first sample: in_front arms, event is NONE, and
+	# the source was never pressed. A pure hover, nothing else.
+	var hover_point := Vector3(0.050, 0.0, 0.050)
+	panel.poke_update(0, hover_point)
+	var expected: Vector2 = panel.map_local_point_to_viewport(hover_point)
+	_check(failures, panel._last_pointer_position.is_equal_approx(expected),
+			"hover: _last_pointer_position must track a pure hover frame, expected %s got %s" % [expected, panel._last_pointer_position])
+	panel.queue_free()
+
+
+## Named correctness requirement: the drag branch in poke_update's `_:`
+## default case must check is_source_pressed(source_id), not is_pressed().
+## is_pressed() answers "is ANY source pressed", so with two hands on one
+## panel a held source would drag the viewport cursor for an idle one.
+##
+## Source 0 presses through the face and holds (stays pressed). Source 1 is
+## then fed a clearly different, in-range, in-front point that has NOT
+## crossed the press plane -- a pure hover, not a press. With the correct
+## per-source gate, source 1's hover must push NOTHING into the viewport:
+## it is not pressed, so the default branch's `if is_source_pressed(1):`
+## is false. A regression to is_pressed() would see source 0's held press
+## and push a motion event at source 1's hover position instead, which
+## the probe below would catch.
+func _test_canvas_drag_is_gated_per_source(failures: Array[String]) -> void:
+	var panel := Node3D.new()
+	panel.set_script(XRUICanvasScript)
+	var viewport := SubViewport.new()
+	viewport.size = Vector2i(256, 256)
+	panel.add_child(viewport)
+	panel.viewport_path = panel.get_path_to(viewport)
+	panel.panel_size = Vector2(0.4, 0.4)
+	get_root().add_child(panel)
+
+	var probe := _MotionProbe.new()
+	viewport.add_child(probe)
+
+	# Source 0: arm entry, cross the press plane, and hold -- still pressed.
+	panel.poke_update(0, Vector3(-0.100, 0.0, 0.050))
+	panel.poke_update(0, Vector3(-0.100, 0.0, 0.008))
+	_check(failures, panel._poke_evaluator.is_source_pressed(0),
+			"two sources: source 0 must be pressed before the drag probe runs")
+
+	probe.positions.clear()
+
+	# Source 1: a different pixel (x=0.100 vs source 0's x=-0.100), in range
+	# and in front of the panel, but has NOT crossed the press plane.
+	panel.poke_update(1, Vector3(0.100, 0.0, 0.050))
+	_check(failures, not panel._poke_evaluator.is_source_pressed(1),
+			"two sources: source 1 must not be pressed -- this is a pure hover")
+
+	_check(failures, probe.positions.is_empty(),
+			"two sources: an idle hand's hover pushed viewport motion at %s -- it dragged the held hand's cursor" % [probe.positions])
 	panel.queue_free()
 
 
