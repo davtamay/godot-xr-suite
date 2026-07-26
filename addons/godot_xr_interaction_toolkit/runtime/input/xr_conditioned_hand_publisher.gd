@@ -124,8 +124,59 @@ static func publish(hand: int) -> XRHandTracker:
 
 	var tracker := _ensure_tracker(hand)
 	write_frame_to_tracker(frame, tracker, _raw_source(hand))
+	_probe(hand, tracked)
 	_last_tracked[hand] = tracked
 	return tracker if tracked else null
+
+
+## DIAGNOSTIC, temporary. Logs what the runtime ACTUALLY reports as a hand
+## leaves view, from inside the chain every consumer already goes through --
+## so it runs in every scene with no node or setup, unlike a probe placed in
+## one sample scene, which is how the first attempt at this measured nothing.
+##
+## The open question: does this runtime CLEAR
+## HAND_JOINT_FLAG_POSITION_TRACKED when a hand leaves view, or keep reporting
+## tracked-and-valid while extrapolating? Every tracking-loss gate in the suite
+## assumes the former and none of it has been measured. Three fixes for a
+## drifting out-of-view ray were reasoned from source and all three were wrong
+## on device.
+##
+## Change-gated: an unconditional per-frame print produced 91,530 lines in one
+## Link session on this project.
+static var debug_tracking := true
+static var _probe_last := [{}, {}]
+
+static func _probe(hand: int, gate_says_tracked: bool) -> void:
+	if not debug_tracking:
+		return
+	var raw: XRHandTracker = XRHandTrackerResolver.resolve_raw(hand)
+	var valid := 0
+	var tracked_joints := 0
+	var has_data := false
+	if raw != null:
+		has_data = raw.has_tracking_data
+		for joint in XRHandTracker.HAND_JOINT_MAX:
+			var flags := raw.get_hand_joint_flags(joint)
+			if (flags & XRHandTracker.HAND_JOINT_FLAG_POSITION_VALID) != 0:
+				valid += 1
+			if (flags & XRHandTracker.HAND_JOINT_FLAG_POSITION_TRACKED) != 0:
+				tracked_joints += 1
+
+	var state := {
+		"present": raw != null, "data": has_data,
+		"valid": valid, "tracked": tracked_joints, "gate": gate_says_tracked,
+	}
+	var previous: Dictionary = _probe_last[hand]
+	if not previous.is_empty() \
+			and previous["present"] == state["present"] \
+			and previous["data"] == state["data"] \
+			and previous["gate"] == state["gate"] \
+			and absi(int(previous["valid"]) - valid) < 3 \
+			and absi(int(previous["tracked"]) - tracked_joints) < 3:
+		return
+	_probe_last[hand] = state
+	print("[hand-probe] hand=%d raw_present=%s has_data=%s valid=%d tracked=%d gate_tracked=%s" % [
+		hand, raw != null, has_data, valid, tracked_joints, gate_says_tracked])
 
 ## Copies a conditioned frame into a tracker. Static and dependency-free so it
 ## can be unit-tested without touching XRServer.
