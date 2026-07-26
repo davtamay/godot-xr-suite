@@ -223,3 +223,12 @@ Task 5: IN PROGRESS (implementer commit 5c9aa45; fix pass 1 in flight)
     physical hand inherits another's armed state. Fix pass 2 keys by instance
     id instead. Nearly impossible to reproduce deliberately, which is exactly
     why it had to be caught by reading.
+  - Fix pass 2 (25b468c): keyed by a dictionary-backed dense counter, NOT the
+    get_instance_id()*2+hand the controller suggested - Godot instance IDs
+    carry a high RefCounted bit, so arithmetic on them risks 64-bit overflow.
+    Using the id only as a dictionary key sidesteps it. Good call by the agent.
+  - The reordering test drives the real _physics_process group path, and
+    reverting to position-keying reproduces a WRONG-HAND PRESS off a single
+    deep sample. That is the guard the finding needed.
+
+Task 5: complete (commits 5c9aa45..25b468c, review approved, two fix passes).
