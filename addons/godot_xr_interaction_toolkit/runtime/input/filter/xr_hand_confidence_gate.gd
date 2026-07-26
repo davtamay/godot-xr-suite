@@ -20,13 +20,28 @@ const _HANDS := 2
 ## as long as it stays unseen -- checking valid_joint_count here meant this
 ## gate never fired for exactly the case it exists to catch (confirmed
 ## empirically; see .superpowers/sdd/ray-through-conditioning-report.md).
-@export var min_tracked_joints := 1
+## MEASURED on Quest over Link, not guessed: the raw tracker reports
+## valid=26 permanently (so POSITION_VALID carries no information at all),
+## while tracked swings between 26 and 2 frame to frame. A threshold of 1
+## therefore passed continuously -- the gate said "tracked" throughout every
+## dropout, which is why four successive fixes for a drifting out-of-view ray
+## changed nothing. A majority of the 26 joints separates the two states
+## cleanly in that data.
+@export var min_tracked_joints := 13
+## Consecutive good frames required to LEAVE the lost state. Without this a
+## single good frame inside a flicker burst cleared the hold timer, so the
+## timer never expired and the gate oscillated between held and live --
+## reported on device as the hand going "crazy" when looking away from it.
+## Dropping is still immediate-then-held; only reacquisition is debounced.
+@export_range(1, 30, 1) var reacquire_frames := 3
 
 var _inner: XRHandPoseSource
 var _raw := XRHandFrame.new()
 var _last_good: Array[XRHandFrame] = []
 var _has_good := [false, false]
 var _lost_since_usec := [-1, -1]
+## Consecutive frames the raw source has met min_tracked_joints, per hand.
+var _good_streak := [0, 0]
 var _discontinuity := [false, false]
 
 func _init(inner: XRHandPoseSource = null) -> void:
@@ -53,6 +68,18 @@ func capture(hand: int, timestamp_usec: int, target: XRHandFrame) -> bool:
 	var now := _raw.timestamp_usec if _raw.timestamp_usec > 0 else timestamp_usec
 
 	if tracked:
+		_good_streak[hand] += 1
+		# Debounced reacquisition. A lone good frame inside a flicker burst
+		# used to clear the hold timer, so with tracked swinging 26 <-> 2 the
+		# timer never expired and the held pose was replaced by whichever
+		# garbage frame happened to pass. Keep holding until the recovery is
+		# actually sustained. Only reacquisition is debounced -- going lost is
+		# still immediate-then-held, so a real dropout is caught on frame one.
+		if _has_good[hand] and _lost_since_usec[hand] >= 0 \
+				and _good_streak[hand] < reacquire_frames:
+			_last_good[hand].copy_into(target)
+			target.timestamp_usec = now
+			return true
 		if not _has_good[hand] or _lost_since_usec[hand] >= 0:
 			# First acquisition also counts: the filter has no history either way.
 			_discontinuity[hand] = true
@@ -61,6 +88,8 @@ func capture(hand: int, timestamp_usec: int, target: XRHandFrame) -> bool:
 		_raw.copy_into(_last_good[hand])
 		_raw.copy_into(target)
 		return true
+
+	_good_streak[hand] = 0
 
 	if not _has_good[hand]:
 		_raw.copy_into(target)

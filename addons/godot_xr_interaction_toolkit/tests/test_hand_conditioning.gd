@@ -16,6 +16,8 @@ func _init() -> void:
 	_test_hand_filter(failures)
 	_test_hand_filter_dedup(failures)
 	_test_confidence_gate(failures)
+	_test_confidence_gate_partial_tracking_counts_as_lost(failures)
+	_test_confidence_gate_does_not_reacquire_on_a_single_flicker_frame(failures)
 	_test_confidence_gate_predicted_only_counts_as_lost(failures)
 	_test_publisher(failures)
 	_test_publisher_republish_cache(failures)
@@ -623,10 +625,17 @@ class _ScriptedSource extends XRHandPoseSource:
 		target.begin_capture(hand, index * step_usec, index)
 		index += 1
 		if valid:
-			target.set_joint(
-				XRHandTracker.HAND_JOINT_WRIST,
-				Transform3D(Basis.IDENTITY, Vector3(0.5, 0, 0)),
-				0.01, XRHandTracker.HAND_JOINT_FLAG_POSITION_VALID | XRHandTracker.HAND_JOINT_FLAG_POSITION_TRACKED)
+			# ALL joints, not just the wrist. A real tracked hand reports 26 --
+			# measured on Quest over Link, where valid sits at 26 permanently
+			# and tracked swings 26 <-> 2. A one-joint fixture cannot represent
+			# a tracked hand against any threshold above 1, and it silently
+			# stopped representing one the moment min_tracked_joints became a
+			# majority rather than a token.
+			var flags := XRHandTracker.HAND_JOINT_FLAG_POSITION_VALID \
+					| XRHandTracker.HAND_JOINT_FLAG_POSITION_TRACKED
+			for joint in XRHandTracker.HAND_JOINT_MAX:
+				target.set_joint(
+					joint, Transform3D(Basis.IDENTITY, Vector3(0.5, 0, 0)), 0.01, flags)
 			target.tracking_valid = true
 			return true
 		target.tracking_valid = false
@@ -702,7 +711,10 @@ func _test_confidence_gate(failures: Array[String]) -> void:
 ## observing" state OpenXR keeps reporting for an out-of-view hand, and the
 ## whole reason min_tracked_joints exists rather than valid_joint_count.
 class _LivenessScriptedSource extends XRHandPoseSource:
-	enum State { LOST, PREDICTED, TRACKED }
+	enum State { LOST, PREDICTED, TRACKED, PARTIAL }
+	## How many joints PARTIAL marks TRACKED. The device reports 2 of 26 during
+	## a dropout -- not 0 -- which is the case a threshold of 1 cannot catch.
+	var partial_tracked_joints := 2
 	var pattern: Array = []
 	var index := 0
 	var step_usec := 13888
@@ -728,10 +740,16 @@ class _LivenessScriptedSource extends XRHandPoseSource:
 			flags |= XRHandTracker.HAND_JOINT_FLAG_POSITION_TRACKED
 		else:
 			position = Vector3(0.5 + 0.2 * index, 0, 0)
-		target.set_joint(
-			XRHandTracker.HAND_JOINT_WRIST,
-			Transform3D(Basis.IDENTITY, position),
-			0.01, flags)
+		# PARTIAL adds TRACKED to only the first few joints, in the loop below.
+		# All 26 joints carry the state, as a real hand does; the WRIST carries
+		# the distinguishing position the held-pose assertion reads.
+		for joint in XRHandTracker.HAND_JOINT_MAX:
+			var joint_position: Vector3 = position if joint == XRHandTracker.HAND_JOINT_WRIST else Vector3(0.5, 0, 0)
+			var joint_flags := flags
+			if state == State.PARTIAL and joint < partial_tracked_joints:
+				joint_flags |= XRHandTracker.HAND_JOINT_FLAG_POSITION_TRACKED
+			target.set_joint(
+				joint, Transform3D(Basis.IDENTITY, joint_position), 0.01, joint_flags)
 		target.tracking_valid = true
 		return true
 
@@ -743,6 +761,63 @@ class _LivenessScriptedSource extends XRHandPoseSource:
 ## LOST, LOST, tracked / then a short-hold expiry gate), with PREDICTED
 ## standing in for "no data" to prove the gate distinguishes "unseen but still
 ## reporting" from "unseen and silent" not at all -- both must be caught.
+## MEASURED on Quest over Link: during a dropout the raw tracker reports
+## valid=26 and tracked oscillating between 26 and 2 -- NOT 26 versus 0. A
+## threshold of 1 separates 26 from 0 perfectly well, which is why the
+## predicted-only test below passes with EITHER threshold, and why four
+## successive fixes for a drifting out-of-view ray changed nothing on device.
+## This is the case that needs a MAJORITY threshold: a hand still reporting a
+## couple of tracked joints is not a tracked hand.
+func _test_confidence_gate_partial_tracking_counts_as_lost(failures: Array[String]) -> void:
+	var source := _LivenessScriptedSource.new()
+	source.pattern = [
+		_LivenessScriptedSource.State.TRACKED,
+		_LivenessScriptedSource.State.TRACKED,
+		_LivenessScriptedSource.State.PARTIAL,
+		_LivenessScriptedSource.State.PARTIAL,
+	]
+	var gate := XRHandConfidenceGate.new(source)
+	gate.hold_duration_sec = 0.25
+	var frame := XRHandFrame.new()
+
+	gate.capture(1, 0, frame)
+	gate.capture(1, 0, frame)
+
+	if not gate.capture(1, 0, frame):
+		failures.append("gate dropped a partially-tracked frame instead of holding the last good pose")
+	if not frame.joint_transforms[XRHandTracker.HAND_JOINT_WRIST].origin.is_equal_approx(Vector3(0.5, 0, 0)):
+		failures.append("2-of-26 tracked joints was treated as a live hand -- min_tracked_joints is too low to catch the state the device actually reports")
+
+
+## MEASURED: tracked does not fall cleanly, it FLICKERS -- 26, 2, 26, 6, 2. A
+## single good frame used to clear the hold timer, so the timer never expired
+## and the held pose was replaced by whichever frame passed. Reported on device
+## as the hand going "crazy" on look-away. Dropping stays immediate-then-held;
+## only reacquisition is debounced.
+func _test_confidence_gate_does_not_reacquire_on_a_single_flicker_frame(failures: Array[String]) -> void:
+	var source := _LivenessScriptedSource.new()
+	source.pattern = [
+		_LivenessScriptedSource.State.TRACKED,
+		_LivenessScriptedSource.State.TRACKED,
+		_LivenessScriptedSource.State.PARTIAL,
+		_LivenessScriptedSource.State.TRACKED,
+		_LivenessScriptedSource.State.PARTIAL,
+	]
+	var gate := XRHandConfidenceGate.new(source)
+	gate.hold_duration_sec = 0.25
+	gate.reacquire_frames = 3
+	var frame := XRHandFrame.new()
+
+	gate.capture(1, 0, frame)
+	gate.capture(1, 0, frame)
+	gate.capture(1, 0, frame)
+	gate.consume_discontinuity(1)
+
+	gate.capture(1, 0, frame)
+	if gate.consume_discontinuity(1):
+		failures.append("a lone good frame inside a flicker burst was treated as reacquisition -- this is the oscillation that made the hand unusable on look-away")
+
+
 func _test_confidence_gate_predicted_only_counts_as_lost(failures: Array[String]) -> void:
 	var source := _LivenessScriptedSource.new()
 	source.pattern = [
