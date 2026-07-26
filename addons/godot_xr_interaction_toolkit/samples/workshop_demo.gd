@@ -22,6 +22,16 @@ func _ready() -> void:
 
 	_build_far_grab_bench()
 
+	# DIAGNOSTIC, temporary: measures what the runtime actually reports as a
+	# hand leaves view. Three fixes for the drifting out-of-view ray were
+	# reasoned from source and all three were wrong on device, so the next one
+	# gets written from numbers.
+	if ResourceLoader.exists("res://addons/godot_xr_interaction_toolkit/runtime/xr_hand_tracking_probe.gd"):
+		var probe := Node.new()
+		probe.name = "HandTrackingProbe"
+		probe.set_script(load("res://addons/godot_xr_interaction_toolkit/runtime/xr_hand_tracking_probe.gd"))
+		add_child(probe)
+
 	# Guided navigation: teleport can ONLY land on the station pads.
 	for loco in get_tree().get_nodes_in_group("xr_locomotion"):
 		if "anchors_only" in loco:
