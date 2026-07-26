@@ -24,7 +24,21 @@ const SYNTHETIC_SELECT := "synthetic"
 @export var right_controller_path: NodePath
 
 @export_group("Ray Source")
-## false: prefer the controller aim ray. true: prefer the hand-joint ray.
+## false: prefer the controller node's raw aim pose whenever it has tracking
+## data. true: prefer the hand-modality ray from _hand_aim_pose -- which is
+## the platform aim pose when the runtime publishes one (see
+## prefer_platform_aim), the derived joint ray otherwise, and EITHER way runs
+## through the aim stabilizer and pinch-select anchoring that were tuned on
+## device. A held physical controller is unaffected by this flag: the hand
+## tracker has no data then, so the hand path yields nothing and the
+## controller pose drives regardless.
+##
+## The 2026-07-03 on-device decision set this false because the OS aim pose
+## was steadier than the derived prototype ray. With prefer_platform_aim the
+## hand path now sources that same OS pose, so the shipped rig flips this to
+## true to get the OS pose PLUS the tuned conditioning, instead of the OS
+## pose raw and unanchored. The class default stays false so existing scenes
+## keep their measured behaviour until deliberately switched.
 @export var prefer_hand_ray := false
 
 @export_group("Pinch Select")
@@ -111,6 +125,61 @@ var _last_process_delta := 1.0 / 72.0
 ## strength of a better-looking design. Flip this to compare the two on the
 ## same build, and keep whichever wins in the headset.
 @export var use_aim_stabilizer := true
+## Prefer the runtime's own aim pose for a TRACKED HAND over the ray derived
+## from wrist->knuckle joints. The derivation turns millimetres of joint noise
+## into degrees of ray angle across an ~8 cm baseline and lands differently on
+## every runtime; the platform pose is the ergonomic, runtime-stabilized ray
+## the mature stacks ship (Unity XRI/XR Hands read it from
+## XR_EXT_hand_interaction / XR_FB_hand_tracking_aim -- see
+## docs/XR_INPUT_PRACTICES.md Practice 3 in Godot_WebXR_gh). WebXR publishes it
+## unconditionally (targetRaySpace); OpenXR publishes it when the runtime
+## advertises XR_EXT_hand_interaction -- measured live on standalone Quest 3
+## (runtime 205.206.0): platform aim present on >95% of tracked-hand samples,
+## 30-48 deg mean separation from the derived ray. Runtimes without it (Quest
+## Link 1.205.0) never produce the pose, so they keep today's derived ray --
+## the fallback is load-bearing, not decorative.
+@export var prefer_platform_aim := true
+## How long the platform-aim ray survives a FULL tracking loss (the tracker
+## itself reporting no data), in seconds. Measured on standalone Quest 3: when
+## a hand leaves the user's view the runtime's last frames are extrapolated
+## garbage -- the wrist wanders while staying inside any plausible view cone,
+## the joint count collapses, then data stops -- so the FOV gate reads an
+## in-cone loss, calls the hand gone, and the ray VANISHES on look-away
+## (reported on device for the left hand, whose loss windows dominate 24:2).
+## On inside-out tracking a VISIBLE hand never loses data, so a full loss
+## while hands are the modality almost always means unobservable, not gone:
+## park the ray where it was aimed and let it expire only after this grace.
+## 0 restores expire-on-loss. Applies to both hands identically.
+@export_range(0.0, 60.0, 0.5, "or_greater") var platform_aim_hold_sec := 10.0
+## How far back the parked ray reaches when the pose stream goes bad, in
+## seconds. Measured on standalone Quest 3: a dying hand's last ~0.4 s of
+## PUBLISHED poses wander with the terminal extrapolation, and the
+## withhold/republish dance that follows burns another ~0.3-0.5 s before the
+## data finally stops -- so the park must reach back past the whole tail.
+## Parking at the newest sample OLDER than this window parks where the user
+## was actually aiming ("it shifts a little when I go out of view" was the
+## park landing inside the wander).
+@export_range(0.0, 3.0, 0.05) var platform_aim_park_backtime_sec := 1.0
+## How long a gap in the pose stream is bridged with the LAST published pose
+## before the display switches to the aged park pose. Short withholds are
+## routine even on a well-tracked hand and must be invisible; a gap that
+## outlives this window is the hand genuinely going unobservable, where the
+## last pose is already the terminal wander and the aged pose is the honest
+## one. There is deliberately NO hysteresis on the way back: the instant a
+## pose is published again it drives the ray -- that is the entire algorithm
+## of the right hand, whose behaviour is the on-device role model, and two
+## machineries that tried to be smarter than it (park-on-any-withhold, and a
+## continuous-health resume clock) were both rejected in the headset within
+## minutes ("stuck"; "ray independent of the hand").
+@export_range(0.0, 2.0, 0.05) var platform_aim_fill_sec := 0.25
+## How far the last published pose may disagree with the aged history before
+## a long gap parks on the HISTORY instead of the last pose. Measured on the
+## left hand: an ordinary look-away gap has a near-stationary tail (~2 deg
+## from the aged pose) where parking on the aged pose is a visible backward
+## hop for no benefit, while the terminal-wander tail disagrees by 40-60 deg
+## and NEEDS the correction. Below this angle the two agree and the last
+## pose wins (zero seam); above it the history is the honest one.
+@export_range(0.0, 45.0, 0.5) var platform_aim_wander_threshold_deg := 5.0
 ## Per-hand, two channels (Hand.LEFT = 0, Hand.RIGHT = 1), same construction as
 ## _hand_aim_direction_filter -- each hand adapts independently and cannot see
 ## the other's history.
@@ -122,20 +191,73 @@ var _last_process_delta := 1.0 / 72.0
 var _aim_stabilizer = XRAimStabilizerScript.new(2)
 ## Latest ray endpoint per hand, set by interactors -- see set_aim_endpoint.
 var _aim_endpoint_hint := {}
+## Platform-aim continuity, per hand: whether the runtime has published an
+## aim pose this session, and the last ray it published. Exists because a
+## runtime that publishes CAN also withhold per frame when it stops trusting
+## the hand -- measured on standalone Quest 3 as look-away windows, 24 of 26
+## on the left hand -- and switching to the derived ray for those frames
+## swings the visible line by the full platform-vs-derived separation.
+var _platform_aim_seen := {}
+var _held_platform_aim := {}
+## Seconds since this hand's tracker last had data, accumulated in _process
+## (single authority; _hand_aim_pose is called several times per frame and
+## must not double-count). INF until the hand has ever been live.
+var _hand_loss_elapsed := {}
+## Gap-filling state, per hand, all written ONLY in _process so
+## _hand_aim_pose stays a pure reader however many times a frame calls it.
+## _aim_buffer is the short history of settled platform poses whose FRONT
+## entry -- the newest sample older than platform_aim_park_backtime_sec --
+## is the park pose for long gaps (see _bad_frame_platform_aim).
+var _aim_buffer := {}
+## Continuous published time; zeroed by any withheld or lost frame. Gates
+## history pushes (>= _AIM_PUSH_WARMUP_SEC) so the first frames after any
+## hiccup -- the loss dance's garbage republish bursts included -- never
+## enter the buffer and can never become a future park pose.
+var _aim_healthy_streak := {}
+## Continuous NOT-published time (withheld or lost); zeroed by any published
+## frame. Below platform_aim_fill_sec the display bridges with the last
+## pose; at or above it, the aged park pose.
+var _aim_bad_elapsed := {}
+## Hand-anchor position (world) captured at the moment a gap begins, so a
+## gap pose can TRANSLATE with a hand that is still tracked -- the same
+## palm-anchored delta the pinch-select stabilizer uses. Without it a long
+## gap on a visible hand parks the ray in space while the hand walks away
+## from it ("the left ray and cursor were separate from the hand").
+var _aim_gap_anchor := {}
+## Palm-local aim direction captured at the same moment: the calibrated
+## OFFSET between the palm frame and the platform ray. During a gap on a
+## live hand the displayed direction is palm_now * this offset, so the ray
+## keeps MOVING with the hand instead of freezing. Measured need: the left
+## aim stream churns (11 withhold/republish cycles in 27 s of ordinary use
+## against zero on the right), and a direction frozen once per churn cycle
+## is a visible stutter no seam-polishing can hide.
+var _aim_gap_offset_dir := {}
+## The pose shown during the current gap, computed ONCE per frame in
+## _process and left untouched on frames where the hand blips to not-live.
+## The measured gaps contain one-frame liveness blips, and recomputing the
+## translation around them popped the origin -- part of the residual
+## "slight movement" the left showed on look-away.
+var _aim_gap_pose := {}
+var _aim_clock := 0.0
+
+const _AIM_PUSH_WARMUP_SEC := 0.3
 
 ## Diagnostic for the platform-aim question -- see _probe_platform_aim. OFF by
 ## default; it costs nothing until switched on.
 ##
-## The question is only half answered. Measured over Quest Link (Oculus runtime
-## 1.205.0): platform=false on every sample including while hand_live=true, and
-## the boot log never mentions the profile, because Godot registers
-## /interaction_profiles/ext/hand_interaction_ext only when the runtime
-## advertises XR_EXT_hand_interaction and that runtime does not. So the binding
-## is inert over Link and the derived ray is still what ships there. Turn this
-## back on when running STANDALONE, or on Android XR / Pico / SteamVR, to find
-## out whether the profile activates and whether the runtime's aim differs from
-## ours. That is the measurement this exists for; do not delete it until it has
-## been taken on a runtime that advertises the extension.
+## The question is ANSWERED for standalone Quest 3 (runtime 205.206.0):
+## platform=true on >95% of tracked-hand samples, 29.5/48.1 deg mean
+## separation from the derived ray (right/left). Quest Link (1.205.0) remains
+## a no: it does not advertise XR_EXT_hand_interaction at all. Two switches
+## were both required and only one was documented anywhere: the profile bound
+## in the action map AND the project setting
+## xr/openxr/extensions/hand_interaction_profile, which is what makes Godot
+## request the extension (openxr_hand_interaction_extension.cpp:59).
+##
+## Still open, which is why the probe stays: attributing the pose to the
+## profile actually serving it (the first standalone run measured a live aim
+## pose while the ext profile was provably skipped), and the same measurement
+## under WebXR and on Android XR / Pico / SteamVR.
 @export var debug_platform_aim := false
 var _probe_last_key := {}
 var _probe_last_separation := {}
@@ -196,17 +318,173 @@ func _resolve_rig() -> void:
 
 func _process(_delta: float) -> void:
 	_last_process_delta = _delta
+	_aim_clock += _delta
 	for hand_id in [Hand.LEFT, Hand.RIGHT]:
 		if _select_down.get(hand_id, false):
 			_select_held_time[hand_id] = _select_held_time.get(hand_id, 0.0) + _delta
 		else:
 			_select_held_time[hand_id] = 0.0
+		_update_platform_aim_state(hand_id, _delta)
 	if synthesize_pinch_select:
 		_update_synthetic_pinch_select(Hand.LEFT)
 		_update_synthetic_pinch_select(Hand.RIGHT)
 	if debug_platform_aim:
 		_probe_platform_aim(Hand.LEFT)
 		_probe_platform_aim(Hand.RIGHT)
+
+
+## The single writer for every piece of platform-aim state -- liveness clock,
+## healthy-pose history, park capture, suspect/resume. Runs once per hand per
+## frame from _process; _hand_aim_pose only READS, because interactors and
+## get_source_kind call it several times a frame and any write there would
+## double-count time or double-push samples.
+func _update_platform_aim_state(hand_id: int, delta: float) -> void:
+	var tracker := XRHandTrackerResolver.get_tracker(hand_id)
+	var hand_live := tracker != null and tracker.has_tracking_data
+	if hand_live:
+		_hand_loss_elapsed[hand_id] = 0.0
+	else:
+		_hand_loss_elapsed[hand_id] = _hand_loss_elapsed.get(hand_id, INF) + delta
+
+	if not prefer_platform_aim:
+		return
+
+	var platform := _platform_aim_pose(hand_id) if hand_live else {}
+	if not platform.is_empty():
+		_platform_aim_seen[hand_id] = true
+		_aim_bad_elapsed[hand_id] = 0.0
+		_aim_gap_pose.erase(hand_id)
+		_aim_healthy_streak[hand_id] = _aim_healthy_streak.get(hand_id, 0.0) + delta
+		_held_platform_aim[hand_id] = platform
+		if _aim_healthy_streak[hand_id] >= _AIM_PUSH_WARMUP_SEC:
+			var buffer: Array = _aim_buffer.get(hand_id, [])
+			buffer.push_back({
+				"t": _aim_clock,
+				"origin": platform["origin"], "direction": platform["direction"],
+			})
+			# Keep the FRONT entry as the park candidate: the newest sample
+			# already older than the backtime window.
+			while buffer.size() >= 2 and _aim_clock - (buffer[1]["t"] as float) >= platform_aim_park_backtime_sec:
+				buffer.pop_front()
+			_aim_buffer[hand_id] = buffer
+		return
+
+	_aim_healthy_streak[hand_id] = 0.0
+	if not _platform_aim_seen.get(hand_id, false):
+		return
+	var prev_bad: float = _aim_bad_elapsed.get(hand_id, 0.0)
+	if prev_bad == 0.0:
+		# First frame of a gap: remember where the hand is and the palm-local
+		# aim offset, so the gap pose can keep MOVING with the hand while it
+		# stays tracked. Null when the hand died outright -- then there is
+		# nothing to follow and the pose parks in space, which is right for
+		# an invisible hand.
+		var anchor = _hand_anchor_global(hand_id)
+		if anchor != null:
+			_aim_gap_anchor[hand_id] = anchor
+		else:
+			_aim_gap_anchor.erase(hand_id)
+		_aim_gap_offset_dir.erase(hand_id)
+		var palm = _hand_anchor_basis_global(hand_id)
+		var held: Dictionary = _held_platform_aim.get(hand_id, {})
+		if palm != null and not held.is_empty():
+			_aim_gap_offset_dir[hand_id] = ((palm as Basis).transposed() * (held["direction"] as Vector3)).normalized()
+	_aim_bad_elapsed[hand_id] = prev_bad + delta
+	if hand_live and prev_bad < platform_aim_fill_sec \
+			and _aim_bad_elapsed[hand_id] >= platform_aim_fill_sec:
+		# The gap outlived the fill window. If the tail the offset was
+		# calibrated from disagrees with the aged history, the tail was the
+		# terminal wander -- recalibrate the offset to the history once, the
+		# honest correction. A stable tail stays calibrated to itself.
+		var buffer: Array = _aim_buffer.get(hand_id, [])
+		var held: Dictionary = _held_platform_aim.get(hand_id, {})
+		if not buffer.is_empty() and not held.is_empty():
+			var aged_dir: Vector3 = (buffer[0] as Dictionary)["direction"]
+			if rad_to_deg((held["direction"] as Vector3).angle_to(aged_dir)) > platform_aim_wander_threshold_deg:
+				var palm = _hand_anchor_basis_global(hand_id)
+				if palm != null:
+					_aim_gap_offset_dir[hand_id] = ((palm as Basis).transposed() * aged_dir).normalized()
+	if hand_live or not _aim_gap_pose.has(hand_id):
+		# Recompute the gap display only while the hand is live (or on the
+		# gap's very first frame): a not-live blip must NOT move the pose
+		# for a frame -- it simply stays where it last was.
+		var gap_pose := _live_gap_aim(hand_id) if hand_live else {}
+		if gap_pose.is_empty():
+			gap_pose = _bad_frame_platform_aim(hand_id)
+			if hand_live and not gap_pose.is_empty():
+				var gap_anchor = _aim_gap_anchor.get(hand_id)
+				var current_anchor = _hand_anchor_global(hand_id)
+				if gap_anchor != null and current_anchor != null:
+					gap_pose = _offset_pose_by_anchor_delta(gap_pose, gap_anchor, current_anchor)
+		if not gap_pose.is_empty():
+			_aim_gap_pose[hand_id] = gap_pose
+	if _hand_loss_elapsed.get(hand_id, INF) > platform_aim_hold_sec:
+		# Lost for longer than the ray is allowed to survive: this aiming
+		# episode is over. Clearing everything makes the eventual
+		# reacquisition a clean slate -- live pose immediately, no stale park.
+		_platform_aim_seen.erase(hand_id)
+		_held_platform_aim.erase(hand_id)
+		_aim_healthy_streak.erase(hand_id)
+		_aim_bad_elapsed.erase(hand_id)
+		_aim_gap_anchor.erase(hand_id)
+		_aim_gap_offset_dir.erase(hand_id)
+		_aim_gap_pose.erase(hand_id)
+		_aim_buffer.erase(hand_id)
+
+
+## What the ray shows on a frame with NO published pose, given how long the
+## stream has been bad: the last pose while the gap is short (invisible
+## bridging), the aged pre-wander pose once it is not (the honest park).
+## Empty when nothing was ever published.
+## The gap display for a hand that is STILL TRACKED: the palm frame drives
+## the ray with the offset calibrated at gap start (or recalibrated to the
+## aged history at the fill boundary if the tail was wander). Continuity at
+## gap entry is exact by construction, the ray keeps moving with the hand
+## through the gap -- the measured left-hand churn (a gap every ~2 s in
+## ordinary use) makes any frozen-direction gap display a visible stutter.
+## Empty when the palm or the offset is unavailable; callers then fall back
+## to the static _bad_frame_platform_aim.
+func _live_gap_aim(hand_id: int) -> Dictionary:
+	var offset = _aim_gap_offset_dir.get(hand_id)
+	var held: Dictionary = _held_platform_aim.get(hand_id, {})
+	if offset == null or held.is_empty():
+		return {}
+	var palm = _hand_anchor_basis_global(hand_id)
+	if palm == null:
+		return {}
+	var origin: Vector3 = held["origin"]
+	var gap_anchor = _aim_gap_anchor.get(hand_id)
+	var current_anchor = _hand_anchor_global(hand_id)
+	if gap_anchor != null and current_anchor != null:
+		origin += (current_anchor as Vector3) - (gap_anchor as Vector3)
+	return {
+		"origin": origin,
+		"direction": ((palm as Basis) * (offset as Vector3)).normalized(),
+	}
+
+
+func _bad_frame_platform_aim(hand_id: int) -> Dictionary:
+	var held: Dictionary = _held_platform_aim.get(hand_id, {})
+	if _aim_bad_elapsed.get(hand_id, 0.0) < platform_aim_fill_sec:
+		return held
+	var buffer: Array = _aim_buffer.get(hand_id, [])
+	if buffer.is_empty():
+		return held
+	var entry: Dictionary = buffer[0]
+	if not held.is_empty():
+		var disagreement := rad_to_deg((held["direction"] as Vector3).angle_to(entry["direction"] as Vector3))
+		if disagreement <= platform_aim_wander_threshold_deg:
+			# The tail agrees with the history: nothing wandered, and
+			# switching to the aged pose would be a visible backward hop for
+			# no benefit -- the residual "slight movement" on look-away.
+			return held
+		# Genuine wander: direction from before it; origin from the gap
+		# start so the anchor delta can glue the ray to a tracked hand.
+		return {
+			"origin": held.get("origin", entry["origin"]),
+			"direction": entry["direction"],
+		}
+	return {"origin": entry["origin"], "direction": entry["direction"]}
 
 
 ## TEMPORARY measurement, to be deleted once the platform-aim question is
@@ -228,6 +506,17 @@ func _probe_platform_aim(hand_id: int) -> void:
 			and controller.get_has_tracking_data()
 	var pose_name := controller.pose if controller != null else "<no controller>"
 
+	# WHICH profile is feeding the pose matters as much as whether one is: on
+	# standalone Quest the first probe run measured platform=true while the
+	# ext hand-interaction profile was provably skipped (extension advertised
+	# but not enabled -- Godot gates it on the hand_interaction_profile
+	# project setting), so the pose had to be coming from somewhere else.
+	var profile := "<none>"
+	if controller != null:
+		var positional := XRServer.get_tracker(controller.tracker) as XRPositionalTracker
+		if positional != null and not String(positional.profile).is_empty():
+			profile = String(positional.profile)
+
 	var platform_dir := Vector3.ZERO
 	if has_platform:
 		platform_dir = (-controller.global_transform.basis.z).normalized()
@@ -243,15 +532,15 @@ func _probe_platform_aim(hand_id: int) -> void:
 
 	# Change-gated so this cannot repeat the 91k-line eye-height flood. Emits on
 	# a state change or a meaningful shift in either direction.
-	var key := "%d|%s|%s|%s" % [hand_id, hand_live, has_platform, pose_name]
+	var key := "%d|%s|%s|%s|%s" % [hand_id, hand_live, has_platform, pose_name, profile]
 	var moved := separation >= 0.0 and absf(separation - _probe_last_separation.get(hand_id, -999.0)) >= 2.0
 	if key == _probe_last_key.get(hand_id, "") and not moved:
 		return
 	_probe_last_key[hand_id] = key
 	_probe_last_separation[hand_id] = separation
 
-	print("[aim-probe] hand=%d hand_live=%s platform=%s pose=%s platform_dir=%s derived_dir=%s sep_deg=%.1f" % [
-		hand_id, hand_live, has_platform, pose_name,
+	print("[aim-probe] hand=%d hand_live=%s platform=%s pose=%s profile=%s platform_dir=%s derived_dir=%s sep_deg=%.1f" % [
+		hand_id, hand_live, has_platform, pose_name, profile,
 		platform_dir.snappedf(0.001), derived_dir.snappedf(0.001), separation,
 	])
 
@@ -324,22 +613,62 @@ func _controller_aim_pose(hand_id: int) -> Dictionary:
 	}
 
 
+## The aim pose the RUNTIME published for this hand, world space, or {} when
+## there is none this frame. Reads the same XRController3D node as the
+## controller path because that is where Godot surfaces it: the rig binds the
+## node to the left_hand/right_hand tracker with pose="aim", which the
+## hand-interaction profile (OpenXR) or targetRaySpace (WebXR) populates for
+## tracked hands. Callers gate on hand liveness -- see _hand_aim_pose.
+## Overridable seam so tests can inject a platform pose headless.
+func _platform_aim_pose(hand_id: int) -> Dictionary:
+	return _controller_aim_pose(hand_id)
+
+
 func _hand_aim_pose(hand_id: int) -> Dictionary:
 	if not _valid_hand(hand_id) or _origin == null:
 		return {}
 
 	var tracker := XRHandTrackerResolver.get_tracker(hand_id)
-	var local_pose := XRHandGestureProvider.get_hand_ray_pose(tracker)
-	if local_pose.is_empty():
-		# Dropped. Clear history so reacquisition SNAPS to the recovered pose
-		# instead of slewing across the gap from where the hand used to be --
-		# the same reason XRHandConfidenceGate raises a discontinuity.
-		_aim_stabilizer.reset(hand_id)
-		return {}
+	var ray_origin := Vector3.ZERO
+	var direction := Vector3.ZERO
 
-	var origin_xf := _origin.global_transform
-	var direction := (origin_xf.basis * (local_pose["direction"] as Vector3)).normalized()
-	var ray_origin: Vector3 = origin_xf * (local_pose["origin"] as Vector3)
+	# Platform first, derived fallback (XR_INPUT_PRACTICES.md Practice 3). The
+	# hand-liveness gate is what keeps this a HAND pose: the same controller
+	# node carries the aim pose of a physically held controller, and without
+	# the gate a held controller would masquerade as a tracked hand here.
+	# The right hand is the on-device role model and this IS its algorithm:
+	# a published pose drives the ray the instant it exists, memory only
+	# fills the gaps. Anything cleverer has been tried and rejected in the
+	# headset -- and falling back to the derived ray during a gap swings the
+	# line by the measured 40-52 deg platform-vs-derived separation.
+	var hand_live := tracker != null and tracker.has_tracking_data
+	if prefer_platform_aim:
+		var platform := _platform_aim_pose(hand_id) if hand_live else {}
+		if not platform.is_empty():
+			ray_origin = platform["origin"]
+			direction = platform["direction"]
+		elif _platform_aim_seen.get(hand_id, false) \
+				and (hand_live or _hand_loss_elapsed.get(hand_id, INF) <= platform_aim_hold_sec):
+			# _process computed this frame's gap display (translated with the
+			# tracked palm, sticky across liveness blips); the fallback only
+			# covers a read arriving before _process on the gap's first frame.
+			var gap_pose: Dictionary = _aim_gap_pose.get(hand_id, _bad_frame_platform_aim(hand_id))
+			if not gap_pose.is_empty():
+				ray_origin = gap_pose["origin"]
+				direction = gap_pose["direction"]
+
+	if direction == Vector3.ZERO:
+		var local_pose := XRHandGestureProvider.get_hand_ray_pose(tracker)
+		if local_pose.is_empty():
+			# Dropped. Clear history so reacquisition SNAPS to the recovered
+			# pose instead of slewing across the gap from where the hand used
+			# to be -- the same reason XRHandConfidenceGate raises a
+			# discontinuity.
+			_aim_stabilizer.reset(hand_id)
+			return {}
+		var origin_xf := _origin.global_transform
+		direction = (origin_xf.basis * (local_pose["direction"] as Vector3)).normalized()
+		ray_origin = origin_xf * (local_pose["origin"] as Vector3)
 
 	# Settled BEFORE the basis is built, so every ray consumer (hover, select,
 	# _stabilized_hand_pose downstream) inherits the settled direction rather
@@ -540,6 +869,24 @@ func _hand_anchor_global(hand_id: int):
 		return null
 
 	return _origin.global_transform * resolve_grip_anchor(tracker).origin
+
+
+## World-space palm (wrist-fallback) orientation, or null on the same
+## conditions _hand_anchor_global returns null. The rotation companion to
+## that positional anchor, used to drive the gap ray's direction.
+func _hand_anchor_basis_global(hand_id: int):
+	if not _valid_hand(hand_id) or _origin == null:
+		return null
+
+	var tracker := XRHandTrackerResolver.get_tracker(hand_id)
+	if tracker == null:
+		return null
+
+	if not XRHandGestureProvider.joint_position_valid(tracker, XRHandTracker.HAND_JOINT_PALM) \
+			and not XRHandGestureProvider.joint_position_valid(tracker, XRHandTracker.HAND_JOINT_WRIST):
+		return null
+
+	return (_origin.global_transform.basis * resolve_grip_anchor(tracker).basis).orthonormalized()
 
 
 func _offset_pose_by_anchor_delta(pose: Dictionary, start_anchor: Vector3, current_anchor: Vector3) -> Dictionary:
