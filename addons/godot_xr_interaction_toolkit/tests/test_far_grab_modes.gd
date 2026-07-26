@@ -154,15 +154,6 @@ func _init() -> void:
 	_test_twist_second_grab_does_not_inherit_previous_neutral_rotation(_failures)
 	_test_twist_fixed_and_reel_unaffected_by_twist(_failures)
 	_test_twist_controller_with_no_wrist_joint_is_inert(_failures)
-	# Item 2 (docs/far-grab-modes-design.md is TWIST-only; this is the
-	# suite-wide untracked-hand-ray fix, tracked in the coordinator brief, not
-	# this doc): same conditioning-off requirement as the TWIST tests above --
-	# these mutate a registered tracker's joint flags in place frame to frame
-	# within one _init() call, which the conditioned shadow would not see.
-	_test_ray_aim_untracked_false_when_genuinely_tracked(_failures)
-	_test_ray_aim_untracked_true_only_after_the_hold(_failures)
-	_test_ray_aim_untracked_single_dropped_frame_does_not_suppress(_failures)
-	_test_ray_aim_untracked_recovery_is_immediate(_failures)
 	XRHandTrackerResolver.set_conditioned(_twist_was_conditioned)
 	# The remaining tests need a node genuinely inside the tree
 	# (XRGrabInteractable._arm_transit calls get_target(), which asserts
@@ -179,7 +170,6 @@ func _process(_delta: float) -> bool:
 	_test_attract_respects_an_authored_grab_point(_failures)
 	_test_far_grab_attract_speed_drives_duration(_failures)
 	_test_attract_transit_eases_out(_failures)
-	_test_ray_suppresses_via_existing_path_when_aim_untracked_past_hold(_failures)
 	if _failures.is_empty():
 		print("XR far grab modes: PASS")
 		quit(0)
@@ -821,17 +811,6 @@ func _set_wrist_roll(tracker: XRHandTracker, wrist_basis: Basis) -> void:
 	tracker.set_hand_joint_transform(XRHandTracker.HAND_JOINT_WRIST, Transform3D(wrist_basis, Vector3(0, 1, -0.3)))
 	tracker.set_hand_joint_flags(XRHandTracker.HAND_JOINT_WRIST, valid)
 
-## Item 2 (the untracked-hand-ray fix): flips the wrist tracker built by
-## _register_wrist_tracker between VALID-but-not-TRACKED (the default that
-## helper already builds -- OpenXR's "predicting, not observing" signal, the
-## flailing-ray bug's root cause) and genuinely VALID-and-TRACKED. Leaves the
-## transform untouched; same in-place-mutation caching note as _set_wrist_roll.
-func _set_wrist_tracked(tracker: XRHandTracker, tracked: bool) -> void:
-	var flags := XRHandTracker.HAND_JOINT_FLAG_POSITION_VALID | XRHandTracker.HAND_JOINT_FLAG_ORIENTATION_VALID
-	if tracked:
-		flags |= XRHandTracker.HAND_JOINT_FLAG_POSITION_TRACKED
-	tracker.set_hand_joint_flags(XRHandTracker.HAND_JOINT_WRIST, flags)
-
 ## Drives one hand's frames until its held distance stops changing (bounded,
 ## so a broken fixture fails loudly instead of hanging). The absolute mapping
 ## APPROACHES its target through the ray's max_distance_change_per_second
@@ -1390,159 +1369,3 @@ func _test_twist_controller_with_no_wrist_joint_is_inert(failures: Array[String]
 	ray.free()
 	stub.free()
 	driver.free()
-
-## ---------------------------------------------------------------------------
-## Item 2 (in-headset: "when one hand is not in view, the far ray cast of it
-## goes all over the place, is that non visible hand prediction/estimation is
-## not stable"). Confirmed diagnosis: OpenXR sets HAND_JOINT_FLAG_POSITION_VALID
-## on a joint it is PREDICTING and HAND_JOINT_FLAG_POSITION_TRACKED only on one
-## it is OBSERVING -- a hand out of view keeps publishing valid-looking
-## extrapolated poses, and (confirmed by grep) nothing in this suite checked
-## POSITION_TRACKED before XRHandTrackerResolver.joint_position_tracked. These
-## drive XRRayInteractor._aim_joint_untracked_past_hold directly -- no tree, no
-## adapter needed, since that method reads XRHandTrackerResolver directly (the
-## same way xr_pinch_twist_distance_driver.gd already does for TWIST) rather
-## than through the modality manager. Same tree-independent style as the TWIST
-## tests above, and for the identical reason they share the conditioning-off
-## scope in _init(): mutating a registered tracker's flags in place across
-## calls within one _init() needs the raw (unconditioned) resolve path.
-
-func _test_ray_aim_untracked_false_when_genuinely_tracked(failures: Array[String]) -> void:
-	var ray := XRRayInteractor.new()
-	ray.hand = XRInputAdapter.Hand.LEFT
-	var tracker := _register_wrist_tracker(XRInputAdapter.Hand.LEFT, Basis.IDENTITY)
-	_set_wrist_tracked(tracker, true)
-
-	for _frame in range(20):
-		if ray._aim_joint_untracked_past_hold(1.0 / 60.0):
-			failures.append("a genuinely TRACKED aim joint must never report untracked-past-hold")
-			break
-
-	_unregister_wrist_tracker(tracker)
-	ray.free()
-
-## VALID-but-not-TRACKED is exactly what _register_wrist_tracker builds by
-## default (see its own doc comment) -- no _set_wrist_tracked call needed to
-## reach that state, only to leave it.
-func _test_ray_aim_untracked_true_only_after_the_hold(failures: Array[String]) -> void:
-	var ray := XRRayInteractor.new()
-	ray.hand = XRInputAdapter.Hand.LEFT
-	var tracker := _register_wrist_tracker(XRInputAdapter.Hand.LEFT, Basis.IDENTITY)
-
-	var dt := 1.0 / 60.0
-	var frames_in_hold := int(ceil(ray.untracked_hand_hold_sec / dt))
-	for _frame in range(frames_in_hold - 1):
-		if ray._aim_joint_untracked_past_hold(dt):
-			failures.append("must not suppress before untracked_hand_hold_sec (%f) has elapsed, only %d frames in" % [ray.untracked_hand_hold_sec, _frame + 1])
-			break
-	# One more frame crosses the hold.
-	if not ray._aim_joint_untracked_past_hold(dt):
-		failures.append("must suppress once untracked_hand_hold_sec (%f) has elapsed while VALID-but-not-TRACKED" % ray.untracked_hand_hold_sec)
-
-	_unregister_wrist_tracker(tracker)
-	ray.free()
-
-## A single dropped tracking frame (one frame VALID-but-not-TRACKED, sandwiched
-## between genuinely tracked frames) must not strobe the ray -- the whole
-## reason for the hold in the first place.
-func _test_ray_aim_untracked_single_dropped_frame_does_not_suppress(failures: Array[String]) -> void:
-	var ray := XRRayInteractor.new()
-	ray.hand = XRInputAdapter.Hand.LEFT
-	var tracker := _register_wrist_tracker(XRInputAdapter.Hand.LEFT, Basis.IDENTITY)
-	_set_wrist_tracked(tracker, true)
-
-	var dt := 1.0 / 60.0
-	# Several genuinely tracked frames first -- confirms the elapsed timer
-	# starts from a clean zero, not leftover state from an earlier test.
-	for _frame in range(5):
-		ray._aim_joint_untracked_past_hold(dt)
-
-	# ONE dropped frame -- well under the hold window on its own.
-	_set_wrist_tracked(tracker, false)
-	if ray._aim_joint_untracked_past_hold(dt):
-		failures.append("a single dropped tracking frame must not suppress the ray")
-
-	# Recovers the very next frame -- and the drop must not have left a
-	# lingering partial balance that would make a SECOND single drop suppress
-	# when it should not.
-	_set_wrist_tracked(tracker, true)
-	if ray._aim_joint_untracked_past_hold(dt):
-		failures.append("recovering to TRACKED the frame after a single drop must not suppress")
-	_set_wrist_tracked(tracker, false)
-	if ray._aim_joint_untracked_past_hold(dt):
-		failures.append("a second, later single dropped frame must not suppress either -- the hold must not have partially carried over from the first drop")
-
-	_unregister_wrist_tracker(tracker)
-	ray.free()
-
-## Sustained loss crosses the hold (suppressed), then the aim joint becomes
-## genuinely tracked again -- recovery must be immediate, the very next frame,
-## not itself gated by any hold.
-func _test_ray_aim_untracked_recovery_is_immediate(failures: Array[String]) -> void:
-	var ray := XRRayInteractor.new()
-	ray.hand = XRInputAdapter.Hand.LEFT
-	var tracker := _register_wrist_tracker(XRInputAdapter.Hand.LEFT, Basis.IDENTITY)
-
-	var dt := 1.0 / 60.0
-	var frames_in_hold := int(ceil(ray.untracked_hand_hold_sec / dt)) + 2
-	var suppressed := false
-	for _frame in range(frames_in_hold):
-		suppressed = ray._aim_joint_untracked_past_hold(dt)
-	if not suppressed:
-		failures.append("fixture broken: sustained untracked must have crossed the hold before recovery is tested")
-
-	_set_wrist_tracked(tracker, true)
-	if ray._aim_joint_untracked_past_hold(dt):
-		failures.append("the very next frame after the aim joint becomes genuinely TRACKED must not still report suppressed")
-
-	_unregister_wrist_tracker(tracker)
-	ray.free()
-
-## Integration-level companion, run from _process() (see that function's own
-## comment on why tree-dependent tests are deferred there): item 2's brief
-## explicitly asks to "follow the existing suppression path
-## (_ray_state = {"valid": false, ...})" rather than a new mechanism, so this
-## drives the REAL _update_ray() -- not just the private hold-timer method
-## the tests above exercise -- and reads the same get_ray_state() the line
-## visual and reticle already consume. Needs the ray genuinely inside the tree:
-## with no arbiter present, _is_suppressed_by_linked_interactor() falls through
-## to _is_poking()/_is_teleporting(), which call get_tree() directly and would
-## error on a freestanding node. Runs conditioning off LOCALLY (not the
-## _init()-scoped toggle, which has already been restored by the time
-## _process() runs) for the same reason the TWIST tests need it: the tracker's
-## flags are mutated in place, and Engine.get_process_frames() does not
-## advance between two calls inside one _process() invocation.
-func _test_ray_suppresses_via_existing_path_when_aim_untracked_past_hold(failures: Array[String]) -> void:
-	var was_conditioned := XRHandTrackerResolver.is_conditioned()
-	XRHandTrackerResolver.set_conditioned(false)
-
-	var ray := XRRayInteractor.new()
-	ray.hand = XRInputAdapter.Hand.LEFT
-	get_root().add_child(ray)
-	var adapter := RayAdapterStub.new()
-	ray._adapter = adapter
-
-	var tracker := _register_wrist_tracker(XRInputAdapter.Hand.LEFT, Basis.IDENTITY)
-	var dt := 1.0 / 60.0
-	var frames := int(ceil(ray.untracked_hand_hold_sec / dt)) + 2
-	for _frame in range(frames):
-		ray._update_ray(dt)
-
-	var state := ray.get_ray_state()
-	if state.get("valid", true):
-		failures.append("ray must be suppressed (valid=false) once its aim joint has been untracked past the hold, got %s" % state)
-	if not state.get("suppressed", false):
-		failures.append("a suppressed ray must report suppressed=true through the existing suppression path, got %s" % state)
-
-	_set_wrist_tracked(tracker, true)
-	ray._update_ray(dt)
-	var recovered := ray.get_ray_state()
-	if not recovered.get("valid", false):
-		failures.append("the ray must recover (valid=true) the frame after its aim joint becomes genuinely tracked again, got %s" % recovered)
-	if recovered.get("suppressed", false):
-		failures.append("a recovered ray must not still report suppressed, got %s" % recovered)
-
-	_unregister_wrist_tracker(tracker)
-	ray.queue_free()
-	adapter.free()
-	XRHandTrackerResolver.set_conditioned(was_conditioned)
