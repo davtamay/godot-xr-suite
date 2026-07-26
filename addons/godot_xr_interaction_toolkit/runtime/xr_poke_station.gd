@@ -209,6 +209,10 @@ func _build_dense_row(parent: Node3D) -> void:
 
 		pokeable.pressed.connect(func(_hand: int) -> void: material.albedo_color = pressed_color)
 		pokeable.released.connect(func(_hand: int) -> void: material.albedo_color = rest_color)
+		# A slide-off cancels rather than releasing (see xr_pokeable.gd's
+		# `cancelled` signal) - without this a key pressed then slid off stays
+		# lit permanently, since `released` never fires for that path.
+		pokeable.cancelled.connect(func(_hand: int) -> void: material.albedo_color = rest_color)
 
 	row.add_child(_make_gate_caption("SWEEP ME - only a poke through the face presses", Vector3(0, 0.045, 0)))
 
@@ -229,6 +233,12 @@ func _build_drag_handle(parent: Node3D) -> void:
 	pokeable.interpret_drag = true
 	pokeable.drag_threshold = 0.01
 	pokeable.half_size = Vector2(0.06, 0.01)
+	# The bar is only 2 cm tall (half_size.y = 0.01); sliding 12 cm sideways
+	# without wandering a centimetre off its narrow body is not a gesture a
+	# person can perform reliably. Retention widens ONLY once pressed, so the
+	# approach still requires landing on the bar - only the drag itself gets
+	# forgiving.
+	pokeable.bounds_retain_scale = 3.0
 	body.add_child(pokeable)
 	# XRPokeable's press plane is its OWN origin, not the body's centre - put
 	# it on the box's front face, or the handle grabs before a finger visually

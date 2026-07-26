@@ -38,3 +38,9 @@ extends Resource
 ## comparison's own 0 >= 0 would then read as a false pass with no direction
 ## information behind it at all.
 @export_range(0.0, 0.02, 0.0005) var min_approach_travel := 0.003
+## Widens the bounds test by this factor once a source is pressed - entry
+## always uses half_size exactly. Raise for a narrow drag target so a finger
+## drifting off its visible body mid-drag is not read as a slide-off-to-
+## cancel. Leave at 1.0 (a no-op) for anything meant to cancel on slide-off -
+## see XRPokeEvaluator.bounds_retain_scale for why the default must stay 1.0.
+@export_range(1.0, 6.0, 0.1) var bounds_retain_scale := 1.0

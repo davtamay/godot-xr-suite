@@ -51,7 +51,11 @@ func _init() -> void:
 	_test_apply_profile_include_depth_true(_failures)
 	_test_apply_profile_include_depth_false(_failures)
 	_test_apply_profile_null_changes_nothing(_failures)
+	_test_apply_profile_copies_bounds_retain_scale(_failures)
 	_test_mixed_axis_half_size(_failures)
+	_test_bounds_retain_scale_default_still_cancels(_failures)
+	_test_bounds_retain_scale_widens_retention_for_drag(_failures)
+	_test_bounds_retain_scale_does_not_loosen_entry(_failures)
 
 
 func _process(_delta: float) -> bool:
@@ -69,6 +73,7 @@ func _process(_delta: float) -> bool:
 	_test_pokeable_y_face_presses_and_cancels(_failures)
 	_test_station_drag_handle_uses_absolute_offset_not_accumulated(_failures)
 	_test_station_drag_handle_resets_color_on_drag_ended(_failures)
+	_test_station_dense_row_key_resets_on_slide_off(_failures)
 	_test_canvas_cancel_pushes_the_release_off_panel(_failures)
 	_test_canvas_press_fires_the_control(_failures)
 	_test_canvas_hover_tracks_last_pointer_position(_failures)
@@ -391,6 +396,49 @@ func _test_station_drag_handle_resets_color_on_drag_ended(failures: Array[String
 	pokeable.poke_update(0, origin + Vector3(0.020, 0.0, 0.050))  # retract - drag_ended, not released
 	_check(failures, material.albedo_color.is_equal_approx(rest_color),
 			"station drag handle: expected the colour back at rest after drag_ended, got %s (rest is %s)" % [
+				material.albedo_color, rest_color])
+	station.queue_free()
+
+
+## F1: XRPokeStation's dense-row keys wired `pressed` -> lit and `released` ->
+## rest, but NOT `cancelled` - and a cancel deliberately does not emit
+## `released` (that is the whole point of `XRPokeable.cancelled`), so a key
+## pressed and then slid sideways off its face stayed lit PERMANENTLY. Drives
+## the REAL station-built key (XRPokeStation._build_dense_row, not a
+## hand-rolled fixture) through a press-then-slide-off sequence and asserts
+## the material colour, not the signal - a signal-level test would not catch
+## a missing connect() call, only a colour-level one does.
+func _test_station_dense_row_key_resets_on_slide_off(failures: Array[String]) -> void:
+	var station := Node3D.new()
+	station.set_script(XRPokeStationScript)
+	get_root().add_child(station)
+
+	var key: StaticBody3D = station.get_node_or_null("GateDemo/DenseRow/Key0")
+	if key == null:
+		_check(failures, false, "station: GateDemo/DenseRow/Key0 not found (station structure changed)")
+		station.queue_free()
+		return
+	var mesh: MeshInstance3D = key.get_node_or_null("Mesh")
+	var pokeable = key.get_meta("xr_pokeable", null)
+	if mesh == null or pokeable == null:
+		_check(failures, false, "station: Key0 missing its Mesh child or xr_pokeable meta")
+		station.queue_free()
+		return
+	var material: StandardMaterial3D = mesh.material_override as StandardMaterial3D
+	var rest_color: Color = material.albedo_color
+
+	# Same convention as the drag-handle station tests: anchor on the
+	# POKEABLE's own origin (the box's front face, not its centre - I4) so the
+	# in-front/press-plane offsets stay meaningful without hardcoding it here.
+	var origin: Vector3 = (pokeable as Node3D).global_transform.origin
+	pokeable.poke_update(0, origin + Vector3(0.0, 0.0, 0.050))  # arm entry
+	pokeable.poke_update(0, origin + Vector3(0.0, 0.0, 0.008))  # press - colour goes lit
+	_check(failures, not material.albedo_color.is_equal_approx(rest_color),
+			"station dense row: expected the pressed colour while pressed, got %s (rest is %s)" % [
+				material.albedo_color, rest_color])
+	pokeable.poke_update(0, origin + Vector3(0.080, 0.0, 0.008))  # slide off the face - cancels, not releases
+	_check(failures, material.albedo_color.is_equal_approx(rest_color),
+			"station dense row: expected the colour back at rest after a slide-off cancel, got %s (rest is %s)" % [
 				material.albedo_color, rest_color])
 	station.queue_free()
 
@@ -963,6 +1011,19 @@ func _test_apply_profile_null_changes_nothing(failures: Array[String]) -> void:
 	_check(failures, unchanged, "apply_profile: a null profile must change nothing")
 
 
+## bounds_retain_scale travels with the profile like the other approach-gate
+## parameters (require_entry_through_face/max_approach_angle/
+## min_approach_travel): always copied, not gated by include_depth - a
+## button's cap throw is geometry, but retention is feel.
+func _test_apply_profile_copies_bounds_retain_scale(failures: Array[String]) -> void:
+	var evaluator = _make()
+	var profile := _make_profile()
+	profile.bounds_retain_scale = 2.5
+	evaluator.apply_profile(profile)
+	_check(failures, is_equal_approx(evaluator.bounds_retain_scale, 2.5),
+			"apply_profile: must copy bounds_retain_scale")
+
+
 ## Pins down BOTH halves of "zero on an axis = unbounded there" for a
 ## half_size with only ONE axis unbounded. The old all-or-nothing guard
 ## treated any bounded axis as if it bounded every axis, so a point far
@@ -990,6 +1051,59 @@ func _test_mixed_axis_half_size(failures: Array[String]) -> void:
 	])
 	_check(failures, _count(y_events, XRPokeEvaluator.Event.CANCELLED) == 1,
 			"mixed axis: half_size.y = 0.05 must still bound y and cancel, got %s" % [y_events])
+
+
+## F2. bounds_retain_scale defaults to 1.0, a no-op: a pressed source that
+## drifts past half_size still CANCELS exactly as before this property
+## existed. This is the baseline the next two tests contrast against - the
+## SAME drift, only the scale differs.
+func _test_bounds_retain_scale_default_still_cancels(failures: Array[String]) -> void:
+	var evaluator = _make()
+	var events := _run(evaluator, [
+		Vector3(0.0, 0.0, 0.050),
+		Vector3(0.0, 0.0, 0.008),  # press
+		Vector3(0.0, 0.10, 0.008),  # y = 0.10 is past half_size.y = 0.05
+	])
+	_check(failures, _count(events, XRPokeEvaluator.Event.CANCELLED) == 1,
+			"bounds retain scale: default 1.0 must still cancel on drift past half_size, got %s" % [events])
+
+
+## F2. Raising bounds_retain_scale widens the bounds test ONLY while pressed,
+## so the identical drift that cancelled above (y = 0.10, still inside
+## half_size.y * 3.0 = 0.15) now keeps the source in bounds -- and with
+## interpret_drag on, reports DRAG instead of exiting. This is the fix's
+## whole point: a drag handle's finger can wander off its narrow body without
+## the wander alone reading as a slide-off-to-cancel.
+func _test_bounds_retain_scale_widens_retention_for_drag(failures: Array[String]) -> void:
+	var evaluator = _make()
+	evaluator.bounds_retain_scale = 3.0
+	evaluator.interpret_drag = true
+	evaluator.drag_threshold = 0.01
+	var events := _run(evaluator, [
+		Vector3(0.0, 0.0, 0.050),
+		Vector3(0.0, 0.0, 0.008),  # press
+		Vector3(0.0, 0.10, 0.008),  # same drift as the default-scale test above
+	])
+	_check(failures, _count(events, XRPokeEvaluator.Event.DRAG) == 1,
+			"bounds retain scale: 3.0 must keep the drag alive through the same drift, got %s" % [events])
+	_check(failures, _count(events, XRPokeEvaluator.Event.CANCELLED) == 0,
+			"bounds retain scale: 3.0 must not cancel this drift, got %s" % [events])
+
+
+## F2, the assertion that matters most: an UNPRESSED source outside half_size
+## must be rejected regardless of bounds_retain_scale - retention only ever
+## widens the bounds test once a source is PRESSED, never on entry. Proven
+## directly on pinned_point rather than on a subsequent press attempt:
+## evaluate() only ever produces Vector3.INF via a bounds/band EXIT path, so a
+## non-INF result here means the point instead fell through to the
+## "in front" arming logic - i.e. entry stopped being tight, which is exactly
+## what must not happen.
+func _test_bounds_retain_scale_does_not_loosen_entry(failures: Array[String]) -> void:
+	var evaluator = _make()
+	evaluator.bounds_retain_scale = 3.0
+	var result: Dictionary = evaluator.evaluate(0, Vector3(0.0, 0.10, 0.050))
+	_check(failures, result["pinned_point"] == Vector3.INF,
+			"bounds retain scale: an unpressed source outside half_size must be rejected regardless of scale, got pinned_point=%s" % [result["pinned_point"]])
 
 
 ## Both samples land within the reach window (cap_rest_top ~= 0.048, reach

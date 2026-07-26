@@ -64,6 +64,16 @@ const _Evaluator := preload("res://addons/godot_xr_interaction_toolkit/runtime/p
 ## Report drags instead of activating on let-go - for handles, not buttons.
 @export var interpret_drag := false
 @export_range(0.001, 0.1, 0.001) var drag_threshold := 0.01
+## Widens half_size by this factor for the bounds test, but ONLY once a
+## source is pressed - entry always uses half_size exactly, so approaching
+## still requires landing squarely on the face and neighbouring targets
+## cannot steal a press. Raise this for a target whose visible body is much
+## narrower than the finger's natural drift while sliding along it (a drag
+## handle), so wandering off the narrow body mid-drag is not read as a
+## deliberate slide-off-to-cancel. Leave at 1.0 (a no-op) for anything meant
+## to cancel on slide-off, including buttons and panels - see
+## XRPokeEvaluator.bounds_retain_scale for why the default must stay 1.0.
+@export_range(1.0, 6.0, 0.1) var bounds_retain_scale := 1.0
 
 var _body: CollisionObject3D
 var _evaluator: XRPokeEvaluator
@@ -81,6 +91,7 @@ func _sync_evaluator() -> void:
 	_evaluator.min_approach_travel = min_approach_travel
 	_evaluator.interpret_drag = interpret_drag
 	_evaluator.drag_threshold = drag_threshold
+	_evaluator.bounds_retain_scale = bounds_retain_scale
 	_evaluator.apply_profile(poke_profile)
 
 

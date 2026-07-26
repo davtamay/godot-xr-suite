@@ -47,6 +47,28 @@ var max_approach_angle := 60.0
 ## having been seen in front of the surface, not on speed.
 var min_approach_travel := 0.003
 
+## Multiplier on half_size for the bounds test, but ONLY while a source is
+## pressed (or dragging - dragging implies pressed, see _state_for/_exit).
+## An UNPRESSED source is always tested against half_size exactly, at scale
+## 1.0 - entry must stay tight, or the approach gate above is pointless (a
+## neighbouring key inside the widened rectangle could steal a press) and a
+## hand merely passing nearby could arm early. Once pressed, widening the
+## rectangle lets a real finger drift off a narrow target - a 12 cm slider
+## 2 cm tall - without the drift alone reading as a deliberate slide-off.
+##
+## DEFAULT MUST STAY 1.0 - this is not a stylistic choice, it is required by
+## an existing test. XRUICanvasInteractable passes half_size = panel_size *
+## 0.5; _test_canvas_cancel_pushes_the_release_off_panel slides a pressed
+## poke to local x = 0.300 against a 0.4-wide panel (half-extent 0.2) to prove
+## a slide-off CANCELS rather than firing the Control underneath the last
+## in-panel pixel. A default of 2.0 would retest that same slide against a
+## retained half-extent of 0.4, so x = 0.300 no longer leaves bounds and the
+## cancel that test depends on - and the real slide-off-cancels behaviour it
+## guards - stops happening. A no-op default (1.0) changes nothing anywhere;
+## every adapter that wants the wider retention (XRPokeStation's drag handle)
+## opts in explicitly per-target instead.
+var bounds_retain_scale := 1.0
+
 ## Opt-in: in-plane travel past drag_threshold while pressed reports DRAG and
 ## suppresses the terminal RELEASED, so a drag handle cannot also fire as a
 ## button on let-go.
@@ -72,6 +94,7 @@ func apply_profile(profile, include_depth := true) -> void:
 	require_entry_through_face = profile.require_entry_through_face
 	max_approach_angle = profile.max_approach_angle
 	min_approach_travel = profile.min_approach_travel
+	bounds_retain_scale = profile.bounds_retain_scale
 
 
 ## One sample for one source, in the canonical frame.
@@ -95,11 +118,17 @@ func evaluate(source_id: int, point: Vector3) -> Dictionary:
 		history = history.slice(history.size() - _HISTORY_MAX)
 	state["history"] = history
 
-	if half_size.x > 0.0 and absf(point.x) > half_size.x:
+	# Entry stays tight (exactly half_size) always; retention widens ONLY once
+	# pressed, and never for the still-approaching case above it - see
+	# bounds_retain_scale's doc comment for why the default must be a no-op.
+	var effective_half_size: Vector2 = half_size
+	if state["pressed"]:
+		effective_half_size = half_size * bounds_retain_scale
+	if effective_half_size.x > 0.0 and absf(point.x) > effective_half_size.x:
 		result["pinned_point"] = Vector3.INF
 		result["event"] = _exit(state, true)
 		return result
-	if half_size.y > 0.0 and absf(point.y) > half_size.y:
+	if effective_half_size.y > 0.0 and absf(point.y) > effective_half_size.y:
 		result["pinned_point"] = Vector3.INF
 		result["event"] = _exit(state, true)
 		return result

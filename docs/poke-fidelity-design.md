@@ -231,6 +231,55 @@ The canvas maps `CANCELLED` to a motion event positioned OUTSIDE the panel
 followed by mouse-up, so Godot `Control` buttons clear their pressed state
 without emitting. That is the standard `Control` contract, not a workaround.
 
+**`XRPokeStation`'s dense-row keys must wire `cancelled`, same as `released`.**
+A cancel deliberately does not emit `released` - that is the entire point of
+this signal - so a consumer that only resets colour on `released` (as the
+dense row initially did, unlike the drag handle and cancel target) stays lit
+after a slide-off forever. Fixed 2026-07-25: each key's `cancelled` now resets
+to rest colour, guarded by a test that presses a real station-built key,
+slides off, and asserts the material colour (a signal-count test would not
+catch a missing `connect()`).
+
+### Bounds retention: separate enter and exit tolerance
+
+Implemented 2026-07-25 (item 6 of the technique list this design skipped).
+Symptom from an actual Quest Link session: a 12 cm drag handle only 2 cm tall
+(`half_size = Vector2(0.06, 0.01)`) required the finger to stay within a 2 cm
+band for the whole slide, because the SAME rectangle gated both approach and
+retention - drifting a centimetre off a narrow body read as a deliberate
+slide-off-to-cancel. Sliding 12 cm sideways without wandering a centimetre is
+not a gesture a person can perform reliably.
+
+New `XRPokeEvaluator.bounds_retain_scale` (default `1.0`, exported on
+`XRPokeable` and `XRPokeProfile`): while a source is **pressed**, the bounds
+test uses `half_size * bounds_retain_scale` instead of `half_size` exactly.
+While **unpressed**, the test always uses `half_size` exactly, unscaled - the
+approach gate above still needs a tight rectangle, or a neighbouring target
+inside the widened bounds could steal a press, and a hand merely passing
+nearby could arm early. `XRPokeStation._build_drag_handle` sets
+`bounds_retain_scale = 3.0`; every other target (buttons, panels, the dense
+row, the cancel demo) stays at the no-op default.
+
+**The default must stay 1.0 - verified, not merely asserted.** Deliberately
+mutating the evaluator's default to `2.0` and rerunning the suite:
+`test_poke_fidelity` goes red, but NOT via the test the original review
+reasoning named (`_test_canvas_cancel_pushes_the_release_off_panel`). That
+test's slide-off (local x = 0.300 against a 0.4-wide panel, half-extent 0.2,
+retained to 0.4 at scale 2.0) does stop leaving bounds exactly as predicted -
+but the assertion it makes (`fired["count"] == 0`, "an aborted poke must not
+fire the Control") still holds, because with no bounds exit the evaluator
+never emits `CANCELLED` *or* `RELEASED` either: the Godot `Button` never
+receives a release at all and simply stays permanently held, which is a
+distinct bug (a stuck cursor) that this test does not assert against. What
+DOES fail at scale 2.0 are three tests whose drift is a plain absolute offset
+rather than the panel's specific geometry: `_test_slide_off_cancels_not_releases`,
+`_test_mixed_axis_half_size`, and the new
+`_test_bounds_retain_scale_default_still_cancels`. The suite-level conclusion
+("default 2.0 must not ship") stands; the specific mechanism is not the one
+originally named, and the canvas cancel test has a real gap - it cannot
+distinguish "cancelled correctly" from "stuck pressed forever" - that a future
+change should close.
+
 ### Drag versus press
 
 Opt-in, off by default: `interpret_drag := false`. When enabled, in-plane
