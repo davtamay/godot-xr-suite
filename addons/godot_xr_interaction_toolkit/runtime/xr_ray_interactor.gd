@@ -265,9 +265,14 @@ func _notify_select_granted(interactable) -> void:
     # Grabbing closer than min_grab_distance keeps the true distance so the
     # object does not pop forward; min_grab_distance only floors pull-ins.
     var hit_distance := minf(_hover_distance, max_distance)
-    # Read defensively: a third-party interactable without far_grab_mode still
-    # works and behaves as ATTRACT, the default.
-    _far_grab_mode = interactable.far_grab_mode if interactable != null and "far_grab_mode" in interactable else XRGrabInteractable.FarGrabMode.ATTRACT
+    # An interactable with no far_grab_mode is NOT a far-grabbable - it is a UI
+    # panel, a socket, or anything else this ray can select - and it must be
+    # left alone. Defaulting the absent case to ATTRACT collapsed the ray's
+    # attach distance to min_grab_distance the moment a UI button was pressed,
+    # dragging the cursor to the hand and making every menu unusable. The
+    # ATTRACT default lives on XRGrabInteractable's own export, which is where
+    # it reaches real grabbables; the fallback here only has to be inert.
+    _far_grab_mode = interactable.far_grab_mode if interactable != null and "far_grab_mode" in interactable else XRGrabInteractable.FarGrabMode.FIXED
     if _far_grab_mode == XRGrabInteractable.FarGrabMode.ATTRACT:
         # ATTRACT sets the held distance to the same floor the reel-to-grip
         # path already uses, so the existing transit tween carries the object

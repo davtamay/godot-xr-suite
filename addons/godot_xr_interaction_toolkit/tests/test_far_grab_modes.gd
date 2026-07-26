@@ -61,7 +61,7 @@ func _init() -> void:
 	_test_fixed_ignores_hand_motion(_failures)
 	_test_fixed_still_clamped_by_min_grab_distance(_failures)
 	_test_reel_responds_to_hand_motion(_failures)
-	_test_unspecified_mode_behaves_as_attract(_failures)
+	_test_interactable_without_a_mode_is_left_alone(_failures)
 	_test_fixed_does_not_blend_or_latch_within_reel_to_grip_distance(_failures)
 	_test_attract_still_latches_within_reel_to_grip_distance(_failures)
 	_test_fixed_does_not_latch_when_grabbed_below_min_grab_distance(_failures)
@@ -148,13 +148,26 @@ func _test_reel_responds_to_hand_motion(failures: Array[String]) -> void:
 	ray.free()
 	stub.free()
 
-func _test_unspecified_mode_behaves_as_attract(failures: Array[String]) -> void:
+## REGRESSION, found in-headset: an interactable with no far_grab_mode is NOT a
+## far-grabbable - it is a UI panel, a socket, or anything else this ray can
+## select. Defaulting the absent case to ATTRACT collapsed the ray's attach
+## distance to min_grab_distance the moment a UI button was pressed, dragging
+## the cursor to the hand and making every menu unreachable. David, on device:
+## "when i try to click a ui button the curser gets closer and i cant select
+## any ui button to get to a scene".
+##
+## The ATTRACT default belongs on XRGrabInteractable's own export, which is how
+## it reaches real grabbables. The fallback here only has to be INERT: keep the
+## hit distance, exactly as the ray did before far_grab_mode existed.
+func _test_interactable_without_a_mode_is_left_alone(failures: Array[String]) -> void:
 	var ray := _make_ray()
 	var stub := NoModeStub.new()
 	ray._notify_select_granted(stub)
-	var expected_floor := minf(ray.min_grab_distance, HIT_DISTANCE)
-	if not is_equal_approx(ray.get_grab_distance(), expected_floor):
-		failures.append("an interactable with no far_grab_mode must behave as ATTRACT (floor %f), got %f" % [expected_floor, ray.get_grab_distance()])
+	if not is_equal_approx(ray.get_grab_distance(), HIT_DISTANCE):
+		failures.append("an interactable with no far_grab_mode must keep the hit distance (%f), got %f - a UI panel must not be attracted" % [HIT_DISTANCE, ray.get_grab_distance()])
+	var floor_distance := minf(ray.min_grab_distance, HIT_DISTANCE)
+	if is_equal_approx(ray.get_grab_distance(), floor_distance):
+		failures.append("an interactable with no far_grab_mode was ATTRACTed to the grip floor (%f) - this is the bug that made menus unusable" % floor_distance)
 	ray.free()
 	stub.free()
 
