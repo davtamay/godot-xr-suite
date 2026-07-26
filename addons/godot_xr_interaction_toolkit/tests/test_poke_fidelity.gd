@@ -7,6 +7,7 @@ const XRPokeEvaluator := preload("res://addons/godot_xr_interaction_toolkit/runt
 const XRPokeProfile := preload("res://addons/godot_xr_interaction_toolkit/runtime/poke/xr_poke_profile.gd")
 const XRPokeableScript := preload("res://addons/godot_xr_interaction_toolkit/runtime/xr_pokeable.gd")
 const XRUICanvasScript := preload("res://addons/godot_xr_interaction_toolkit/runtime/xr_ui_canvas_interactable.gd")
+const XRPokeButtonScript := preload("res://addons/godot_xr_interaction_toolkit/runtime/xr_poke_button.gd")
 
 ## Records every mouse motion the panel pushes into its viewport -- used by
 ## the two-source drag test to prove the poke_update drag branch (its `_:`
@@ -63,6 +64,8 @@ func _process(_delta: float) -> bool:
 	_test_canvas_hover_tracks_last_pointer_position(_failures)
 	_test_canvas_out_of_bounds_does_not_move_last_pointer_position(_failures)
 	_test_canvas_drag_is_gated_per_source(_failures)
+	_test_poke_button_fires_on_a_fast_poke(_failures)
+	_test_poke_button_thresholds_are_unchanged(_failures)
 	if _failures.is_empty():
 		print("XR poke fidelity: PASS")
 		quit(0)
@@ -702,3 +705,33 @@ func _test_mixed_axis_half_size(failures: Array[String]) -> void:
 	])
 	_check(failures, _count(y_events, XRPokeEvaluator.Event.CANCELLED) == 1,
 			"mixed axis: half_size.y = 0.05 must still bound y and cancel, got %s" % [y_events])
+
+
+func _test_poke_button_fires_on_a_fast_poke(failures: Array[String]) -> void:
+	var button := Node3D.new()
+	button.set_script(XRPokeButtonScript)
+	get_root().add_child(button)
+	var fired := {"count": 0}
+	button.pressed.connect(func(): fired["count"] += 1)
+	# Above the cap, then in ONE step past the base - the sample the old
+	# `local.y < -0.01: continue` guard threw away.
+	button.poke_update(0, button.global_transform * Vector3(0.0, 0.120, 0.0))
+	button.poke_update(0, button.global_transform * Vector3(0.0, -0.020, 0.0))
+	_check(failures, fired["count"] == 1,
+			"poke button: a fast poke must fire once, fired %d" % fired["count"])
+	button.queue_free()
+
+
+func _test_poke_button_thresholds_are_unchanged(failures: Array[String]) -> void:
+	var button := Node3D.new()
+	button.set_script(XRPokeButtonScript)
+	get_root().add_child(button)
+	# travel 0.022, press_fraction 0.7 -> press at p >= 0.0154, re-arm at
+	# p <= 0.0077. Expressed canonically: press_depth 0.0066, release 0.0143.
+	_check(failures, is_equal_approx(button.canonical_press_depth(), 0.0066),
+			"poke button: press_depth must be travel * (1 - press_fraction), got %f"
+					% button.canonical_press_depth())
+	_check(failures, is_equal_approx(button.canonical_release_depth(), 0.0143),
+			"poke button: release_depth must be travel * (1 - press_fraction * 0.5), got %f"
+					% button.canonical_release_depth())
+	button.queue_free()
