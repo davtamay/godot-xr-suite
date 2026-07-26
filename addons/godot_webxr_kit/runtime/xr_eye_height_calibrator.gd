@@ -60,7 +60,12 @@ static func reset_session_calibration() -> void:
 
 var _origin: XROrigin3D
 var _live := false
+## Metres of change before the "still watching" line is worth reprinting.
+const _LOG_EPSILON := 0.01
+
 var _last_height := NAN
+## Last value actually logged, so a steady measurement prints once, not forever.
+var _last_logged := NAN
 var _samples: Array[float] = []
 var _applied := false
 var _consecutive_low := 0
@@ -178,7 +183,14 @@ func _evaluate_window() -> void:
 		# launcher logged 'measured 1.50 - plausible' and never corrected, while
 		# a later scene measured 0.82 and did. Keep watching instead.
 		_consecutive_low = 0
-		if debug_log:
+		# CHANGE-GATED. This branch is the HEALTHY path -- a correctly calibrated
+		# floor never leaves it -- and _evaluate_window runs every
+		# live_settle_frames (10). Printing unconditionally produced 91,530 lines
+		# in one Link session, 99.7% of all stdout, which buries every other
+		# diagnostic and costs string formatting plus I/O forever. Log only when
+		# the measurement actually moves.
+		if debug_log and (is_nan(_last_logged) or absf(measured - _last_logged) >= _LOG_EPSILON):
+			_last_logged = measured
 			print("[eye-height] measured %.2f m - plausible, still watching" % measured)
 		return
 
