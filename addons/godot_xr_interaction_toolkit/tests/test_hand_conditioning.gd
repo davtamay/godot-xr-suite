@@ -987,19 +987,45 @@ func _test_fov_gate_wrist_outside_cone_counts_as_lost(failures: Array[String]) -
 	if not frame.joint_transforms[XRHandTracker.HAND_JOINT_WRIST].origin.is_equal_approx(in_cone):
 		failures.append("held frame during an out-of-cone excursion did not carry the last IN-CONE pose")
 
-	var expiring_source := _FovScriptedSource.new()
-	expiring_source.wrist_positions = [in_cone, behind_head, behind_head, behind_head, behind_head, behind_head]
-	var expiring := XRHandConfidenceGate.new(expiring_source)
-	expiring.hold_duration_sec = 0.02  # ~1.4 frames at 72 Hz
-	expiring.set_head_pose(true, head)
-	var expiring_frame := XRHandFrame.new()
-	expiring.capture(1, 0, expiring_frame)
-	expiring.capture(1, 0, expiring_frame)
+	# EXPECTATION CHANGED, on device evidence. This previously asserted that an
+	# out-of-cone wrist EXPIRES like any other loss. It does not, and it must
+	# not: David, on device, "now you make the left hand disapear... you dont
+	# correct the stabalization". A hand outside the cameras' cone is still on
+	# the user -- unobservable, not gone -- so it FREEZES indefinitely at its
+	# last seen pose. Only a hand that stops reporting altogether expires,
+	# because that one really may be gone. Same line Meta's LastKnownGoodHand
+	# draws between connected and disconnected.
+	var frozen_source := _FovScriptedSource.new()
+	frozen_source.wrist_positions = [in_cone, behind_head, behind_head, behind_head, behind_head, behind_head]
+	var frozen := XRHandConfidenceGate.new(frozen_source)
+	frozen.hold_duration_sec = 0.02  # ~1.4 frames at 72 Hz: long expired
+	frozen.set_head_pose(true, head)
+	var frozen_frame := XRHandFrame.new()
+	frozen.capture(1, 0, frozen_frame)
+	frozen.capture(1, 0, frozen_frame)
 	var still_valid := true
 	for step in range(4):
-		still_valid = expiring.capture(1, 0, expiring_frame)
-	if still_valid:
-		failures.append("an out-of-cone wrist held past hold_duration_sec instead of reporting invalid")
+		still_valid = frozen.capture(1, 0, frozen_frame)
+	if not still_valid:
+		failures.append("an out-of-cone wrist expired instead of freezing -- the hand VANISHES, which is worse than the drift this gate exists to stop")
+	if not frozen_frame.joint_transforms[XRHandTracker.HAND_JOINT_WRIST].origin.is_equal_approx(in_cone):
+		failures.append("the frozen out-of-cone hand did not stay at its last IN-CONE pose")
+
+	# The counterpart, so the distinction is pinned from both sides: a hand that
+	# stops REPORTING still expires on the normal timer. Without this assertion
+	# "freeze forever" could be implemented as "never expire anything".
+	var silent_source := _ScriptedSource.new()
+	silent_source.pattern = [true, false, false, false, false, false]
+	var silent := XRHandConfidenceGate.new(silent_source)
+	silent.hold_duration_sec = 0.02
+	silent.set_head_pose(true, head)
+	var silent_frame := XRHandFrame.new()
+	silent.capture(1, 0, silent_frame)
+	var silent_valid := true
+	for step in range(5):
+		silent_valid = silent.capture(1, 0, silent_frame)
+	if silent_valid:
+		failures.append("a hand that stopped reporting held forever -- only FOV loss freezes, data loss must still expire")
 
 ## The case this whole gate exists for -- the measured device state from the
 ## brief: a hand out of the cameras' view reports EVERY joint POSITION_TRACKED

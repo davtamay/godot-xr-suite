@@ -63,6 +63,11 @@ var _has_good := [false, false]
 var _lost_since_usec := [-1, -1]
 ## Consecutive frames the raw source has met min_tracked_joints, per hand.
 var _good_streak := [0, 0]
+## True while this hand's loss is attributable to the FOV cone rather than to
+## the source going silent. Decides whether the hold EXPIRES (data loss: the
+## hand may genuinely be gone) or FREEZES indefinitely (out of view: the hand
+## is still on the user and must not vanish).
+var _lost_to_fov := [false, false]
 var _discontinuity := [false, false]
 
 ## The head pose the FOV test measures against, ALREADY in XROrigin3D space --
@@ -134,14 +139,25 @@ func capture(hand: int, timestamp_usec: int, target: XRHandFrame) -> bool:
 	var tracked := _inner.capture(hand, timestamp_usec, _raw)
 	if tracked and _raw.tracked_joint_count < min_tracked_joints:
 		tracked = false
-	# Same verdict a low tracked-count produces -- "not live" -- so it falls
-	# straight into the hold-then-invalidate machinery below without any
-	# separate path. This is what lets a wrist the runtime insists is
-	# POSITION_TRACKED still be treated as lost when it is geometrically
-	# impossible for the cameras to be observing it (the measured case this
-	# whole gate exists for; see fov_gate_enabled doc).
-	if tracked and _fails_fov_gate(_raw):
+	# Out of FOV is NOT the same verdict as no data, and conflating them was a
+	# regression: the hand expired after hold_duration_sec and VANISHED.
+	# David, on device: "now you make the left hand disapear... you dont
+	# correct the stabalization".
+	#
+	# A hand outside the cameras' cone is still ON THE USER -- we simply cannot
+	# see it. Meta's LastKnownGoodHand draws exactly this line: bad data while
+	# the hand is CONNECTED substitutes the last good pose and keeps reporting
+	# tracked; only a DISCONNECTED hand reports untracked. The suite's own
+	# handoff reaches the same conclusion about hands vanishing mid-gesture --
+	# bridge the dropout, do not hide faster.
+	#
+	# So FOV loss FREEZES indefinitely (the hand stays put, visibly, where it
+	# was last seen) while a genuine data loss still expires, because a hand
+	# that stopped reporting really may be gone.
+	var out_of_fov := tracked and _fails_fov_gate(_raw)
+	if out_of_fov:
 		tracked = false
+	_lost_to_fov[hand] = out_of_fov or (not tracked and _lost_to_fov[hand])
 
 	var now := _raw.timestamp_usec if _raw.timestamp_usec > 0 else timestamp_usec
 
@@ -162,6 +178,7 @@ func capture(hand: int, timestamp_usec: int, target: XRHandFrame) -> bool:
 			# First acquisition also counts: the filter has no history either way.
 			_discontinuity[hand] = true
 		_lost_since_usec[hand] = -1
+		_lost_to_fov[hand] = false
 		_has_good[hand] = true
 		_raw.copy_into(_last_good[hand])
 		_raw.copy_into(target)
@@ -177,8 +194,11 @@ func capture(hand: int, timestamp_usec: int, target: XRHandFrame) -> bool:
 	if _lost_since_usec[hand] < 0:
 		_lost_since_usec[hand] = now
 
+	# A hand lost to the FOV cone never expires: it is still on the user, just
+	# unobservable, so it stays frozen where it was last seen rather than
+	# disappearing. Only a hand that stopped reporting altogether times out.
 	var held_for := float(now - _lost_since_usec[hand]) / 1_000_000.0
-	if held_for > hold_duration_sec:
+	if not _lost_to_fov[hand] and held_for > hold_duration_sec:
 		_raw.copy_into(target)
 		target.tracking_valid = false
 		return false
