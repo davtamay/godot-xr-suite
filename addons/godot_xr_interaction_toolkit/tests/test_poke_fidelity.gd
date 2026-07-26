@@ -34,15 +34,18 @@ var _tree_tests_done := false
 func _init() -> void:
 	_test_normal_approach_presses_once(_failures)
 	_test_lateral_sweep_never_presses(_failures)
-	_test_slow_creep_abstains_and_presses(_failures)
+	_test_slow_creep_rescued_by_entry(_failures)
+	_test_sweep_then_dwell_never_presses(_failures)
 	_test_slide_off_cancels_not_releases(_failures)
 	_test_jitter_does_not_chatter(_failures)
 	_test_fast_pass_through_presses_once(_failures)
 	_test_pinned_point_clamps_to_surface(_failures)
 	_test_drag_on_suppresses_release(_failures)
 	_test_drag_off_still_releases(_failures)
+	_test_drag_retract_emits_drag_ended(_failures)
 	_test_steep_poke_rescued_by_entry(_failures)
 	_test_fast_diagonal_rescued_by_angle(_failures)
+	_test_skim_then_jab_presses(_failures)
 	_test_forget_clears_history(_failures)
 	_test_forget_return_values(_failures)
 	_test_apply_profile_include_depth_true(_failures)
@@ -62,7 +65,10 @@ func _process(_delta: float) -> bool:
 	_test_pokeable_pin_is_inf_when_off_face(_failures)
 	_test_pokeable_pin_is_inf_when_beyond_band(_failures)
 	_test_pokeable_drag_delta_is_cumulative_since_press(_failures)
+	_test_pokeable_emits_drag_ended_on_drag_retract(_failures)
+	_test_pokeable_y_face_presses_and_cancels(_failures)
 	_test_station_drag_handle_uses_absolute_offset_not_accumulated(_failures)
+	_test_station_drag_handle_resets_color_on_drag_ended(_failures)
 	_test_canvas_cancel_pushes_the_release_off_panel(_failures)
 	_test_canvas_press_fires_the_control(_failures)
 	_test_canvas_hover_tracks_last_pointer_position(_failures)
@@ -173,6 +179,25 @@ func _test_pokeable_x_face_presses_and_cancels(failures: Array[String]) -> void:
 	pokeable.get_parent().queue_free()
 
 
+## I3 Minor: Y_PLUS is the only face whose normal is near-parallel to UP, so
+## it is the only one that reaches _plane_u's fallback branch (Vector3.RIGHT
+## instead of Vector3.UP) - no other fixture in this file exercises it.
+func _test_pokeable_y_face_presses_and_cancels(failures: Array[String]) -> void:
+	var pokeable := _make_pokeable(XRPokeableScript.Face.Y_PLUS)
+	var seen := {"pressed": 0, "cancelled": 0}
+	pokeable.pressed.connect(func(_hand): seen["pressed"] += 1)
+	pokeable.cancelled.connect(func(_hand): seen["cancelled"] += 1)
+	# Face normal is +Y for this face, so world +Y is "in front".
+	pokeable.poke_update(0, Vector3(0.0, 0.050, 0.0))
+	pokeable.poke_update(0, Vector3(0.0, 0.008, 0.0))
+	pokeable.poke_update(0, Vector3(0.0, 0.008, 0.080))
+	_check(failures, seen["pressed"] == 1,
+			"pokeable Y_PLUS: expected 1 pressed, got %d" % seen["pressed"])
+	_check(failures, seen["cancelled"] == 1,
+			"pokeable Y_PLUS: expected 1 cancelled, got %d" % seen["cancelled"])
+	pokeable.get_parent().queue_free()
+
+
 func _test_pokeable_pin_is_inf_without_contact(failures: Array[String]) -> void:
 	var pokeable := _make_pokeable()
 	var pin: Vector3 = pokeable.get_poke_pin(0)
@@ -225,11 +250,10 @@ func _test_pokeable_pin_is_inf_when_beyond_band(failures: Array[String]) -> void
 ## closure never propagates back out (every other closure-capturing test in
 ## this file mutates a Dictionary/Array for the same reason).
 ##
-## World x is fed NEGATIVE (-0.02, then -0.03): the default Z_PLUS face's
-## u-axis is world -X (normal.cross(UP) for normal = +Z), so canonical planar
-## x is the NEGATION of world x. Feeding negative world x keeps the delta
-## values below matching the cumulative amounts in the doc comment above
-## (0.02, then 0.03) instead of introducing an unrelated sign flip.
+## World x is fed POSITIVE (+0.02, then +0.03): the default Z_PLUS face's
+## u-axis is world +X (up.cross(normal) for normal = +Z, see xr_pokeable.gd's
+## _plane_u - I3), so canonical planar x reads the finger's own world x
+## directly, with no sign flip to account for.
 func _test_pokeable_drag_delta_is_cumulative_since_press(failures: Array[String]) -> void:
 	var pokeable := _make_pokeable()
 	pokeable.interpret_drag = true
@@ -243,14 +267,38 @@ func _test_pokeable_drag_delta_is_cumulative_since_press(failures: Array[String]
 	# later delta must be measured from.
 	pokeable.poke_update(0, Vector3(0.0, 0.0, 0.050))
 	pokeable.poke_update(0, Vector3(0.0, 0.0, 0.008))
-	pokeable.poke_update(0, Vector3(-0.020, 0.0, 0.008))
+	pokeable.poke_update(0, Vector3(0.020, 0.0, 0.008))
 	_check(failures, drag["count"] >= 1,
 			"pokeable drag: expected at least 1 DRAG after moving to +0.02, got %d" % drag["count"])
 	_check(failures, (drag["last_delta"] as Vector2).is_equal_approx(Vector2(0.020, 0.0)),
 			"pokeable drag: expected delta (0.02, 0.0) after moving to +0.02, got %s" % [drag["last_delta"]])
-	pokeable.poke_update(0, Vector3(-0.030, 0.0, 0.008))
+	pokeable.poke_update(0, Vector3(0.030, 0.0, 0.008))
 	_check(failures, (drag["last_delta"] as Vector2).is_equal_approx(Vector2(0.030, 0.0)),
 			"pokeable drag: expected CUMULATIVE delta (0.03, 0.0) after moving to +0.03 (not 0.05), got %s" % [drag["last_delta"]])
+	pokeable.get_parent().queue_free()
+
+
+## I2: XRPokeable must expose the evaluator's DRAG_ENDED as its own
+## `drag_ended` signal, distinct from `released`/`cancelled`, so a consumer
+## driven only by those three (like XRPokeStation's DragHandle before this
+## fix) still hears that a drag ended.
+func _test_pokeable_emits_drag_ended_on_drag_retract(failures: Array[String]) -> void:
+	var pokeable := _make_pokeable()
+	pokeable.interpret_drag = true
+	pokeable.drag_threshold = 0.010
+	var seen := {"drag_ended": 0, "released": 0, "cancelled": 0}
+	pokeable.drag_ended.connect(func(_hand): seen["drag_ended"] += 1)
+	pokeable.released.connect(func(_hand): seen["released"] += 1)
+	pokeable.cancelled.connect(func(_hand): seen["cancelled"] += 1)
+	pokeable.poke_update(0, Vector3(0.0, 0.0, 0.050))  # arm entry
+	pokeable.poke_update(0, Vector3(0.0, 0.0, 0.008))  # press
+	pokeable.poke_update(0, Vector3(0.020, 0.0, 0.008))  # past drag_threshold - dragging
+	pokeable.poke_update(0, Vector3(0.020, 0.0, 0.050))  # retract past release_depth while dragging
+	_check(failures, seen["drag_ended"] == 1,
+			"pokeable: expected 1 drag_ended after the drag retracted, got %d" % seen["drag_ended"])
+	_check(failures, seen["released"] == 0 and seen["cancelled"] == 0,
+			"pokeable: a drag's terminal retraction must not also fire released/cancelled, got released=%d cancelled=%d" % [
+				seen["released"], seen["cancelled"]])
 	pokeable.get_parent().queue_free()
 
 
@@ -284,20 +332,66 @@ func _test_station_drag_handle_uses_absolute_offset_not_accumulated(failures: Ar
 		return
 
 	var rest_x: float = mesh.position.x
-	# Same world-x-negated convention as the pokeable test above: the default
-	# Z_PLUS face's u-axis is world -X, and the body carries no rotation here,
-	# so world -0.02/-0.03 arrive at the handler as canonical delta.x = +0.02/+0.03.
-	var origin: Vector3 = drag_handle.global_transform.origin
+	# Same world-x convention as the pokeable test above: the default Z_PLUS
+	# face's u-axis is world +X (I3), and the body carries no rotation here,
+	# so world +0.02/+0.03 arrive at the handler as canonical delta.x = +0.02/+0.03
+	# with no sign flip. Reference the POKEABLE's own origin, not the body's:
+	# I4 moved the pokeable to the box's front face (a small local z offset
+	# from the body), so anchoring on the pokeable keeps this test's z values
+	# (0.050 in front, 0.008 past the press plane) meaningful without also
+	# hardcoding that offset here.
+	var origin: Vector3 = (pokeable as Node3D).global_transform.origin
 	pokeable.poke_update(0, origin + Vector3(0.0, 0.0, 0.050))
 	pokeable.poke_update(0, origin + Vector3(0.0, 0.0, 0.008))
-	pokeable.poke_update(0, origin + Vector3(-0.020, 0.0, 0.008))
+	pokeable.poke_update(0, origin + Vector3(0.020, 0.0, 0.008))
 	_check(failures, is_equal_approx(mesh.position.x, rest_x + 0.020),
 			"station drag handle: expected mesh x = rest + 0.02 = %f after the first slide, got %f" % [
 				rest_x + 0.020, mesh.position.x])
-	pokeable.poke_update(0, origin + Vector3(-0.030, 0.0, 0.008))
+	pokeable.poke_update(0, origin + Vector3(0.030, 0.0, 0.008))
 	_check(failures, is_equal_approx(mesh.position.x, rest_x + 0.030),
 			"station drag handle: expected mesh x = rest + 0.03 = %f (ABSOLUTE, not rest + 0.02 + 0.03) after the second slide, got %f" % [
 				rest_x + 0.030, mesh.position.x])
+	station.queue_free()
+
+
+## I2: XRPokeStation's DragHandle wires pressed/cancelled to a held/rest
+## colour, but a COMPLETED drag never fires released or cancelled at all -
+## interpret_drag suppresses the terminal activation. Before this fix nothing
+## put the colour back: the handle stayed in its held colour permanently
+## after the first completed drag. This drives the real handle through a
+## press-drag-retract sequence and asserts the material colour, not the
+## signal, so a future regression that drops the drag_ended wiring fails
+## here.
+func _test_station_drag_handle_resets_color_on_drag_ended(failures: Array[String]) -> void:
+	var station := Node3D.new()
+	station.set_script(XRPokeStationScript)
+	get_root().add_child(station)
+
+	var drag_handle: StaticBody3D = station.get_node_or_null("GateDemo/DragHandle")
+	if drag_handle == null:
+		_check(failures, false, "station: GateDemo/DragHandle not found (station structure changed)")
+		station.queue_free()
+		return
+	var mesh: MeshInstance3D = drag_handle.get_node_or_null("Mesh")
+	var pokeable = drag_handle.get_meta("xr_pokeable", null)
+	if mesh == null or pokeable == null:
+		_check(failures, false, "station: DragHandle missing its Mesh child or xr_pokeable meta")
+		station.queue_free()
+		return
+	var material: StandardMaterial3D = mesh.material_override as StandardMaterial3D
+	var rest_color: Color = material.albedo_color
+
+	var origin: Vector3 = (pokeable as Node3D).global_transform.origin
+	pokeable.poke_update(0, origin + Vector3(0.0, 0.0, 0.050))  # arm entry
+	pokeable.poke_update(0, origin + Vector3(0.0, 0.0, 0.008))  # press - colour goes held
+	_check(failures, not material.albedo_color.is_equal_approx(rest_color),
+			"station drag handle: expected the held colour while pressed, got %s (rest is %s)" % [
+				material.albedo_color, rest_color])
+	pokeable.poke_update(0, origin + Vector3(0.020, 0.0, 0.008))  # past drag_threshold - dragging
+	pokeable.poke_update(0, origin + Vector3(0.020, 0.0, 0.050))  # retract - drag_ended, not released
+	_check(failures, material.albedo_color.is_equal_approx(rest_color),
+			"station drag handle: expected the colour back at rest after drag_ended, got %s (rest is %s)" % [
+				material.albedo_color, rest_color])
 	station.queue_free()
 
 
@@ -541,23 +635,66 @@ func _test_lateral_sweep_never_presses(failures: Array[String]) -> void:
 			"lateral sweep: expected no PRESSED, got %s" % [events])
 
 
-## Isolates the ABSTAIN rule. Two constraints make this test actually test it:
-## the entry test must stay REQUIRED (so it cannot supply the pass), and the
-## motion must carry a LATERAL component. A purely axial creep satisfies the
-## angle test at any magnitude, so an axial fixture would pass with the
-## abstain deleted - which is exactly the mutation this must catch.
-func _test_slow_creep_abstains_and_presses(failures: Array[String]) -> void:
+## I1: a genuine slow creep-in, rewritten after the abstain fix. The OLD
+## version of this test fed two samples BOTH already at press depth with
+## in_front never set, so it was actually testing a lateral drift AT depth
+## pressing on its own via a bare abstain - the exact bug I1 fixes, not a
+## creep toward the surface at all.
+##
+## This version starts genuinely in front (z > press_depth), which arms
+## require_entry_through_face on the first sample; the second sample then
+## creeps in slowly (window travel under min_approach_travel) with a small
+## lateral component. The press now comes from the ENTRY test, per the design
+## ("Entry-through-face would usually rescue that case") - the abstain no
+## longer has to (and, per the fix, cannot) carry it alone when entry is
+## required and unsatisfied.
+func _test_slow_creep_rescued_by_entry(failures: Array[String]) -> void:
 	var evaluator = _make()
 	evaluator.require_entry_through_face = true
 	evaluator.min_approach_travel = 0.003
-	# Both samples are already at press depth, so in_front is never set and
-	# only the angle test can arm. Window travel is 1.5 mm, mostly sideways.
 	var events := _run(evaluator, [
+		Vector3(0.0000, 0.0, 0.0500),  # well in front - arms entry
+		Vector3(0.0015, 0.0, 0.0108),  # slow creep past the plane, small lateral drift
+	])
+	_check(failures, _count(events, XRPokeEvaluator.Event.PRESSED) == 1,
+			"slow creep: expected 1 PRESSED, rescued by entry-through-face, got %s" % [events])
+
+	# With entry-through-face disabled and the source never in front (both
+	# samples already at press depth, same small lateral drift under the
+	# abstain threshold), the angle test is the only gate left - and the
+	# design still requires a genuine slow creep to press rather than being
+	# rejected purely for lacking speed.
+	var no_entry_evaluator = _make()
+	no_entry_evaluator.require_entry_through_face = false
+	no_entry_evaluator.min_approach_travel = 0.003
+	var no_entry_events := _run(no_entry_evaluator, [
 		Vector3(0.0000, 0.0, 0.0110),
 		Vector3(0.0015, 0.0, 0.0108),
 	])
-	_check(failures, _count(events, XRPokeEvaluator.Event.PRESSED) == 1,
-			"slow creep: expected 1 PRESSED via abstain, got %s" % [events])
+	_check(failures, _count(no_entry_events, XRPokeEvaluator.Event.PRESSED) == 1,
+			"slow creep: with entry disabled, a genuine slow creep must still press, got %s" % [no_entry_events])
+
+
+## I1 (empirically verified against the shipped evaluator): a source that
+## sweeps in from OUTSIDE the bounds rectangle at press depth, then DWELLS at
+## a fixed in-bounds point, must never press - not even after the initial
+## out-of-bounds sample ages out of the four-entry history window and leaves
+## the angle test comparing the held point against itself (near-zero travel).
+## Before the fix, that near-zero travel made the abstain rule pass
+## unconditionally, arming the press with no sample ever having been in front
+## of the face - "a sweep presses whichever key you stop on".
+func _test_sweep_then_dwell_never_presses(failures: Array[String]) -> void:
+	var evaluator = _make()
+	var events := _run(evaluator, [
+		Vector3(0.200, 0.0, 0.008),  # outside the 0.05 bounds, already at press depth
+		Vector3(0.030, 0.0, 0.008),  # swept into bounds, still at press depth
+		Vector3(0.030, 0.0, 0.008),  # dwell
+		Vector3(0.030, 0.0, 0.008),  # dwell
+		Vector3(0.030, 0.0, 0.008),  # dwell - the out-of-bounds sample ages out of the window here
+		Vector3(0.030, 0.0, 0.008),  # dwell, once more for margin
+	])
+	_check(failures, _count(events, XRPokeEvaluator.Event.PRESSED) == 0,
+			"sweep then dwell: expected no PRESSED even once the history window ages past the sweep, got %s" % [events])
 
 
 func _test_slide_off_cancels_not_releases(failures: Array[String]) -> void:
@@ -642,6 +779,29 @@ func _test_drag_off_still_releases(failures: Array[String]) -> void:
 			"drag off: expected 1 RELEASED, got %s" % [events])
 
 
+## I2: a drag that retracts past release_depth must emit a distinct terminal
+## event, DRAG_ENDED, rather than silently returning NONE. "A drag does not
+## activate on let-go" was implemented by suppressing the terminal RELEASED -
+## which also suppressed the only notification a consumer had that the drag
+## was over at all, so a target driven only by pressed/released/cancelled
+## (e.g. a colour that resets on a terminal signal) got stuck in its held
+## state after the first completed drag.
+func _test_drag_retract_emits_drag_ended(failures: Array[String]) -> void:
+	var evaluator = _make()
+	evaluator.interpret_drag = true
+	evaluator.drag_threshold = 0.010
+	var events := _run(evaluator, [
+		Vector3(0.0, 0.0, 0.050),
+		Vector3(0.0, 0.0, 0.008),
+		Vector3(0.020, 0.0, 0.008),
+		Vector3(0.020, 0.0, 0.050),
+	])
+	_check(failures, _count(events, XRPokeEvaluator.Event.DRAG_ENDED) == 1,
+			"drag retract: expected 1 DRAG_ENDED, got %s" % [events])
+	_check(failures, _count(events, XRPokeEvaluator.Event.RELEASED) == 0,
+			"drag retract: RELEASED must still be suppressed, got %s" % [events])
+
+
 ## RESCUE CASE A. A deliberate poke ~50 deg off the normal, at a 45 deg limit.
 ## The angle test rejects it; the entry test must rescue it.
 ##
@@ -689,6 +849,26 @@ func _test_fast_diagonal_rescued_by_angle(failures: Array[String]) -> void:
 	var blocked := _run(without_angle, points)
 	_check(failures, _count(blocked, XRPokeEvaluator.Event.PRESSED) == 0,
 			"fast diagonal: with the angle test closed there must be no press, got %s" % [blocked])
+
+
+## I5: a source that travels laterally WITHIN press_depth of the surface (z
+## never exceeds press_depth, so require_entry_through_face never arms) and
+## then JABS inward must press. Before this fix the angle test only compared
+## history[last] against history[0]; baking a lateral skim into that same
+## four-sample window dilutes a sharp final direction change below
+## max_approach_angle even though the last STEP alone is a clean, steep,
+## inward poke - "skim below press depth, then jab" was rejected by both
+## gates.
+func _test_skim_then_jab_presses(failures: Array[String]) -> void:
+	var evaluator = _make()
+	var events := _run(evaluator, [
+		Vector3(0.080, 0.0, 0.011),   # outside bounds, already within press_depth
+		Vector3(0.040, 0.0, 0.011),   # skimming laterally, still within press_depth
+		Vector3(0.020, 0.0, 0.011),   # still skimming - the lateral history the JAB must overcome
+		Vector3(0.020, 0.0, -0.005),  # JAB: sharp, steep, inward step
+	])
+	_check(failures, _count(events, XRPokeEvaluator.Event.PRESSED) == 1,
+			"skim then jab: expected 1 PRESSED from the final inward step, got %s" % [events])
 
 
 ## forget() is the ONLY path that clears history (the bounds/band exits keep
