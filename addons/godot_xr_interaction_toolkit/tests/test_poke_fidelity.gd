@@ -9,6 +9,7 @@ const XRPokeableScript := preload("res://addons/godot_xr_interaction_toolkit/run
 const XRUICanvasScript := preload("res://addons/godot_xr_interaction_toolkit/runtime/xr_ui_canvas_interactable.gd")
 const XRPokeButtonScript := preload("res://addons/godot_xr_interaction_toolkit/runtime/xr_poke_button.gd")
 const XRPokeInteractorScript := preload("res://addons/godot_xr_interaction_toolkit/runtime/xr_poke_interactor.gd")
+const XRPokeStationScript := preload("res://addons/godot_xr_interaction_toolkit/runtime/xr_poke_station.gd")
 
 ## Records every mouse motion the panel pushes into its viewport -- used by
 ## the two-source drag test to prove the poke_update drag branch (its `_:`
@@ -60,6 +61,8 @@ func _process(_delta: float) -> bool:
 	_test_pokeable_pin_is_inf_without_contact(_failures)
 	_test_pokeable_pin_is_inf_when_off_face(_failures)
 	_test_pokeable_pin_is_inf_when_beyond_band(_failures)
+	_test_pokeable_drag_delta_is_cumulative_since_press(_failures)
+	_test_station_drag_handle_uses_absolute_offset_not_accumulated(_failures)
 	_test_canvas_cancel_pushes_the_release_off_panel(_failures)
 	_test_canvas_press_fires_the_control(_failures)
 	_test_canvas_hover_tracks_last_pointer_position(_failures)
@@ -204,6 +207,98 @@ func _test_pokeable_pin_is_inf_when_beyond_band(failures: Array[String]) -> void
 	_check(failures, pin == Vector3.INF,
 			"pokeable: a point beyond the working z-band must not get a pin, got %s" % [pin])
 	pokeable.get_parent().queue_free()
+
+
+## Pins down the contract a consumer MUST get right: `dragged`'s delta is the
+## CUMULATIVE planar offset since the press began (press_planar is captured
+## ONCE, at the moment of pressing), not a per-call increment. A consumer that
+## accumulates delta on every call - rather than treating it as an absolute
+## offset from the press point - double-counts, because poke_update fires
+## every physics tick while held, re-delivering the same cumulative value on
+## ticks where the finger hasn't moved at all. Moving to +0.02 then +0.03 must
+## report delta 0.02 then 0.03 - NOT 0.02 then 0.05 (which is what a
+## per-call-accumulating consumer would wrongly derive if this ever reported
+## a per-tick increment instead).
+##
+## Captured state lives in a Dictionary, not plain locals: GDScript lambdas
+## close over outer locals BY VALUE, so a plain `var` assigned to inside the
+## closure never propagates back out (every other closure-capturing test in
+## this file mutates a Dictionary/Array for the same reason).
+##
+## World x is fed NEGATIVE (-0.02, then -0.03): the default Z_PLUS face's
+## u-axis is world -X (normal.cross(UP) for normal = +Z), so canonical planar
+## x is the NEGATION of world x. Feeding negative world x keeps the delta
+## values below matching the cumulative amounts in the doc comment above
+## (0.02, then 0.03) instead of introducing an unrelated sign flip.
+func _test_pokeable_drag_delta_is_cumulative_since_press(failures: Array[String]) -> void:
+	var pokeable := _make_pokeable()
+	pokeable.interpret_drag = true
+	pokeable.drag_threshold = 0.010
+	var drag := {"count": 0, "last_delta": Vector2.INF}
+	pokeable.dragged.connect(func(_hand: int, delta: Vector2) -> void:
+		drag["count"] += 1
+		drag["last_delta"] = delta)
+	# Face normal is +Z by default: arm entry well in front, then cross the
+	# press plane at planar origin (x=0, y=0) - this is the press point every
+	# later delta must be measured from.
+	pokeable.poke_update(0, Vector3(0.0, 0.0, 0.050))
+	pokeable.poke_update(0, Vector3(0.0, 0.0, 0.008))
+	pokeable.poke_update(0, Vector3(-0.020, 0.0, 0.008))
+	_check(failures, drag["count"] >= 1,
+			"pokeable drag: expected at least 1 DRAG after moving to +0.02, got %d" % drag["count"])
+	_check(failures, (drag["last_delta"] as Vector2).is_equal_approx(Vector2(0.020, 0.0)),
+			"pokeable drag: expected delta (0.02, 0.0) after moving to +0.02, got %s" % [drag["last_delta"]])
+	pokeable.poke_update(0, Vector3(-0.030, 0.0, 0.008))
+	_check(failures, (drag["last_delta"] as Vector2).is_equal_approx(Vector2(0.030, 0.0)),
+			"pokeable drag: expected CUMULATIVE delta (0.03, 0.0) after moving to +0.03 (not 0.05), got %s" % [drag["last_delta"]])
+	pokeable.get_parent().queue_free()
+
+
+## Closes the gap the test above cannot: that one proves XRPokeable's
+## `dragged` SIGNAL is cumulative; it says nothing about whether a CONSUMER
+## reads it correctly. XRPokeStation._build_drag_handle wired `dragged` to
+## `mesh_instance.position.x`, and a consumer that accumulates the (already
+## cumulative) delta on every call double-counts. This drives the REAL
+## station's REAL DragHandle (built by XRPokeStation._build_gate_demo, not a
+## hand-rolled fixture) through a press-then-slide-twice sequence and asserts
+## the mesh's absolute position, not the signal - so a future handler
+## regression that reintroduces accumulation fails HERE, not only in a mental
+## review. `XRPokeStation._build_gate_demo()` runs unconditionally from
+## `_ready()`, before any of the station's optional Stand/Orb/TouchPanel
+## lookups, so a bare station node (no children authored) still builds it.
+func _test_station_drag_handle_uses_absolute_offset_not_accumulated(failures: Array[String]) -> void:
+	var station := Node3D.new()
+	station.set_script(XRPokeStationScript)
+	get_root().add_child(station)
+
+	var drag_handle: StaticBody3D = station.get_node_or_null("GateDemo/DragHandle")
+	if drag_handle == null:
+		_check(failures, false, "station: GateDemo/DragHandle not found (station structure changed)")
+		station.queue_free()
+		return
+	var mesh: MeshInstance3D = drag_handle.get_node_or_null("Mesh")
+	var pokeable = drag_handle.get_meta("xr_pokeable", null)
+	if mesh == null or pokeable == null:
+		_check(failures, false, "station: DragHandle missing its Mesh child or xr_pokeable meta")
+		station.queue_free()
+		return
+
+	var rest_x: float = mesh.position.x
+	# Same world-x-negated convention as the pokeable test above: the default
+	# Z_PLUS face's u-axis is world -X, and the body carries no rotation here,
+	# so world -0.02/-0.03 arrive at the handler as canonical delta.x = +0.02/+0.03.
+	var origin: Vector3 = drag_handle.global_transform.origin
+	pokeable.poke_update(0, origin + Vector3(0.0, 0.0, 0.050))
+	pokeable.poke_update(0, origin + Vector3(0.0, 0.0, 0.008))
+	pokeable.poke_update(0, origin + Vector3(-0.020, 0.0, 0.008))
+	_check(failures, is_equal_approx(mesh.position.x, rest_x + 0.020),
+			"station drag handle: expected mesh x = rest + 0.02 = %f after the first slide, got %f" % [
+				rest_x + 0.020, mesh.position.x])
+	pokeable.poke_update(0, origin + Vector3(-0.030, 0.0, 0.008))
+	_check(failures, is_equal_approx(mesh.position.x, rest_x + 0.030),
+			"station drag handle: expected mesh x = rest + 0.03 = %f (ABSOLUTE, not rest + 0.02 + 0.03) after the second slide, got %f" % [
+				rest_x + 0.030, mesh.position.x])
+	station.queue_free()
 
 
 ## A poke that slides off the panel while pressed must CANCEL, not release at

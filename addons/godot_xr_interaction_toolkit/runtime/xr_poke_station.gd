@@ -234,8 +234,16 @@ func _build_drag_handle(parent: Node3D) -> void:
 	# drag, and - the whole point of this target - let-go never fires
 	# pressed/released once dragging has started (see the evaluator's
 	# interpret_drag branch), so nothing here waits for a terminal signal.
+	# `dragged`'s delta is the CUMULATIVE offset since the press began (the
+	# evaluator captures press_planar once, at press, and every subsequent
+	# poke_update - one per physics tick while held - re-emits point - that
+	# same fixed origin), not a per-tick increment. So this SETS the position
+	# from a fixed rest_x captured once, rather than accumulating delta on
+	# every tick: accumulating would advance by ~delta.x per frame even while
+	# the finger is motionless, saturating the clamp in a handful of frames.
+	var rest_x := mesh_instance.position.x
 	pokeable.dragged.connect(func(_hand: int, delta: Vector2) -> void:
-		mesh_instance.position.x = clampf(mesh_instance.position.x + delta.x, -0.04, 0.04))
+		mesh_instance.position.x = clampf(rest_x + delta.x, -0.04, 0.04))
 
 	body.add_child(_make_gate_caption("DRAG ME - a handle does not fire on let-go", Vector3(0, 0.035, 0)))
 
@@ -243,6 +251,11 @@ func _build_drag_handle(parent: Node3D) -> void:
 ## Default XRPokeable settings: this is the plain gate, no per-target
 ## overrides. Pressing all the way through and releasing shows green (fired);
 ## pressing then sliding off the face shows red (cancelled, never fired).
+## Deliberate: the default half_size (0.05) is left as-is, so the poke
+## rectangle extends ~0.02 m past each edge of the visible 0.06 m box - this
+## is what "default settings" means here, not an oversight, but it does mean
+## the finger has to slide further than the box looks like it should before
+## a poke leaving the rectangle counts as a slide-off.
 func _build_cancel_target(parent: Node3D) -> void:
 	var rest_color := Color(0.8, 0.8, 0.85)
 	var fired_color := Color(0.4, 1.0, 0.6)
