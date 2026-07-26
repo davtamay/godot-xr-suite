@@ -211,3 +211,15 @@ Task 5: IN PROGRESS (implementer commit 5c9aa45; fix pass 1 in flight)
   - Noted for on-device: two concurrent hands on ONE cap now arm per-source
     rather than sharing one aggregate-depth hysteresis. Low probability given
     the cap radius, but a real difference.
+  - Fix pass 1 landed (7862a09). Review APPROVED; reviewer independently
+    re-derived the threshold algebra, the cap-animation equivalence, both new
+    tests' geometry, and confirmed leave_bounds is the ONLY change to the
+    evaluator.
+  - Review Important (plan-mandated, MINE): source_id is keyed by LOOP POSITION
+    over the interactor group. Harmless pre-conversion because the button held
+    no per-source state; it now indexes _penetrations, _pins, _pressed_sources
+    AND the evaluator's in_front/history/pressed. If group membership or order
+    changes between frames - a controller reconnecting - indices shift and one
+    physical hand inherits another's armed state. Fix pass 2 keys by instance
+    id instead. Nearly impossible to reproduce deliberately, which is exactly
+    why it had to be caught by reading.
