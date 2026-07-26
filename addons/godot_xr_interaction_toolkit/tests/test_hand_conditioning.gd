@@ -25,6 +25,14 @@ func _init() -> void:
 	_test_confidence_gate_partial_tracking_counts_as_lost(failures)
 	_test_confidence_gate_does_not_reacquire_on_a_single_flicker_frame(failures)
 	_test_confidence_gate_predicted_only_counts_as_lost(failures)
+	_test_fov_gate_wrist_within_cone_stays_live(failures)
+	_test_fov_gate_default_half_angle_is_generous(failures)
+	_test_fov_gate_wrist_outside_cone_counts_as_lost(failures)
+	_test_fov_gate_out_of_cone_with_perfect_tracking_flags_is_lost(failures)
+	_test_fov_gate_head_rotation_moves_the_cone(failures)
+	_test_fov_gate_off_switch_keeps_out_of_cone_wrist_live(failures)
+	_test_fov_gate_inert_without_head_pose(failures)
+	_test_head_transform_in_origin_space_cancels_the_origins_world_pose(failures)
 	_test_publisher(failures)
 	_test_publisher_republish_cache(failures)
 	_test_publisher_tracker_registration(failures)
@@ -876,6 +884,266 @@ func _test_confidence_gate_predicted_only_counts_as_lost(failures: Array[String]
 		still_valid_predicted = expiring.capture(1, 0, expiring_frame)
 	if still_valid_predicted:
 		failures.append("gate held past hold_duration_sec on sustained predicted-only joints instead of reporting invalid")
+
+## Pose source for the FOV-gate tests: every joint reports TRACKED (so
+## min_tracked_joints, checked first in XRHandConfidenceGate.capture, never
+## itself gates the frame -- these tests must exercise the FOV test alone) at
+## a fixed position, except the WRIST, which the caller controls per frame.
+## Only the wrist is read by _fails_fov_gate, so this is the minimum fixture
+## that can place the one joint that matters anywhere relative to a head pose.
+class _FovScriptedSource extends XRHandPoseSource:
+	var wrist_positions: Array[Vector3] = []
+	var index := 0
+	var step_usec := 13888
+
+	func capture(hand: int, _timestamp_usec: int, target: XRHandFrame) -> bool:
+		if index >= wrist_positions.size():
+			return false
+		var wrist_pos: Vector3 = wrist_positions[index]
+		target.begin_capture(hand, index * step_usec, index)
+		index += 1
+		var flags := XRHandTracker.HAND_JOINT_FLAG_POSITION_VALID | XRHandTracker.HAND_JOINT_FLAG_POSITION_TRACKED
+		for joint in XRHandTracker.HAND_JOINT_MAX:
+			var pos: Vector3 = wrist_pos if joint == XRHandTracker.HAND_JOINT_WRIST else Vector3(0.5, 0, 0)
+			target.set_joint(joint, Transform3D(Basis.IDENTITY, pos), 0.01, flags)
+		target.tracking_valid = true
+		return true
+
+## A single-frame, single-position variant of the above, for tests that only
+## need one capture and want the call site to read as "a hand at this wrist
+## position" rather than juggling an array literal.
+func _single_wrist_source(wrist_pos: Vector3) -> _FovScriptedSource:
+	var source := _FovScriptedSource.new()
+	source.wrist_positions = [wrist_pos]
+	return source
+
+## Head pose at world position `head_origin`, with -Z (this codebase's forward
+## convention) pointing at `look_direction`. Wraps Basis.looking_at, already
+## used the same way in xr_hand_gesture_provider.gd's basis_from_forward, so
+## the fixture's geometry is built from the same primitive the runtime code
+## uses rather than a hand-derived rotation matrix that could hide a sign error.
+func _head_pose(head_origin: Vector3, look_direction: Vector3) -> Transform3D:
+	return Transform3D(Basis.looking_at(look_direction, Vector3.UP), head_origin)
+
+## A wrist inside the default 80-degree half-angle cone -- dead ahead of a head
+## at the origin facing -Z -- must stay live, on the very first frame and
+## again on a second, ordinary one. This is the baseline every other FOV test
+## is a variation on: something has gone wrong if a hand the user is looking
+## straight at ever gets caught by this gate.
+func _test_fov_gate_wrist_within_cone_stays_live(failures: Array[String]) -> void:
+	var wrist_pos := Vector3(0, 0, -1)  # straight ahead of a head facing -Z
+	var source := _FovScriptedSource.new()
+	source.wrist_positions = [wrist_pos, wrist_pos]
+	var gate := XRHandConfidenceGate.new(source)
+	gate.set_head_pose(true, _head_pose(Vector3.ZERO, Vector3(0, 0, -1)))
+	var frame := XRHandFrame.new()
+
+	if not gate.capture(1, 0, frame):
+		failures.append("a wrist dead ahead of the head must be live on first acquisition")
+	if not gate.capture(1, 0, frame):
+		failures.append("a wrist dead ahead of the head must stay live on a second, ordinary frame")
+
+## The SHIPPED default half-angle must itself be generous -- deliberately does
+## NOT override fov_half_angle_deg, unlike every other test here, so this is
+## the one guard against the class default silently regressing to something
+## tiny (e.g. 10 degrees). Quest hand-tracking cameras cover well over 100
+## degrees, considerably wider than the display, so a wrist 60 degrees off
+## dead-ahead is still something the user can plausibly see and must stay
+## live under whatever ships as the default.
+func _test_fov_gate_default_half_angle_is_generous(failures: Array[String]) -> void:
+	var forward := Vector3(0, 0, -1)
+	var off_center := forward.rotated(Vector3.UP, deg_to_rad(60.0))
+	var gate := XRHandConfidenceGate.new(_single_wrist_source(off_center))
+	gate.set_head_pose(true, _head_pose(Vector3.ZERO, forward))
+	var frame := XRHandFrame.new()
+	if not gate.capture(1, 0, frame):
+		failures.append("a wrist 60 degrees off dead-ahead must stay live under the SHIPPED default fov_half_angle_deg -- a default this narrow would suppress hands nowhere near actually out of view")
+
+## A wrist well outside the cone (directly behind the head, 180 degrees off
+## the forward axis -- nowhere near even a generous 80-degree half-angle)
+## counts as lost, and the existing hold-then-invalidate machinery follows
+## from that verdict exactly as it does for a low tracked-joint count: held at
+## the last good pose first, then invalidated once hold_duration_sec expires.
+## Same shape as _test_confidence_gate's dropout case, with the FOV test
+## standing in for the tracked-count drop.
+func _test_fov_gate_wrist_outside_cone_counts_as_lost(failures: Array[String]) -> void:
+	var in_cone := Vector3(0, 0, -1)
+	var behind_head := Vector3(0, 0, 1)
+	var head := _head_pose(Vector3.ZERO, Vector3(0, 0, -1))
+
+	var source := _FovScriptedSource.new()
+	source.wrist_positions = [in_cone, in_cone, behind_head, behind_head]
+	var gate := XRHandConfidenceGate.new(source)
+	gate.hold_duration_sec = 0.25
+	gate.set_head_pose(true, head)
+	var frame := XRHandFrame.new()
+
+	if not gate.capture(1, 0, frame):
+		failures.append("gate rejected an in-cone frame before the excursion")
+	gate.capture(1, 0, frame)
+
+	if not gate.capture(1, 0, frame):
+		failures.append("an out-of-cone wrist must be HELD at the last good pose, not dropped immediately")
+	if not frame.joint_transforms[XRHandTracker.HAND_JOINT_WRIST].origin.is_equal_approx(in_cone):
+		failures.append("held frame during an out-of-cone excursion did not carry the last IN-CONE pose")
+
+	var expiring_source := _FovScriptedSource.new()
+	expiring_source.wrist_positions = [in_cone, behind_head, behind_head, behind_head, behind_head, behind_head]
+	var expiring := XRHandConfidenceGate.new(expiring_source)
+	expiring.hold_duration_sec = 0.02  # ~1.4 frames at 72 Hz
+	expiring.set_head_pose(true, head)
+	var expiring_frame := XRHandFrame.new()
+	expiring.capture(1, 0, expiring_frame)
+	expiring.capture(1, 0, expiring_frame)
+	var still_valid := true
+	for step in range(4):
+		still_valid = expiring.capture(1, 0, expiring_frame)
+	if still_valid:
+		failures.append("an out-of-cone wrist held past hold_duration_sec instead of reporting invalid")
+
+## The case this whole gate exists for -- the measured device state from the
+## brief: a hand out of the cameras' view reports EVERY joint POSITION_TRACKED
+## (tracked_joint_count = HAND_JOINT_MAX, nowhere near min_tracked_joints)
+## while its wrist is being extrapolated. No flag or flag-count threshold can
+## tell this apart from a genuinely observed hand; only the geometry can. This
+## is what no earlier attempt (routing through the confidence gate, correcting
+## it to count TRACKED, raising its threshold) could express, because all of
+## them are flag-based and this case has every flag reporting perfect.
+func _test_fov_gate_out_of_cone_with_perfect_tracking_flags_is_lost(failures: Array[String]) -> void:
+	var in_cone := Vector3(0, 0, -1)
+	var behind_head := Vector3(0, 0, 1)
+
+	var source := _FovScriptedSource.new()
+	source.wrist_positions = [in_cone, behind_head]
+	var gate := XRHandConfidenceGate.new(source)
+	gate.hold_duration_sec = 0.25
+	gate.set_head_pose(true, _head_pose(Vector3.ZERO, Vector3(0, 0, -1)))
+	var frame := XRHandFrame.new()
+
+	gate.capture(1, 0, frame)  # acquire, in-cone
+
+	if not gate.capture(1, 0, frame):
+		failures.append("an out-of-cone wrist must still be held, not dropped, even with perfect tracking flags")
+	if gate._raw.tracked_joint_count != XRHandTracker.HAND_JOINT_MAX:
+		failures.append("fixture broken: expected every joint to report TRACKED for this case (tracked_joint_count=%d)" % gate._raw.tracked_joint_count)
+	if not frame.joint_transforms[XRHandTracker.HAND_JOINT_WRIST].origin.is_equal_approx(in_cone):
+		failures.append("held frame must carry the last IN-CONE pose, not the out-of-cone extrapolation, despite every flag claiming perfect tracking")
+
+## Reported on device: the ray "drifts up and right when the user looks away,
+## and snaps back when they look at the hand again." Head rotation ALONE must
+## move the cone -- the identical wrist position is live when the head faces
+## it and lost when the head turns away from it, with nothing about the hand
+## itself changing between the two gates.
+func _test_fov_gate_head_rotation_moves_the_cone(failures: Array[String]) -> void:
+	var wrist_pos := Vector3(1, 0, 0)
+
+	var facing_gate := XRHandConfidenceGate.new(_single_wrist_source(wrist_pos))
+	facing_gate.set_head_pose(true, _head_pose(Vector3.ZERO, wrist_pos))
+	var facing_frame := XRHandFrame.new()
+	if not facing_gate.capture(1, 0, facing_frame):
+		failures.append("a wrist must be live when the head is turned to face it directly")
+
+	var away_gate := XRHandConfidenceGate.new(_single_wrist_source(wrist_pos))
+	away_gate.set_head_pose(true, _head_pose(Vector3.ZERO, -wrist_pos))
+	var away_frame := XRHandFrame.new()
+	if away_gate.capture(1, 0, away_frame):
+		failures.append("the SAME wrist position must be lost once the head turns to face directly away from it -- this is the look-away/look-back behaviour reported on device")
+
+## fov_gate_enabled = false must restore today's behaviour EXACTLY: an
+## out-of-cone wrist stays live, not merely "less aggressively gated."
+## Suppressing a hand the user can actually see is a worse bug than the drift
+## this gate exists to fix, so the off switch must be a true escape hatch.
+func _test_fov_gate_off_switch_keeps_out_of_cone_wrist_live(failures: Array[String]) -> void:
+	var behind_head := Vector3(0, 0, 1)  # 180 degrees off a head facing -Z
+	var source := _FovScriptedSource.new()
+	source.wrist_positions = [behind_head, behind_head]
+	var gate := XRHandConfidenceGate.new(source)
+	gate.fov_gate_enabled = false
+	gate.set_head_pose(true, _head_pose(Vector3.ZERO, Vector3(0, 0, -1)))
+	var frame := XRHandFrame.new()
+
+	if not gate.capture(1, 0, frame):
+		failures.append("fov_gate_enabled = false must keep an out-of-cone wrist live on first acquisition")
+	if not gate.capture(1, 0, frame):
+		failures.append("fov_gate_enabled = false must keep an out-of-cone wrist live on a second frame too")
+
+## A missing rig must never blind every hand: with no head pose resolvable,
+## the FOV test must be inert regardless of how far out of any plausible cone
+## the wrist sits. Covers both the "never called" default state a gate starts
+## in and the explicit has_head=false XRConditionedHandPublisher._update_head_pose
+## sends when it cannot resolve an origin or camera.
+func _test_fov_gate_inert_without_head_pose(failures: Array[String]) -> void:
+	var behind_head := Vector3(0, 0, 1)
+
+	var never_told := XRHandConfidenceGate.new(_single_wrist_source(behind_head))
+	var never_told_frame := XRHandFrame.new()
+	if not never_told.capture(1, 0, never_told_frame):
+		failures.append("with set_head_pose never called, the FOV test must be inert")
+
+	var explicit_no_head := XRHandConfidenceGate.new(_single_wrist_source(behind_head))
+	explicit_no_head.set_head_pose(false, _head_pose(Vector3.ZERO, Vector3(0, 0, -1)))
+	var explicit_frame := XRHandFrame.new()
+	if not explicit_no_head.capture(1, 0, explicit_frame):
+		failures.append("has_head=false must make the FOV test inert even when a transform was supplied alongside it")
+
+## Verifies the space conversion the brief specifically calls out as the way
+## to get this wrong: XRHandTracker joint transforms (and so every
+## XRHandFrame the gate compares against) are local to the XROrigin3D, while
+## XRCamera3D.global_transform is world. Drives
+## XRConditionedHandPublisher.head_transform_in_origin_space -- the pure
+## Transform3D-in/Transform3D-out function _update_head_pose calls with
+## origin.global_transform and camera.global_transform -- with literal
+## transforms rather than constructed XROrigin3D/XRCamera3D nodes: this
+## headless SceneTree test's own `root` never reports is_inside_tree() = true
+## (confirmed empirically, including from inside _initialize()), and
+## Node3D.get_global_transform() hard-requires that, so a real node tree
+## cannot be exercised in this harness at all. The pure function is what
+## makes the math provable anyway.
+##
+## `camera_world` is built as `origin_world * camera_local` -- exactly what
+## Godot computes for a real XRCamera3D parented under a real XROrigin3D --
+## so this fixture's origin_world stands in for "wherever the rig happens to
+## sit in the world" without needing an actual node graph to produce that
+## relationship.
+##
+## Two things are checked:
+## 1. Because camera_world was built AS origin_world * camera_local, recovering
+##    exactly camera_local proves the origin's arbitrary world offset AND
+##    rotation cancel out of the result -- if the inverse-multiply were
+##    backwards or missing, the origin's world pose would leak into the
+##    answer instead.
+## 2. A concrete FOV-gate consequence: a wrist placed dead ahead of the
+##    CORRECTLY converted head pose is live; the identical wrist judged
+##    against the camera's raw WORLD transform (skipping the inverse) is not
+##    -- proving the two are not interchangeable, which is what "fires at
+##    random head angles" (the brief's own words) would look like in practice.
+func _test_head_transform_in_origin_space_cancels_the_origins_world_pose(failures: Array[String]) -> void:
+	# Arbitrary, non-trivial world placement -- offset AND rotated -- so a
+	# conversion bug has something real to get wrong instead of accidentally
+	# cancelling out at identity.
+	var origin_world := Transform3D(Basis(Vector3.UP, deg_to_rad(47.0)), Vector3(3.0, 1.0, -2.0))
+	var camera_local := Transform3D(Basis(Vector3.UP, deg_to_rad(-15.0)), Vector3(0.05, 1.6, 0.02))
+	var camera_world := origin_world * camera_local
+
+	var head_in_origin := XRConditionedHandPublisher.head_transform_in_origin_space(origin_world, camera_world)
+	if not head_in_origin.origin.is_equal_approx(camera_local.origin):
+		failures.append("head_transform_in_origin_space did not cancel the origin's world offset: got %s, expected %s" % [head_in_origin.origin, camera_local.origin])
+	if not head_in_origin.basis.is_equal_approx(camera_local.basis):
+		failures.append("head_transform_in_origin_space did not cancel the origin's world rotation")
+
+	var wrist_origin_space: Vector3 = head_in_origin.origin + (-head_in_origin.basis.z) * 0.4
+
+	var correct_gate := XRHandConfidenceGate.new(_single_wrist_source(wrist_origin_space))
+	correct_gate.set_head_pose(true, head_in_origin)
+	var correct_frame := XRHandFrame.new()
+	if not correct_gate.capture(1, 0, correct_frame):
+		failures.append("fixture broken: a wrist dead ahead of the correctly-converted head pose must be live")
+
+	var wrong_gate := XRHandConfidenceGate.new(_single_wrist_source(wrist_origin_space))
+	wrong_gate.set_head_pose(true, camera_world)  # WRONG: world, not origin-space
+	var wrong_frame := XRHandFrame.new()
+	if wrong_gate.capture(1, 0, wrong_frame):
+		failures.append("comparing the camera's WORLD transform against an origin-space wrist agreed with the correctly-converted result -- this fixture's origin offset must produce a disagreement, or it is not exercising the space mismatch the brief warns about")
 
 func _test_publisher(failures: Array[String]) -> void:
 	var frame := XRHandFrame.new()

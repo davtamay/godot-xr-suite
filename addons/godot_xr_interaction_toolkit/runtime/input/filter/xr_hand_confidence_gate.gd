@@ -35,6 +35,27 @@ const _HANDS := 2
 ## Dropping is still immediate-then-held; only reacquisition is debounced.
 @export_range(1, 30, 1) var reacquire_frames := 3
 
+## FOV liveness test. MEASURED on Quest over Link (see class doc / the probe
+## in XRConditionedHandPublisher): a hand out of the headset's cameras keeps
+## reporting POSITION_TRACKED on a majority of joints while the runtime
+## extrapolates it smoothly toward a neutral rest pose -- wrist moved 34cm/24cm
+## across six consecutive frames with tracked=26 throughout. No combination of
+## flags or thresholds on them can catch this; it is a geometric fact about
+## the sensor (the cameras only see roughly the frontal hemisphere), not
+## something the runtime chooses to report. Off switch restores today's
+## behaviour EXACTLY -- suppressing a hand the user can actually see is a
+## worse bug than the drift this exists to fix, so this must be trivial to
+## disable in full.
+@export var fov_gate_enabled := true
+## Half-angle, in degrees, of the cone around the camera's forward axis a
+## wrist must stay inside to count as observable. Quest hand-tracking cameras
+## cover well over 100 degrees -- considerably wider than the display -- so 80
+## is a conservative starting point: a hand near the edge of what the user can
+## SEE on screen is still well inside this cone. Narrow this only after
+## on-device verification (CLAUDE.md's on-device-earn-in rule): a value this
+## load-bearing is exactly the kind of tuned constant that rule protects.
+@export_range(1.0, 179.0, 0.5) var fov_half_angle_deg := 80.0
+
 var _inner: XRHandPoseSource
 var _raw := XRHandFrame.new()
 var _last_good: Array[XRHandFrame] = []
@@ -43,6 +64,16 @@ var _lost_since_usec := [-1, -1]
 ## Consecutive frames the raw source has met min_tracked_joints, per hand.
 var _good_streak := [0, 0]
 var _discontinuity := [false, false]
+
+## The head pose the FOV test measures against, ALREADY in XROrigin3D space --
+## the same space XRHandTracker.get_hand_joint_transform() reports joints in.
+## This is a RefCounted with no tree access (see class doc), so it cannot
+## resolve the camera itself; XRConditionedHandPublisher resolves it and calls
+## set_head_pose() every publish. _has_head_pose false (the default, and
+## whatever a caller that never resolved a rig leaves it at) makes the FOV
+## test inert -- a missing rig must never blind every hand.
+var _has_head_pose := false
+var _head_transform := Transform3D.IDENTITY
 
 func _init(inner: XRHandPoseSource = null) -> void:
 	_inner = inner
@@ -57,12 +88,59 @@ func consume_discontinuity(hand: int) -> bool:
 	_discontinuity[hand] = false
 	return true
 
+## Given, not resolved -- see the class doc on _has_head_pose. `head_transform`
+## must already be converted into XROrigin3D space by the caller
+## (origin.global_transform.affine_inverse() * camera.global_transform); this
+## gate has no tree access to do that conversion itself. `has_head` false
+## makes the FOV test inert regardless of `head_transform`'s contents.
+func set_head_pose(has_head: bool, head_transform: Transform3D) -> void:
+	_has_head_pose = has_head
+	_head_transform = head_transform
+
+## Angle in degrees between the head pose's forward axis (-Z, this codebase's
+## forward convention -- see xr_blaster.gd, xr_locomotion.gd) and the direction
+## from the head to `wrist_origin_space`. Both must already be in the same
+## space (XROrigin3D space); see set_head_pose. INF when no head pose has been
+## given, so a caller (the diagnostic probe) can tell "inert" apart from "0
+## degrees, dead ahead" without a second query. Shared by _fails_fov_gate and
+## the probe so the two can never read the geometry differently.
+func head_to_wrist_angle_deg(wrist_origin_space: Vector3) -> float:
+	if not _has_head_pose:
+		return INF
+	var to_wrist := wrist_origin_space - _head_transform.origin
+	if to_wrist.length_squared() < 0.000001:
+		return 0.0
+	var forward := -_head_transform.basis.z
+	return rad_to_deg(forward.angle_to(to_wrist))
+
+## Hard sensor constraint, not a heuristic (see fov_gate_enabled doc): a wrist
+## outside the cone is necessarily an extrapolated pose, regardless of what
+## POSITION_TRACKED claims. Reads the WRIST specifically -- the joint the
+## measured drift and every fixture in this file's tests is keyed on -- and is
+## a no-op whenever the wrist itself was not reported this frame, the test is
+## disabled, or no head pose was ever given.
+func _fails_fov_gate(raw: XRHandFrame) -> bool:
+	if not fov_gate_enabled or not _has_head_pose:
+		return false
+	if not raw.has_joint(XRHandTracker.HAND_JOINT_WRIST):
+		return false
+	var angle := head_to_wrist_angle_deg(raw.joint_transforms[XRHandTracker.HAND_JOINT_WRIST].origin)
+	return angle > fov_half_angle_deg
+
 func capture(hand: int, timestamp_usec: int, target: XRHandFrame) -> bool:
 	if _inner == null or hand < 0 or hand >= _HANDS:
 		return false
 
 	var tracked := _inner.capture(hand, timestamp_usec, _raw)
 	if tracked and _raw.tracked_joint_count < min_tracked_joints:
+		tracked = false
+	# Same verdict a low tracked-count produces -- "not live" -- so it falls
+	# straight into the hold-then-invalidate machinery below without any
+	# separate path. This is what lets a wrist the runtime insists is
+	# POSITION_TRACKED still be treated as lost when it is geometrically
+	# impossible for the cameras to be observing it (the measured case this
+	# whole gate exists for; see fov_gate_enabled doc).
+	if tracked and _fails_fov_gate(_raw):
 		tracked = false
 
 	var now := _raw.timestamp_usec if _raw.timestamp_usec > 0 else timestamp_usec

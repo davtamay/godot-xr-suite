@@ -103,6 +103,15 @@ static func publish(hand: int) -> XRHandTracker:
 		_frames[hand] = XRHandFrame.new()
 	var frame: XRHandFrame = _frames[hand]
 
+	# Feeds the gate's FOV liveness test. Resolved every publish (not cached)
+	# for the same reason nothing else here is cached: the rig can appear,
+	# disappear, or move between frames, and the gate must never keep judging
+	# against a stale head pose. Hand-independent, so this re-resolves for the
+	# second hand's publish call in the same frame too -- redundant, not wrong,
+	# and cheap next to a scene tree find_children scan happening at most twice
+	# a frame.
+	_update_head_pose()
+
 	# The modality manager is the authority on controller-driven hands;
 	# tracker.hand_tracking_source is not reliable across runtimes. Resolve it
 	# softly by group so the toolkit gains no dependency on godot_webxr_kit.
@@ -173,6 +182,13 @@ static func _probe(hand: int, gate_says_tracked: bool) -> void:
 	if raw != null:
 		wrist_now = raw.get_hand_joint_transform(XRHandTracker.HAND_JOINT_WRIST).origin
 	state["wrist"] = wrist_now
+	# The head-to-wrist angle the FOV gate itself measures against, read
+	# through the SAME method the gate's own liveness decision uses
+	# (head_to_wrist_angle_deg) -- not a separate re-derivation of the
+	# geometry -- so this probe can never disagree with what actually gated
+	# the hand. INF when the gate has no head pose (no rig resolved).
+	var angle_deg := _gate.head_to_wrist_angle_deg(wrist_now) if _gate != null else INF
+	state["angle_deg"] = angle_deg
 	var previous: Dictionary = _probe_last[hand]
 	if not previous.is_empty() \
 			and previous["present"] == state["present"] \
@@ -187,12 +203,15 @@ static func _probe(hand: int, gate_says_tracked: bool) -> void:
 	# cannot see still reports tracked=26 while its wrist wanders, then
 	# POSITION_TRACKED is not an "observed" signal on this runtime at all and
 	# no threshold on it can work -- the gate would need a motion-plausibility
-	# test instead. Printing the position is what tells those two apart.
+	# test instead. Printing the position is what tells those two apart. The
+	# angle is what tells the next device session whether the FOV cone is
+	# actually firing when the wrist wanders like this: it should cross
+	# fov_half_angle_deg right around when the drift starts.
 	var wrist := Vector3.INF
 	if raw != null:
 		wrist = raw.get_hand_joint_transform(XRHandTracker.HAND_JOINT_WRIST).origin
-	print("[hand-probe] hand=%d has_data=%s valid=%d tracked=%d gate=%s wrist=(%.3f, %.3f, %.3f)" % [
-		hand, has_data, valid, tracked_joints, gate_says_tracked, wrist.x, wrist.y, wrist.z])
+	print("[hand-probe] hand=%d has_data=%s valid=%d tracked=%d gate=%s wrist=(%.3f, %.3f, %.3f) angle_deg=%.1f" % [
+		hand, has_data, valid, tracked_joints, gate_says_tracked, wrist.x, wrist.y, wrist.z, angle_deg])
 
 ## Copies a conditioned frame into a tracker. Static and dependency-free so it
 ## can be unit-tested without touching XRServer.
@@ -237,6 +256,48 @@ static func _ensure_tracker(hand: int) -> XRHandTracker:
 static func _raw_source(hand: int) -> int:
 	var raw := XRServer.get_tracker(_RAW_NAMES[hand]) as XRHandTracker
 	return raw.hand_tracking_source if raw else XRHandTracker.HAND_TRACKING_SOURCE_UNKNOWN
+
+## Resolves the head pose in XROrigin3D space and hands it to the gate, or
+## tells the gate no head pose is available. Never suppresses on its own --
+## every early return below calls set_head_pose(false, ...), which is exactly
+## what makes the FOV gate inert when no rig can be found (a missing rig must
+## not blind every hand). XRRigResolver.find_origin/find_camera both expect a
+## Node already in the tree to search from; a static publisher has none of its
+## own, so the running SceneTree's current_scene stands in for it, matching
+## how find_origin itself resolves a scoped search root (_own_scene_root) when
+## given a node that owns no XROrigin3D ancestor.
+static func _update_head_pose() -> void:
+	var loop := Engine.get_main_loop() as SceneTree
+	if loop == null or loop.current_scene == null:
+		_gate.set_head_pose(false, Transform3D.IDENTITY)
+		return
+	var scene := loop.current_scene
+	var origin := XRRigResolver.find_origin(scene)
+	var camera := XRRigResolver.find_camera(scene)
+	if origin == null or camera == null:
+		_gate.set_head_pose(false, Transform3D.IDENTITY)
+		return
+	_gate.set_head_pose(true, head_transform_in_origin_space(origin.global_transform, camera.global_transform))
+
+## Pure conversion (plain Transform3D in, plain Transform3D out -- no node
+## dependency) so it can be unit-tested with literal values instead of a live
+## XR session or a constructed scene tree. Godot's Node3D.global_transform
+## requires the node to be is_inside_tree(); a headless SceneTree test
+## script's own `root` never reports true for that in this harness (confirmed
+## empirically -- ERROR: Condition "!is_inside_tree()" is true even from
+## inside SceneTree._initialize()), so testing this conversion through real
+## XROrigin3D/XRCamera3D nodes is not possible here. Splitting the tree lookup
+## (_update_head_pose, only exercised for real by the boot check) from this
+## pure math is what makes the math itself provable at all.
+##
+## XRHandTracker.get_hand_joint_transform() (and therefore every XRHandFrame
+## joint transform the gate compares against) is local to the XROrigin3D;
+## XRCamera3D.global_transform is world. Comparing world against origin-local
+## would make the FOV gate fire at whatever angle the origin itself happens to
+## be rotated to in the world, not the angle between the camera and the hand
+## -- this inverse is what cancels that out.
+static func head_transform_in_origin_space(origin_world: Transform3D, camera_world: Transform3D) -> Transform3D:
+	return origin_world.affine_inverse() * camera_world
 
 static func _is_controller_modality(hand: int) -> bool:
 	var loop := Engine.get_main_loop() as SceneTree
