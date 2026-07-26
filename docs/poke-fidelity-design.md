@@ -152,7 +152,7 @@ passes.
 | Lateral sweep across a button row | blocks | blocks |
 | Slide from one target to the next at depth | blocks | blocks |
 | Approach from behind the surface | blocks | blocks |
-| Sweep in from outside the bounds rectangle, then hold still | blocks | blocks (see abstain rule below) |
+| Sweep in from outside the bounds rectangle, then hold still | blocks | blocks (see decline rule below) |
 | Steep but deliberate poke (~50 deg off normal) | arms | FALSELY REJECTS |
 | Fast diagonal poke: previous sample laterally out of bounds, next sample already past depth | FALSELY REJECTS | arms |
 | Skim below `press_depth` along the surface, then a sharp jab inward | blocks (never in front) | arms (recent-step check) |
@@ -174,10 +174,11 @@ So cost is not a reason to prefer one — a handful of multiplies on values the
 adapter has already computed. Coverage is the only reason, and it points to
 both.
 
-**Abstain rule** on the angle test: if the displacement being checked (window
+**Decline rule** on the angle test: if the displacement being checked (window
 or recent-step, see above) is under `min_approach_travel` (~3 mm), the
-direction is noise. This was originally specified — and first shipped — as an
-unconditional pass, and that was wrong: in the `OR` gate an unconditional pass
+direction is noise — this test cannot judge it. This was originally
+specified — and first shipped — as an unconditional PASS ("abstain" meaning
+"let it through"), and that was wrong: in the `OR` gate an unconditional pass
 arms the press **by itself**, which `require_entry_through_face` cannot veto.
 Verified empirically: a source that sweeps in from outside the bounds
 rectangle at press depth and then holds still presses after about 3 frames —
@@ -186,14 +187,27 @@ window and leave the angle test comparing the held point against itself. The
 real failure mode was not "a sweep presses nothing", it was "a sweep presses
 whichever key you stop on", with no sample ever in front of that key's face.
 
-The rule actually implemented: abstaining returns `not
-require_entry_through_face` — it DEFERS to the entry test rather than passing
-outright. With entry-through-face required (the default), an abstention no
-longer arms the gate on its own; a genuine slow creep-in is still armed, but
-by the entry test, because it WAS seen in front of the face first. Only with
-`require_entry_through_face` turned off does the abstain pass outright, since
-then the angle test is the only gate left and a slow deliberate motion should
-not be rejected purely for lacking speed.
+The rule actually implemented: below `min_approach_travel` the angle test
+returns **false** — a decline, not a pass. In an `OR` gate, a test that
+cannot tell must decline rather than approve, or it becomes a blanket pass on
+its own; a perfectly stationary source has zero travel, and the angle
+comparison's own `0 >= 0` would otherwise read as a false pass with no
+direction information behind it at all — reopening a variant of the
+sweep-then-dwell hole this gate exists to close.
+
+A genuine slow, deliberate creep-in is not lost by this decline: it
+approaches from in front of the surface, so `require_entry_through_face`'s
+entry test arms it instead, because it WAS seen in front of the face first —
+not because the angle test let it through. This is also why the decline is
+safe to make unconditional rather than conditioned on
+`require_entry_through_face`: the angle test is only ever *reached* at all
+when `require_entry_through_face` is true and the source has not yet been
+seen in front (`_entry_passes` returned false — the `or` short-circuits on
+the entry test's own true otherwise). When `require_entry_through_face` is
+false, `_entry_passes` always returns true, the angle test (and its decline
+rule) is never consulted for that source, and arming happens on
+depth-crossing alone with no direction check at all — the angle test and its
+`max_approach_angle`/`min_approach_travel` settings are moot in that mode.
 
 Entry-through-face also fixes `XRPokeButton`'s dropped fast poke: a source
 that WAS in front and is now below the base is clamped to full travel instead
@@ -280,7 +294,7 @@ driving the evaluator directly with synthetic point sequences:
 | Lateral sweep at press depth across bounds | no press, ever |
 | Sweep in from outside bounds, then hold still (history ages out) | no press, ever |
 | Slow creep-in from in front of the face | `PRESSED` (rescued by entry-through-face) |
-| Slow creep-in with entry-through-face off | `PRESSED` (the angle test's abstain carries it) |
+| Slow creep-in with entry-through-face off | `PRESSED` (entry always passes in this mode; the angle test is never reached) |
 | Slide off while pressed | `CANCELLED`, never `RELEASED` |
 | Jitter at the press plane | no chatter |
 | Fast pass-through in one sample | `PRESSED` once, depth clamped |
@@ -292,8 +306,8 @@ driving the evaluator directly with synthetic point sequences:
 | Fast diagonal, previous sample out of bounds | `PRESSED` (angle test rescues it) |
 | Skim below `press_depth`, then a sharp jab inward | `PRESSED` (recent-step check rescues it) |
 
-The sweep-then-dwell row is the one the abstain rule got wrong until I1: the
-old unconditional-pass abstain pressed once the sweep's early samples aged
+The sweep-then-dwell row is the one the decline rule got wrong until I1: the
+old unconditional-pass "abstain" pressed once the sweep's early samples aged
 out of the history window, with no sample ever in front of the face. The
 steep-poke, fast-diagonal, and skim-then-jab rows are the whole argument for
 `OR` and the recent-step check, and must be written so each FAILS when its
@@ -304,7 +318,8 @@ Plus adapter-level signal-mapping tests with a fake target, confirming each
 adapter translates evaluator events to its own contract.
 
 Mutation runs that MUST fail the suite: invert `require_entry_through_face`;
-delete the abstain rule; emit `RELEASED` where `CANCELLED` is specified; widen
+delete the decline rule (or make it an unconditional pass again); emit
+`RELEASED` where `CANCELLED` is specified; widen
 `max_approach_angle` to 180°; **change the gate's `OR` to `AND`** (this one
 must fail on the two rescue rows specifically, and it is the mutation most
 likely to pass a lazily written suite). A suite that passes against any of those is

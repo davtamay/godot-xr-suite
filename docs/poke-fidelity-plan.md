@@ -1572,6 +1572,17 @@ powershell -ExecutionPolicy Bypass -File tools/run_tests.ps1 -Suite godot_xr_int
 Note `powershell`, not `pwsh` — PowerShell 7 is not installed on this
 machine, and `pwsh` fails with a CommandNotFoundException.
 
+**Also note:** this `-File` invocation form hands the whole comma-joined list
+to the child process as a single string, and PowerShell's own `[string[]]`
+binding does not split it back apart — without an explicit split in the
+script, `-Suite a,b,c` (via `-File`) silently becomes ONE suite named
+`"a,b,c"`, which does not exist, and the runner reports one failure instead
+of testing all of them. This was caught (agent/poke-fidelity, final pass) and
+fixed by having `run_tests.ps1` split every `-Suite` element on commas itself,
+so both this `-File` form and the in-process `& '.\run_tests.ps1' -Suite
+a,b,c` form now bind identically. Re-verify this exact invocation after any
+change to the runner's `param()` block.
+
 Expected: eight lines, every one `exit=0 scripterrors=0` with a PASS verdict,
 and the script itself exiting 0. **`scripterrors` must be 0 on every line** —
 that column, not the PASS text, is what proves no test aborted.

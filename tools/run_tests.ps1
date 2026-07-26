@@ -19,8 +19,17 @@ param(
 	[string]$Godot = 'C:\tmp\Godot47\Godot_v4.7-stable_win64_console.exe',
 	[string]$Demo = 'C:\Users\davta\Repos\Godot_WebXR_gh\demo'
 )
+# -Suite is [string[]], which binds correctly when PowerShell itself builds the
+# array (e.g. `& '.\run_tests.ps1' -Suite a,b,c`). But `-File` (the documented,
+# process-launching invocation) hands every argument to the child process as a
+# single string, so `-Suite a,b,c` arrives as ONE element "a,b,c" and binds to
+# a one-item array -- silently. The runner then "tests" one nonexistent path
+# and reports one failure, not four suites' worth of evidence. Split on commas
+# here so both invocation forms behave identically; this is deliberately safe
+# to run twice (splitting "a" on "," still yields "a").
+$suites = @($Suite | ForEach-Object { $_ -split ',' } | Where-Object { $_.Trim() -ne '' } | ForEach-Object { $_.Trim() })
 $failed = 0
-foreach ($s in $Suite) {
+foreach ($s in $suites) {
 	$cmdLine = "`"$Godot`" --headless --xr-mode off --path `"$Demo`" --script res://addons/$s.gd 2>&1"
 	$out = cmd /c $cmdLine
 	$code = $LASTEXITCODE

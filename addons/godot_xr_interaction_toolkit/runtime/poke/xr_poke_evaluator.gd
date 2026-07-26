@@ -40,10 +40,11 @@ var require_entry_through_face := true
 ## Gate: travel over the sample window must point inward within this angle.
 ## 90 makes it accept any inward motion.
 var max_approach_angle := 60.0
-## Below this window displacement the direction is noise and the angle test
-## ABSTAINS - which defers to require_entry_through_face rather than passing
-## outright (see _travel_is_inward). Without this a slow deliberate creep-in
-## the entry test cannot rescue would be needlessly rejected.
+## Below this window displacement the direction is noise, so the angle test
+## DECLINES rather than approving (see _travel_is_inward) - an OR gate cannot
+## let a test that can't judge vouch for a pass. A genuine slow, deliberate
+## creep-in still presses via require_entry_through_face, which arms on
+## having been seen in front of the surface, not on speed.
 var min_approach_travel := 0.003
 
 ## Opt-in: in-plane travel past drag_threshold while pressed reports DRAG and
@@ -229,22 +230,30 @@ func _angle_passes(state: Dictionary) -> bool:
 ## cos(angle) = -t.z / |t|, and requiring cos(angle) >= cos(max) with both
 ## sides non-negative squares to t.z^2 >= cos(max)^2 * |t|^2.
 ##
-## ABSTAIN, below min_approach_travel: the direction is noise at this scale.
-## Abstaining means DEFERRING to the entry test, not passing outright - it
-## returns `not require_entry_through_face`. With entry-through-face required
-## (the default), a bare pass here would arm the gate on its own: a source
+## DECLINE, below min_approach_travel: the direction is noise at this scale,
+## so this test cannot judge it and must NOT vouch for it. The gate is
+## `_entry_passes(state) or _angle_passes(state)`: in an OR, a test that
+## cannot tell must decline (false), never approve, or it becomes a blanket
+## pass on its own. A perfectly stationary source has travel_sq == 0, and
+## 0 >= 0 is true - so returning true here unconditionally would arm the gate
+## for a motionless finger with no angle information at all, reopening a
+## variant of the sweep-then-dwell hole this gate exists to close. A source
 ## that swept in laterally and then held still would press once its early,
 ## clearly-lateral samples aged out of the four-entry history window, with no
-## sample ever having been in front of the face - exactly the sweep the gate
-## exists to reject. A genuine slow creep-in is still armed, just by the
-## entry test (it WAS seen in front) rather than by this abstention. Only with
-## require_entry_through_face turned OFF does the abstain pass outright, since
-## then the angle test is the only gate left and a slow deliberate motion
-## should not be rejected purely for lacking speed.
+## sample ever having been in front of the face.
+##
+## A slow, deliberate press is not lost by this decline: a genuine creep-in
+## approaches from in front of the surface, so the entry test arms it instead
+## - this method is only ever REACHED when require_entry_through_face is true
+## and the source has not yet been seen in front (`_entry_passes` returned
+## false), since `or` short-circuits on the entry test's own true. With
+## require_entry_through_face turned off, `_entry_passes` always returns true
+## and this method is never called at all for that source, so its decline
+## never costs anything in that mode either.
 func _travel_is_inward(travel: Vector3) -> bool:
 	var travel_sq := travel.length_squared()
 	if travel_sq < min_approach_travel * min_approach_travel:
-		return not require_entry_through_face
+		return false
 	if travel.z > 0.0:
 		return false  # Moving outward, away from the surface.
 	var cos_max := cos(deg_to_rad(max_approach_angle))

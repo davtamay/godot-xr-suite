@@ -635,19 +635,19 @@ func _test_lateral_sweep_never_presses(failures: Array[String]) -> void:
 			"lateral sweep: expected no PRESSED, got %s" % [events])
 
 
-## I1: a genuine slow creep-in, rewritten after the abstain fix. The OLD
+## I1: a genuine slow creep-in, rewritten after the decline fix. The OLD
 ## version of this test fed two samples BOTH already at press depth with
 ## in_front never set, so it was actually testing a lateral drift AT depth
-## pressing on its own via a bare abstain - the exact bug I1 fixes, not a
-## creep toward the surface at all.
+## pressing on its own via a bare unconditional pass - the exact bug I1
+## fixes, not a creep toward the surface at all.
 ##
 ## This version starts genuinely in front (z > press_depth), which arms
 ## require_entry_through_face on the first sample; the second sample then
 ## creeps in slowly (window travel under min_approach_travel) with a small
 ## lateral component. The press now comes from the ENTRY test, per the design
-## ("Entry-through-face would usually rescue that case") - the abstain no
-## longer has to (and, per the fix, cannot) carry it alone when entry is
-## required and unsatisfied.
+## ("Entry-through-face would usually rescue that case") - the angle test's
+## below-threshold case declines rather than passing, so it cannot carry this
+## alone when entry is required and unsatisfied.
 func _test_slow_creep_rescued_by_entry(failures: Array[String]) -> void:
 	var evaluator = _make()
 	evaluator.require_entry_through_face = true
@@ -659,11 +659,14 @@ func _test_slow_creep_rescued_by_entry(failures: Array[String]) -> void:
 	_check(failures, _count(events, XRPokeEvaluator.Event.PRESSED) == 1,
 			"slow creep: expected 1 PRESSED, rescued by entry-through-face, got %s" % [events])
 
-	# With entry-through-face disabled and the source never in front (both
-	# samples already at press depth, same small lateral drift under the
-	# abstain threshold), the angle test is the only gate left - and the
-	# design still requires a genuine slow creep to press rather than being
-	# rejected purely for lacking speed.
+	# With entry-through-face disabled, _entry_passes returns true
+	# unconditionally regardless of in_front, so the `or` short-circuits and
+	# the angle test (and its decline rule) is never even reached here - this
+	# presses on depth-crossing alone, with no direction check at all. That is
+	# the correct, if permissive, behaviour of turning the entry gate off: a
+	# genuine slow creep must still press, and disabling entry-through-face
+	# must not accidentally reject it by routing through an angle test that,
+	# in this mode, never runs.
 	var no_entry_evaluator = _make()
 	no_entry_evaluator.require_entry_through_face = false
 	no_entry_evaluator.min_approach_travel = 0.003
@@ -680,9 +683,10 @@ func _test_slow_creep_rescued_by_entry(failures: Array[String]) -> void:
 ## a fixed in-bounds point, must never press - not even after the initial
 ## out-of-bounds sample ages out of the four-entry history window and leaves
 ## the angle test comparing the held point against itself (near-zero travel).
-## Before the fix, that near-zero travel made the abstain rule pass
-## unconditionally, arming the press with no sample ever having been in front
-## of the face - "a sweep presses whichever key you stop on".
+## Before the fix, that near-zero travel made the angle test's below-threshold
+## case pass unconditionally instead of declining, arming the press with no
+## sample ever having been in front of the face - "a sweep presses whichever
+## key you stop on".
 func _test_sweep_then_dwell_never_presses(failures: Array[String]) -> void:
 	var evaluator = _make()
 	var events := _run(evaluator, [

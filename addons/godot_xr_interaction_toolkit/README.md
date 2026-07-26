@@ -120,8 +120,11 @@ whenever the two matched.
 Arming is the OR of two tests. **Entry through the face**: the point must have
 been seen in front of the surface before it can press, so a hand sweeping
 sideways presses nothing. **Approach angle**: travel at the moment of crossing
-must point inward within `max_approach_angle`, abstaining below
-`min_approach_travel` so a slow deliberate press is never rejected on jitter.
+must point inward within `max_approach_angle`; below `min_approach_travel` the
+direction is noise and this test declines rather than approving, so it never
+becomes a blanket pass for a barely-moving or stationary point. A slow,
+deliberate press still isn't rejected on jitter - it presses via entry
+through the face instead, since it approaches from in front of the surface.
 Neither test dominates - each rescues a case the other falsely rejects.
 
 To restore pre-gate behaviour exactly: `require_entry_through_face = false`.

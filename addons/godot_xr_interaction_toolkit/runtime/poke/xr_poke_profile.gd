@@ -30,7 +30,11 @@ extends Resource
 ## Travel over the sample window must point inward within this angle. 90
 ## accepts any inward motion; 0 accepts only a perfectly axial approach.
 @export_range(0.0, 90.0, 1.0) var max_approach_angle := 60.0
-## Below this window displacement (metres) the direction is noise and the
-## angle test abstains. Do not set to 0: a slow, deliberate creep-in would
-## then be rejected on jitter alone.
+## Below this window displacement (metres) the direction is noise, so the
+## angle test declines rather than approving - it defers to
+## require_entry_through_face, which is what actually arms a genuine slow
+## creep-in (having been seen in front of the surface, not speed). Do not set
+## to 0: a perfectly stationary source has zero travel, and the angle
+## comparison's own 0 >= 0 would then read as a false pass with no direction
+## information behind it at all.
 @export_range(0.0, 0.02, 0.0005) var min_approach_travel := 0.003
