@@ -157,7 +157,7 @@ Recoil assist with velocity-dependent window expansion (inventory item 6's
 remaining piece), hand-to-shoulder distance (rejected above), and any change
 to near/direct grab.
 
-## Amendment (2026-07-26, from the first ATTRACT earn-in)
+## Amendment (2026-07-26, from the first ATTRACT earn-in) — IMPLEMENTED in c8ecfdc
 
 Three findings from the headset, all of which change the design rather than
 just its tuning.
@@ -212,3 +212,34 @@ earned in on device" was asserted from reading the transit and latch code
 without checking either one's preconditions. The transit had a guard at the top
 that excluded ordinary grabbables; the latch had a prerequisite nothing
 configures. Both were found in the headset, neither by a passing suite.
+
+### As implemented (c8ecfdc)
+
+The fix went further than the amendment above anticipated, because a probe
+disproved the intermediate attempt. Arming the transit for ATTRACT was **inert**:
+for a free grab `_compute_grab_offset` yields `desired = A · (A⁻¹ · X) = X`, an
+exact identity, so source and destination are the same transform, the duration
+is provably zero, and the object still crossed in one physics frame. That is why
+it still read as a snap after the first "fix".
+
+What actually works: **ATTRACT collapses the free-grab offset to identity, the
+way `snap_to_attach` already does.** ATTRACT is snap_to_attach for far grabs —
+that is the composition that genuinely exists, as against the two this document
+originally claimed. Objects with authored grab points keep their point-matching
+path untouched; only the free-grab case collapses.
+
+- `_movement_target_pose_for` targets the adapter's grip pose for ATTRACT and
+  leaves `_attach_pose_for` unchanged everywhere else, so two-hand math and
+  point matching are untouched.
+- `far_grab_attract_speed` defaults to 6.0 m/s — 3 m in half a second, against
+  `transit_speed`'s 1.5 m/s which gave two. `transit_speed` is untouched
+  because near-grab feel already depends on it.
+- A cubic ease-out applies to the ATTRACT transit's alpha only, so the object
+  decelerates into the hand instead of stopping dead. Its guard observes a
+  MID-transit position, not the landing point, since any easing curve agrees at
+  the endpoints.
+
+Both of this document's original "composes existing machinery" claims were made
+by reading code without checking its preconditions, and both were false in
+practice. Three device sessions and four green suites passed while ATTRACT never
+once worked.
