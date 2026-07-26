@@ -61,6 +61,7 @@ func _process(_delta: float) -> bool:
 	_test_canvas_cancel_pushes_the_release_off_panel(_failures)
 	_test_canvas_press_fires_the_control(_failures)
 	_test_canvas_hover_tracks_last_pointer_position(_failures)
+	_test_canvas_out_of_bounds_does_not_move_last_pointer_position(_failures)
 	_test_canvas_drag_is_gated_per_source(_failures)
 	if _failures.is_empty():
 		print("XR poke fidelity: PASS")
@@ -281,6 +282,43 @@ func _test_canvas_hover_tracks_last_pointer_position(failures: Array[String]) ->
 	var expected: Vector2 = panel.map_local_point_to_viewport(hover_point)
 	_check(failures, panel._last_pointer_position.is_equal_approx(expected),
 			"hover: _last_pointer_position must track a pure hover frame, expected %s got %s" % [expected, panel._last_pointer_position])
+	panel.queue_free()
+
+
+## Finding 1 (pass 3): the evaluator, not the adapter, owns the face
+## rectangle since this conversion - so a sample that is still within the
+## adapter's own z-reach test but OUTSIDE the panel's x/y rectangle (a
+## slide-off, same geometry as the cancel test below) reaches the
+## unconditional _last_pointer_position assignment unless the adapter also
+## checks bounds itself. map_local_point_to_viewport clamps u/v, so without
+## that check an out-of-panel sample would store a spurious clamped-to-edge
+## pixel instead of leaving the cursor at its last real position - exactly
+## what the pre-conversion code (bounds test gating the assignment) never
+## did.
+func _test_canvas_out_of_bounds_does_not_move_last_pointer_position(failures: Array[String]) -> void:
+	var panel := Node3D.new()
+	panel.set_script(XRUICanvasScript)
+	var viewport := SubViewport.new()
+	viewport.size = Vector2i(256, 256)
+	panel.add_child(viewport)
+	panel.viewport_path = panel.get_path_to(viewport)
+	panel.panel_size = Vector2(0.4, 0.4)
+	get_root().add_child(panel)
+
+	# First sample: in front and inside the rectangle -- establishes a known
+	# _last_pointer_position to check the next sample did NOT disturb.
+	var in_bounds_point := Vector3(0.0, 0.0, 0.050)
+	panel.poke_update(0, in_bounds_point)
+	var expected: Vector2 = panel.map_local_point_to_viewport(in_bounds_point)
+	_check(failures, panel._last_pointer_position.is_equal_approx(expected),
+			"out of bounds: setup must land the cursor at the in-bounds sample first")
+
+	# Second sample: still within the adapter's own z-reach (poke_range
+	# default 0.09, floor -0.06) but outside the panel's x half-size -- the
+	# same slide-off geometry the cancel test uses.
+	panel.poke_update(0, Vector3(0.300, 0.0, 0.008))
+	_check(failures, panel._last_pointer_position.is_equal_approx(expected),
+			"out of bounds: an out-of-panel sample must not move _last_pointer_position, expected %s got %s" % [expected, panel._last_pointer_position])
 	panel.queue_free()
 
 

@@ -131,12 +131,21 @@ func poke_update(source_id: int, world_point: Vector3) -> void:
 	else:
 		_poke_pins[source_id] = global_transform * pinned
 	var pixels := map_local_point_to_viewport(local)
-	# Unconditional on every in-range call - including plain hover frames where
+	# Reproduces the pre-conversion adapter's own rectangle test: cursor
+	# position is a presentation concern, not a press decision, so this is a
+	# deliberate duplication of one cheap comparison here rather than press
+	# logic (which the evaluator owns) leaking back into the adapter. Update
+	# on every IN-BOUNDS in-range call - including plain hover frames where
 	# the source is in front of the panel but has not yet crossed the press
 	# plane - so a reader consulting this during a poke hover gets the current
 	# point instead of stale data from the last PRESSED/RELEASED/drag event.
-	# Do NOT move this back into the branches below.
-	_last_pointer_position = pixels
+	# A point outside the panel rectangle (but still within z-reach) must NOT
+	# update it: map_local_point_to_viewport clamps u/v, so an out-of-bounds
+	# point would otherwise store a spurious edge pixel. Do NOT move this
+	# back into the branches below.
+	var inside := absf(local.x) <= panel_size.x * 0.5 and absf(local.y) <= panel_size.y * 0.5
+	if inside:
+		_last_pointer_position = pixels
 	match int(result["event"]):
 		_PokeEvaluator.Event.PRESSED:
 			_push_mouse_motion(pixels)
