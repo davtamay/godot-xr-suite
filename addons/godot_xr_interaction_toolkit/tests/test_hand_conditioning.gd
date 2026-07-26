@@ -31,6 +31,7 @@ func _init() -> void:
 	_test_fov_gate_out_of_cone_with_perfect_tracking_flags_is_lost(failures)
 	_test_fov_gate_head_rotation_moves_the_cone(failures)
 	_test_fov_gate_off_switch_keeps_out_of_cone_wrist_live(failures)
+	_test_fov_gate_ships_enabled(failures)
 	_test_fov_gate_inert_without_head_pose(failures)
 	_test_head_transform_in_origin_space_cancels_the_origins_world_pose(failures)
 	_test_publisher(failures)
@@ -925,6 +926,49 @@ func _single_wrist_source(wrist_pos: Vector3) -> _FovScriptedSource:
 func _head_pose(head_origin: Vector3, look_direction: Vector3) -> Transform3D:
 	return Transform3D(Basis.looking_at(look_direction, Vector3.UP), head_origin)
 
+## A gate with the FOV cone explicitly ON, for the tests that exercise the cone
+## MECHANISM. It currently matches the shipped default, and that is precisely
+## why it is spelled out here rather than inherited: when the default was
+## briefly flipped off, every one of these tests kept passing while asserting
+## nothing -- nine "out of cone" checks silently became checks on a disabled
+## code path, which is worse than having no tests at all. Opting in explicitly
+## means the mechanism stays tested no matter what the default does, and the
+## default is pinned separately by _test_fov_gate_ships_enabled.
+## _test_fov_gate_off_switch_keeps_out_of_cone_wrist_live deliberately does NOT
+## use this helper: it verifies the disabled path.
+func _fov_gate(source: XRHandPoseSource) -> XRHandConfidenceGate:
+	var gate := XRHandConfidenceGate.new(source)
+	gate.fov_gate_enabled = true
+	return gate
+
+
+## The cone SHIPS ON, and it is load-bearing for a reason that is not obvious
+## from its name -- which is exactly why this is pinned.
+##
+## It does not exist to suppress ray drift any more; that had a different root
+## cause (see test_hand_ray_symmetry). It exists to CLASSIFY the loss. A hand
+## leaving view is "unobservable but still on the user" and must freeze; a hand
+## whose data stops arriving may genuinely be gone and must expire. The
+## geometric test is the only signal that separates them.
+##
+## Turning it off was tried on device and the hand VANISHED on look-away,
+## because the out-of-view loss was then indistinguishable from data loss and
+## expired after hold_duration_sec. Anyone reading the class doc and concluding
+## "the drift bug is fixed, so this cone is dead weight" will reach for the
+## default again; this test is here to stop them, by name.
+func _test_fov_gate_ships_enabled(failures: Array[String]) -> void:
+	var shipped := XRHandConfidenceGate.new(_single_wrist_source(Vector3(0, 0, 1)))
+	if not shipped.fov_gate_enabled:
+		failures.append("the FOV cone must ship ENABLED -- with it off, an out-of-view hand's loss is indistinguishable from data loss, expires after hold_duration_sec, and the hand disappears (measured on device)")
+
+	# The behaviour that matters: a wrist behind the head must be reported LOST
+	# rather than live, which is what routes it to the freeze instead of the
+	# expiry.
+	shipped.set_head_pose(true, _head_pose(Vector3.ZERO, Vector3(0, 0, -1)))
+	var frame := XRHandFrame.new()
+	if shipped.capture(1, 0, frame):
+		failures.append("with the cone shipped on, a wrist directly behind the head must be classified as lost, not live")
+
 ## A wrist inside the default 80-degree half-angle cone -- dead ahead of a head
 ## at the origin facing -Z -- must stay live, on the very first frame and
 ## again on a second, ordinary one. This is the baseline every other FOV test
@@ -934,7 +978,7 @@ func _test_fov_gate_wrist_within_cone_stays_live(failures: Array[String]) -> voi
 	var wrist_pos := Vector3(0, 0, -1)  # straight ahead of a head facing -Z
 	var source := _FovScriptedSource.new()
 	source.wrist_positions = [wrist_pos, wrist_pos]
-	var gate := XRHandConfidenceGate.new(source)
+	var gate := _fov_gate(source)
 	gate.set_head_pose(true, _head_pose(Vector3.ZERO, Vector3(0, 0, -1)))
 	var frame := XRHandFrame.new()
 
@@ -953,7 +997,7 @@ func _test_fov_gate_wrist_within_cone_stays_live(failures: Array[String]) -> voi
 func _test_fov_gate_default_half_angle_is_generous(failures: Array[String]) -> void:
 	var forward := Vector3(0, 0, -1)
 	var off_center := forward.rotated(Vector3.UP, deg_to_rad(60.0))
-	var gate := XRHandConfidenceGate.new(_single_wrist_source(off_center))
+	var gate := _fov_gate(_single_wrist_source(off_center))
 	gate.set_head_pose(true, _head_pose(Vector3.ZERO, forward))
 	var frame := XRHandFrame.new()
 	if not gate.capture(1, 0, frame):
@@ -973,7 +1017,7 @@ func _test_fov_gate_wrist_outside_cone_counts_as_lost(failures: Array[String]) -
 
 	var source := _FovScriptedSource.new()
 	source.wrist_positions = [in_cone, in_cone, behind_head, behind_head]
-	var gate := XRHandConfidenceGate.new(source)
+	var gate := _fov_gate(source)
 	gate.hold_duration_sec = 0.25
 	gate.set_head_pose(true, head)
 	var frame := XRHandFrame.new()
@@ -997,7 +1041,7 @@ func _test_fov_gate_wrist_outside_cone_counts_as_lost(failures: Array[String]) -
 	# draws between connected and disconnected.
 	var frozen_source := _FovScriptedSource.new()
 	frozen_source.wrist_positions = [in_cone, behind_head, behind_head, behind_head, behind_head, behind_head]
-	var frozen := XRHandConfidenceGate.new(frozen_source)
+	var frozen := _fov_gate(frozen_source)
 	frozen.hold_duration_sec = 0.02  # ~1.4 frames at 72 Hz: long expired
 	frozen.set_head_pose(true, head)
 	var frozen_frame := XRHandFrame.new()
@@ -1016,7 +1060,7 @@ func _test_fov_gate_wrist_outside_cone_counts_as_lost(failures: Array[String]) -
 	# "freeze forever" could be implemented as "never expire anything".
 	var silent_source := _ScriptedSource.new()
 	silent_source.pattern = [true, false, false, false, false, false]
-	var silent := XRHandConfidenceGate.new(silent_source)
+	var silent := _fov_gate(silent_source)
 	silent.hold_duration_sec = 0.02
 	silent.set_head_pose(true, head)
 	var silent_frame := XRHandFrame.new()
@@ -1041,7 +1085,7 @@ func _test_fov_gate_out_of_cone_with_perfect_tracking_flags_is_lost(failures: Ar
 
 	var source := _FovScriptedSource.new()
 	source.wrist_positions = [in_cone, behind_head]
-	var gate := XRHandConfidenceGate.new(source)
+	var gate := _fov_gate(source)
 	gate.hold_duration_sec = 0.25
 	gate.set_head_pose(true, _head_pose(Vector3.ZERO, Vector3(0, 0, -1)))
 	var frame := XRHandFrame.new()
@@ -1063,13 +1107,13 @@ func _test_fov_gate_out_of_cone_with_perfect_tracking_flags_is_lost(failures: Ar
 func _test_fov_gate_head_rotation_moves_the_cone(failures: Array[String]) -> void:
 	var wrist_pos := Vector3(1, 0, 0)
 
-	var facing_gate := XRHandConfidenceGate.new(_single_wrist_source(wrist_pos))
+	var facing_gate := _fov_gate(_single_wrist_source(wrist_pos))
 	facing_gate.set_head_pose(true, _head_pose(Vector3.ZERO, wrist_pos))
 	var facing_frame := XRHandFrame.new()
 	if not facing_gate.capture(1, 0, facing_frame):
 		failures.append("a wrist must be live when the head is turned to face it directly")
 
-	var away_gate := XRHandConfidenceGate.new(_single_wrist_source(wrist_pos))
+	var away_gate := _fov_gate(_single_wrist_source(wrist_pos))
 	away_gate.set_head_pose(true, _head_pose(Vector3.ZERO, -wrist_pos))
 	var away_frame := XRHandFrame.new()
 	if away_gate.capture(1, 0, away_frame):
@@ -1101,12 +1145,12 @@ func _test_fov_gate_off_switch_keeps_out_of_cone_wrist_live(failures: Array[Stri
 func _test_fov_gate_inert_without_head_pose(failures: Array[String]) -> void:
 	var behind_head := Vector3(0, 0, 1)
 
-	var never_told := XRHandConfidenceGate.new(_single_wrist_source(behind_head))
+	var never_told := _fov_gate(_single_wrist_source(behind_head))
 	var never_told_frame := XRHandFrame.new()
 	if not never_told.capture(1, 0, never_told_frame):
 		failures.append("with set_head_pose never called, the FOV test must be inert")
 
-	var explicit_no_head := XRHandConfidenceGate.new(_single_wrist_source(behind_head))
+	var explicit_no_head := _fov_gate(_single_wrist_source(behind_head))
 	explicit_no_head.set_head_pose(false, _head_pose(Vector3.ZERO, Vector3(0, 0, -1)))
 	var explicit_frame := XRHandFrame.new()
 	if not explicit_no_head.capture(1, 0, explicit_frame):
@@ -1159,13 +1203,13 @@ func _test_head_transform_in_origin_space_cancels_the_origins_world_pose(failure
 
 	var wrist_origin_space: Vector3 = head_in_origin.origin + (-head_in_origin.basis.z) * 0.4
 
-	var correct_gate := XRHandConfidenceGate.new(_single_wrist_source(wrist_origin_space))
+	var correct_gate := _fov_gate(_single_wrist_source(wrist_origin_space))
 	correct_gate.set_head_pose(true, head_in_origin)
 	var correct_frame := XRHandFrame.new()
 	if not correct_gate.capture(1, 0, correct_frame):
 		failures.append("fixture broken: a wrist dead ahead of the correctly-converted head pose must be live")
 
-	var wrong_gate := XRHandConfidenceGate.new(_single_wrist_source(wrist_origin_space))
+	var wrong_gate := _fov_gate(_single_wrist_source(wrist_origin_space))
 	wrong_gate.set_head_pose(true, camera_world)  # WRONG: world, not origin-space
 	var wrong_frame := XRHandFrame.new()
 	if wrong_gate.capture(1, 0, wrong_frame):

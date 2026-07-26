@@ -241,6 +241,15 @@ func _update_ray(delta := 0.0) -> void:
     if hit_anything:
         end = hit["position"]
 
+    # Tell the adapter how far this ray actually reaches, so its stabilizer can
+    # scale its angular budget by range and cancel jitter at the ENDPOINT
+    # rather than at the hand (see XRAimStabilizer). Fed back after the fact,
+    # so it describes last frame's ray -- a frame of lag on a range estimate is
+    # immaterial, and it avoids a circular dependency with the pose we just
+    # asked for. has_method because adapters here are duck-typed.
+    if _adapter != null and _adapter.has_method("set_aim_endpoint"):
+        _adapter.set_aim_endpoint(hand, end)
+
     var hovered = null
     if hit_anything and _manager:
         var interactable = _manager.get_interactable_for_collider(hit["collider"])

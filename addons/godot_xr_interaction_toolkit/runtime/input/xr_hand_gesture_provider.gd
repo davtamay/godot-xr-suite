@@ -46,12 +46,39 @@ static func get_hand_ray_pose(tracker: XRHandTracker) -> Dictionary:
 
     # Pitch axis = across the knuckles (index -> pinky); it mirrors between hands,
     # so flip the tilt sign by the tracker's handedness.
-    var pinky := XRHandTracker.HAND_JOINT_PINKY_FINGER_PHALANX_PROXIMAL
-    var across := fwd.cross(Vector3.UP)
-    if joint_position_valid(tracker, pinky):
-        across = tracker.get_hand_joint_transform(pinky).origin - knuckle_pos
+    # ANATOMICAL first, and through several joints, because the fallback below
+    # is not equivalent. The pinky is the least reliably tracked knuckle on the
+    # hand, so keying only on it dropped to the world-derived axis often --
+    # exactly when the hand is edge-on or leaving view. Any of these knuckles
+    # gives a correctly-mirroring axis; the ring and middle ones survive
+    # partial tracking that loses the pinky.
+    var across := Vector3.ZERO
+    for candidate in [
+            XRHandTracker.HAND_JOINT_PINKY_FINGER_PHALANX_PROXIMAL,
+            XRHandTracker.HAND_JOINT_PINKY_FINGER_METACARPAL,
+            XRHandTracker.HAND_JOINT_RING_FINGER_PHALANX_PROXIMAL,
+            XRHandTracker.HAND_JOINT_MIDDLE_FINGER_PHALANX_PROXIMAL,
+    ]:
+        if joint_position_valid(tracker, candidate):
+            var axis := tracker.get_hand_joint_transform(candidate).origin - knuckle_pos
+            if axis.length_squared() >= 0.000001:
+                across = axis
+                break
+
     if across.length_squared() < 0.000001:
+        # LAST RESORT, and it must be mirrored by hand. fwd.cross(UP) has fixed
+        # chirality, so it does NOT flip between hands the way the anatomical
+        # axis above does -- but the pitch sign below flips regardless. Left
+        # and right therefore tilted in OPPOSITE directions whenever this
+        # branch was taken, which is precisely when a hand is leaving camera
+        # view and its outer knuckles stop being reported. Negating here
+        # restores the mirroring the pitch flip is written to expect, so both
+        # hands behave identically in the fallback as they do in the normal
+        # path. Reported on device as one hand feeling less stable than the
+        # other while out of view.
         across = fwd.cross(Vector3.UP)
+        if tracker.hand == XRPositionalTracker.TRACKER_HAND_RIGHT:
+            across = -across
     across = across.normalized()
     var pitch := deg_to_rad(HAND_RAY_PITCH_DOWN_DEGREES)
     if tracker.hand == XRPositionalTracker.TRACKER_HAND_RIGHT:

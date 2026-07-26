@@ -1,5 +1,7 @@
 extends "res://addons/godot_xr_interaction_toolkit/runtime/input/xr_input_adapter.gd"
 
+const XRAimStabilizerScript := preload("res://addons/godot_xr_interaction_toolkit/runtime/input/xr_aim_stabilizer.gd")
+
 ## Shared base for controller + hand-tracking input adapters. This is the single
 ## source of truth for the platform-agnostic behavior: reading XRController3D aim
 ## poses, the XRHandTracker hand-ray + grip poses, synthesized bare-hand
@@ -97,6 +99,47 @@ var _hand_aim_direction_filter := _make_hand_aim_direction_filter()
 # once a frame for the select-hold-time accounting below.
 var _last_process_delta := 1.0 / 72.0
 
+## Which stabilization the derived hand ray gets. ON is XRAimStabilizer: an
+## endpoint-anchored, range-scaled deadband (see that class). OFF restores the
+## One Euro direction filter and every value in the "Hand Ray Smoothing" group
+## above, unchanged.
+##
+## Both paths are kept deliberately. The One Euro values were tuned from
+## repeated on-device sessions and one over-stabilized aim has already been
+## rejected in-headset in this codebase; per CLAUDE.md's on-device earn-in rule
+## the incumbent is the baseline to BEAT, not something to delete on the
+## strength of a better-looking design. Flip this to compare the two on the
+## same build, and keep whichever wins in the headset.
+@export var use_aim_stabilizer := true
+## Per-hand, two channels (Hand.LEFT = 0, Hand.RIGHT = 1), same construction as
+## _hand_aim_direction_filter -- each hand adapts independently and cannot see
+## the other's history.
+##
+## preload rather than the global class_name: a global name only resolves once
+## the editor has written it into the class cache, so a NEW script referenced
+## by name fails to parse in a fresh headless run (`--script`, i.e. every test
+## suite). preload is what the rest of this codebase uses for the same reason.
+var _aim_stabilizer = XRAimStabilizerScript.new(2)
+## Latest ray endpoint per hand, set by interactors -- see set_aim_endpoint.
+var _aim_endpoint_hint := {}
+
+## Diagnostic for the platform-aim question -- see _probe_platform_aim. OFF by
+## default; it costs nothing until switched on.
+##
+## The question is only half answered. Measured over Quest Link (Oculus runtime
+## 1.205.0): platform=false on every sample including while hand_live=true, and
+## the boot log never mentions the profile, because Godot registers
+## /interaction_profiles/ext/hand_interaction_ext only when the runtime
+## advertises XR_EXT_hand_interaction and that runtime does not. So the binding
+## is inert over Link and the derived ray is still what ships there. Turn this
+## back on when running STANDALONE, or on Android XR / Pico / SteamVR, to find
+## out whether the profile activates and whether the runtime's aim differs from
+## ours. That is the measurement this exists for; do not delete it until it has
+## been taken on a runtime that advertises the extension.
+@export var debug_platform_aim := false
+var _probe_last_key := {}
+var _probe_last_separation := {}
+
 var _origin: Node3D
 var _controllers := {}
 var _select_down := {
@@ -161,6 +204,56 @@ func _process(_delta: float) -> void:
 	if synthesize_pinch_select:
 		_update_synthetic_pinch_select(Hand.LEFT)
 		_update_synthetic_pinch_select(Hand.RIGHT)
+	if debug_platform_aim:
+		_probe_platform_aim(Hand.LEFT)
+		_probe_platform_aim(Hand.RIGHT)
+
+
+## TEMPORARY measurement, to be deleted once the platform-aim question is
+## settled. Answers two things nothing else can: whether the runtime publishes
+## an aim pose for a TRACKED HAND at all (on OpenXR that requires the
+## hand-interaction profile to be bound AND advertised by the runtime; over
+## Link that is unverified), and whether that pose differs materially from the
+## wrist-to-knuckle direction we derive today. Logs raw -- NOT the smoothed
+## direction -- because the comparison is about the source, not the filter.
+func _probe_platform_aim(hand_id: int) -> void:
+	if not _valid_hand(hand_id) or _origin == null:
+		return
+
+	var tracker := XRHandTrackerResolver.get_tracker(hand_id)
+	var hand_live := tracker != null and tracker.has_tracking_data
+
+	var controller := _controllers.get(hand_id) as XRController3D
+	var has_platform := controller != null and controller.get_is_active() \
+			and controller.get_has_tracking_data()
+	var pose_name := controller.pose if controller != null else "<no controller>"
+
+	var platform_dir := Vector3.ZERO
+	if has_platform:
+		platform_dir = (-controller.global_transform.basis.z).normalized()
+
+	var derived_dir := Vector3.ZERO
+	var local_pose := XRHandGestureProvider.get_hand_ray_pose(tracker)
+	if not local_pose.is_empty():
+		derived_dir = (_origin.global_transform.basis * (local_pose["direction"] as Vector3)).normalized()
+
+	var separation := -1.0
+	if platform_dir != Vector3.ZERO and derived_dir != Vector3.ZERO:
+		separation = rad_to_deg(platform_dir.angle_to(derived_dir))
+
+	# Change-gated so this cannot repeat the 91k-line eye-height flood. Emits on
+	# a state change or a meaningful shift in either direction.
+	var key := "%d|%s|%s|%s" % [hand_id, hand_live, has_platform, pose_name]
+	var moved := separation >= 0.0 and absf(separation - _probe_last_separation.get(hand_id, -999.0)) >= 2.0
+	if key == _probe_last_key.get(hand_id, "") and not moved:
+		return
+	_probe_last_key[hand_id] = key
+	_probe_last_separation[hand_id] = separation
+
+	print("[aim-probe] hand=%d hand_live=%s platform=%s pose=%s platform_dir=%s derived_dir=%s sep_deg=%.1f" % [
+		hand_id, hand_live, has_platform, pose_name,
+		platform_dir.snappedf(0.001), derived_dir.snappedf(0.001), separation,
+	])
 
 
 ## Field-initializer helper for _hand_aim_direction_filter (GDScript field
@@ -238,19 +331,43 @@ func _hand_aim_pose(hand_id: int) -> Dictionary:
 	var tracker := XRHandTrackerResolver.get_tracker(hand_id)
 	var local_pose := XRHandGestureProvider.get_hand_ray_pose(tracker)
 	if local_pose.is_empty():
+		# Dropped. Clear history so reacquisition SNAPS to the recovered pose
+		# instead of slewing across the gap from where the hand used to be --
+		# the same reason XRHandConfidenceGate raises a discontinuity.
+		_aim_stabilizer.reset(hand_id)
 		return {}
 
 	var origin_xf := _origin.global_transform
 	var direction := (origin_xf.basis * (local_pose["direction"] as Vector3)).normalized()
-	# Smoothed BEFORE the basis is built, so every ray consumer (hover, select,
-	# _stabilized_hand_pose downstream) inherits the smoothed direction rather
+	var ray_origin: Vector3 = origin_xf * (local_pose["origin"] as Vector3)
+
+	# Settled BEFORE the basis is built, so every ray consumer (hover, select,
+	# _stabilized_hand_pose downstream) inherits the settled direction rather
 	# than each needing its own pass over the raw one.
-	direction = _smoothed_hand_aim_direction(hand_id, direction)
+	if use_aim_stabilizer:
+		var settled: Dictionary = _aim_stabilizer.stabilize(
+				hand_id, ray_origin, direction,
+				_aim_endpoint_hint.get(hand_id), _last_process_delta)
+		ray_origin = settled["origin"]
+		direction = settled["direction"]
+	else:
+		direction = _smoothed_hand_aim_direction(hand_id, direction)
+
 	return {
-		"origin": origin_xf * (local_pose["origin"] as Vector3),
+		"origin": ray_origin,
 		"direction": direction,
 		"basis": XRHandGestureProvider.basis_from_forward(direction),
 	}
+
+
+## Where this hand's ray currently terminates, in world space -- the hit point
+## or cursor. Lets the stabilizer scale its angular budget by how far the ray
+## actually reaches and cancel jitter at the END of the ray rather than at the
+## hand. Interactors call this each frame; passing null (or never calling it)
+## falls back to a nominal range, which still stabilizes, just less precisely.
+func set_aim_endpoint(hand_id: int, endpoint) -> void:
+	if _valid_hand(hand_id):
+		_aim_endpoint_hint[hand_id] = endpoint
 
 
 ## Adaptive smoothing on the derived hand-ray direction -- see the "Hand Ray

@@ -46,6 +46,27 @@ const _HANDS := 2
 ## behaviour EXACTLY -- suppressing a hand the user can actually see is a
 ## worse bug than the drift this exists to fix, so this must be trivial to
 ## disable in full.
+## ON, and the reason is NOT the one this cone was originally built for.
+##
+## It was built to suppress an out-of-view ray drift. That drift turned out to
+## have a different root cause entirely -- XRHandGestureProvider fell back to a
+## fixed-chirality pitch axis once the outer knuckles stopped being reported,
+## deflecting the LEFT hand's ray only (see test_hand_ray_symmetry, which fails
+## against the old code). So the original justification is gone.
+##
+## Turning it off was tried on device anyway, and made things WORSE in a way
+## that revealed what this cone actually does: it CLASSIFIES the loss. With the
+## cone on, a hand leaving view is "unobservable but still on the user", which
+## freezes it indefinitely. With the cone off, the very same loss looks like
+## ordinary data loss, so it expires after hold_duration_sec and the hand
+## VANISHES -- reported on device as "the left hand disappearing/appearing as
+## we look to the left". The geometric test is the only signal available that
+## tells those two states apart.
+##
+## Its cost is real and accepted: freezing parks the MESH in space while the
+## real hand moves on, seen as the hand sitting offset in front of the real one
+## for a beat before snapping back. That is the better of the two artifacts --
+## a hand that vanishes has already been rejected on device once before.
 @export var fov_gate_enabled := true
 ## Half-angle, in degrees, of the cone around the camera's forward axis a
 ## wrist must stay inside to count as observable. Quest hand-tracking cameras
