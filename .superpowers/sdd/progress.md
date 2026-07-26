@@ -180,3 +180,9 @@ require_entry_through_face = false, max_approach_angle = 90.
     to -0.06, so a point 4-6cm behind the panel would have been skipped where
     the pre-conversion code assigned. Duplicating one cheap rectangle test is
     correct here - cursor position is presentation, not press decision.
+
+Task 4: complete (commits 1826206..4f4e4be, review clean after three fix
+  passes). Both suites green: test_poke_fidelity and test_ui_canvas_pointer.
+  - Fix pass 3 mutation reproduced the predicted symptom exactly: dropping the
+    `inside` guard stored pixel x=1024.0 (u clamped to 1.0) where 512.0 was
+    correct. That is the spurious edge pixel the finding described.
