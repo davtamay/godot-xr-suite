@@ -105,6 +105,29 @@ runtime `XRController3D` aim pose first. On Quest hand tracking this better
 matches the stable Meta OS cursor. The joint-derived hand ray remains available
 as a fallback or experiment by setting `prefer_hand_ray = true`.
 
+### Far grab
+
+`far_grab_mode` on any `XRGrabInteractable` decides what a RAY grab means.
+Near/direct grab is unaffected by all of this.
+
+- **ATTRACT** (default) — the object comes to your hand and stays. This is the
+  common intent: you almost always mean "I want that thing", not "I want that
+  thing at 2.4 metres". It is composed from the existing transit tween and grip
+  latch rather than a separate motion path, so it inherits their tuning.
+- **FIXED** — holds the distance you grabbed it at and follows your aim. Never
+  reels, never attracts, and never blends into your grip even if you grabbed it
+  from close. The predictable option, for placing and arranging.
+- **REEL** — hand motion along the ray winds it in and out. The previous
+  default, now opt-in.
+
+`XRRayInteractor`'s distance exports (`distance_motion_scale`,
+`max_distance_change_per_second`, `reel_to_grip_distance`) are **limits that
+REEL obeys**, not global policy. An object in ATTRACT or FIXED ignores them.
+
+The reel projection axis is captured once, at grab. Earlier it tracked the live
+ray direction, which made aiming and reeling the same input — pulling your arm
+back also tilted the ray, so the object slewed sideways while you wound it in.
+
 ### Poke feel
 
 `XRPokeProfile` is one resource carrying a project's whole poke feel: press
