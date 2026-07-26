@@ -318,3 +318,44 @@ installed here, it is `powershell -ExecutionPolicy Bypass -File`.
   a silent false pass, but a real robustness gap in a checked-in tool.
 - Task 8: XRPokeEvaluator._sources never prunes entries. Pre-existing, shared
   by all three adapters.
+
+## FINAL WHOLE-BRANCH REVIEW (opus) - five Important findings, all fixed
+Commits 841a9fc, 2db8230, 5b62718, 993c7e2.
+
+I1. THE ABSTAIN RULE WAS A HOLE IN MY OWN DESIGN. In an AND gate an abstention
+    is neutral; in the OR gate it is DECISIVE - it armed the press by itself and
+    require_entry_through_face could not veto it. Verified: a lateral sweep that
+    DWELLS presses after ~3 frames, once the fast samples age out of the 4-entry
+    window. So "a sweep presses nothing" was false; it was "a sweep presses
+    whichever key you stop on". Worse, _test_slow_creep_abstains_and_presses
+    ASSERTED that behaviour - its subject was a lateral drift at depth, not a
+    creep toward the surface.
+    Final form: the guard now DECLINES (return false) rather than approving. A
+    test that cannot judge direction must not vouch. Genuine slow creeps come
+    from in front and are armed by the entry test. Deleting the guard outright
+    was rejected: a stationary source has travel.z == 0 and travel_sq == 0, so
+    the squared comparison reads 0 >= 0 = true, a blanket pass.
+I2. A drag had no terminal event, so the station's DragHandle stayed in its
+    held colour forever after the first drag. Added DRAG_ENDED.
+I3. _plane_u mirrored BOTH drag axes on the default face (normal.cross(up)
+    gives u = -X for Z_PLUS), so dragged reported the finger moving the wrong
+    way and the handle slid away from it. Both drag fixtures hid this by feeding
+    NEGATIVE world x and documenting the negation as a convention - a test
+    written to the implementation. Fixed to up.cross(normal).
+I4. All three station pokeables sat on their box MID-PLANE, so keys fired 5mm
+    before contact and the pin clamped INSIDE the box - undercutting Task 6 on
+    the very targets built to demo it. XRPokeable's doc now states the press
+    plane is its own origin plane.
+I5. A skim below press_depth then a jab was rejected by BOTH gates. The angle
+    test now checks the most recent step as well as the whole window.
+
+### tools/run_tests.ps1 was broken TWICE
+First: captured stdout only, while Godot writes SCRIPT ERROR to stderr, so the
+scripterrors column could never be non-zero.
+Second: the DOCUMENTED invocation (powershell -File ... -Suite a,b,c) passed the
+comma list as ONE string, so it ran one nonexistent path instead of eight
+suites. The in-process form worked, which is why it went unnoticed.
+Both fixed; both invocation forms now verified, and a crashing probe is still
+correctly flagged.
+
+## STATUS: all eight tasks complete. ON-DEVICE EARN-IN REMAINS OPEN.
