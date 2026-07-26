@@ -355,3 +355,60 @@ code change.
   52 mm and 72 mm valid bands need >3 m/s to skip. Claiming a fix there would
   be fixing an unmeasured problem.
 - Items 4, 5 and 8 of the inventory.
+
+## Earn-in checklist (OPEN — this has not been run)
+
+Everything above is verified headlessly. None of it is verified in a headset,
+and this change alters behaviour on two paths that were tuned on device, so
+per `CLAUDE.md` it does not merge until this passes.
+
+Build and install:
+
+```
+pwsh tools/export-xr.ps1 -Target APK
+adb install -r -g demo/build/android/universal/GodotXR-universal-debug.apk
+```
+
+### A. Nothing that worked may stop working
+
+The gate can only make poking STRICTER. Nothing that worked can start
+misfiring, but a gesture that worked could stop. These are the ones most
+likely to be newly rejected, gathered from each task's implementer.
+
+| # | Check | Pass condition |
+|---|---|---|
+| A1 | `control_panel_demo`, the three `XRPokeButton` caps | Identical feel: same depth, same firing point |
+| A2 | `control_panel_demo`, `TouchPanel` buttons | Press unchanged |
+| A3 | `TouchPanel` slider, approached from the SIDE | Still drags |
+| A4 | A button near the panel EDGE, reached at a shallow angle | Still presses |
+| A5 | Fast swipe across several panel buttons | Behaves as before |
+| A6 | Quick double-tap re-press on one button | Both presses register |
+| A7 | Deliberate SLOW press, almost creeping in | Presses (entry test carries this) |
+| A8 | Hard fast slap | Presses once, no double-fire |
+| A9 | **Skim along a surface within ~12 mm, then jab** | Presses. This one was rejected by both gates before the final fix; it is the least-proven case here |
+| A10 | Two hands on ONE button cap | No wrong-hand or missed press (arming is now per-source, not one shared hysteresis) |
+
+### B. The new behaviour actually works
+
+| # | Check | Pass condition |
+|---|---|---|
+| B1 | Sweep a fingertip laterally across the dense key row | Presses NOTHING |
+| B2 | Sweep across, then STOP and rest on a key | Still presses nothing (this was the final review's I1) |
+| B3 | Poke one key straight on | Presses exactly that key |
+| B4 | Drag the handle | Slides WITH the finger, in the same direction |
+| B5 | Release the handle after a drag | Does not fire, and its colour returns to rest |
+| B6 | Press the cancel target, then slide off its face | Reads "cancelled, not fired" |
+| B7 | Push a fingertip into any poke target | The marker dot STOPS on the surface |
+
+### C. Revert lever
+
+If A1–A10 regress, no code change is needed:
+`require_entry_through_face = false` and `max_approach_angle = 90` restore
+pre-gate behaviour. Note that disabling the entry test alone opens the gate
+entirely — the angle test is then never reached.
+
+### D. Record the result
+
+Append the outcome of every row above to this document, with the date and
+device. Report honestly if a row fails. Do not mark item 6 done in
+`Godot_WebXR_gh/docs/INNOVATION_BACKLOG.md` until every row passes.
