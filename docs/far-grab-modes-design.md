@@ -156,3 +156,59 @@ change.
 Recoil assist with velocity-dependent window expansion (inventory item 6's
 remaining piece), hand-to-shoulder distance (rejected above), and any change
 to near/direct grab.
+
+## Amendment (2026-07-26, from the first ATTRACT earn-in)
+
+Three findings from the headset, all of which change the design rather than
+just its tuning.
+
+### ATTRACT must target the adapter's grip pose, not a distance along the ray
+
+Reported: "still there is distance with the attract one, i think it should go
+straight to our hand". Correct, and the cause is a wiring gap.
+
+`_resolve_grab_pose` reels a held object into the grip, but sources that grip
+from `suppress_interactor_path` — and **that property is set in no scene in the
+repository**. So `_grip_pose()` always returns `{"valid": false}`, the
+reel-to-grip blend and latch never fire at all, and ATTRACT parks the object at
+`min_grab_distance` (0.25 m) *in front of* the hand.
+
+The original design said ATTRACT would compose the existing grip latch. That
+was true of the code path and false in practice, because nothing configures the
+path's one prerequisite. **ATTRACT now targets `_adapter.get_grip_pose(hand)`
+directly**, which is always available and needs no scene wiring.
+
+### The `grip_latched` ray hide was duplicate machinery
+
+A proximity-based hide already exists — `hide_ray_when_held_within`, default
+0.25, comparing the held object against the adapter's real grip origin
+(commit `2944a22`, predating this branch). The `grip_latched` flag added during
+this work keys off a latch that never fires, so it could never hide anything,
+and it duplicates a mechanism that already works off a better signal.
+
+Removed. Once ATTRACT actually delivers the object to the hand, the existing
+proximity hide takes care of the ray by itself. Two symptoms, one cause, one
+fix.
+
+### Attract speed and easing are authorable, and separate from `transit_speed`
+
+Reported: "as far as fast, anything appealing to the eye, it is too snappy,
+maybe thats something to expose an authoring field".
+
+`transit_speed` is shared with near-grab feel that is already earned in, so
+moving it would drag settled behaviour along. A separate
+`far_grab_attract_speed` on the interactable lets a heavy crate arrive
+differently from a thrown ball — the authorability angle this whole feature
+exists to serve.
+
+"Too snappy" is also the easing, not only the speed: `transit_blend` is linear,
+so the object travels at constant velocity and stops dead. An ease-out makes it
+decelerate into the hand, which reads as arriving rather than colliding.
+
+### What this says about the original design claim
+
+"ATTRACT adds almost no new machinery — it composes two mechanisms already
+earned in on device" was asserted from reading the transit and latch code
+without checking either one's preconditions. The transit had a guard at the top
+that excluded ordinary grabbables; the latch had a prerequisite nothing
+configures. Both were found in the headset, neither by a passing suite.
