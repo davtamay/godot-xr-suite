@@ -77,13 +77,6 @@ func _sync_evaluator() -> void:
 	_evaluator.release_depth = canonical_release_depth()
 	_evaluator.half_size = Vector2.ZERO  # Round cap: the button bounds it below.
 	_evaluator.interpret_drag = false
-	# The old button had no lateral-entry gating at all - pure depth threshold
-	# and hysteresis, every frame, regardless of approach history. The cap's
-	# own radius + reach-window test in poke_update is what bounds it, so the
-	# evaluator's "must enter through the face" gate (built for panels swept
-	# sideways) must stay off here or a single-sample fast poke - which never
-	# gets to arm in_front or build two history points - would be dropped.
-	_evaluator.require_entry_through_face = false
 	# Gate only: a cap's throw is geometry (travel, press_fraction), so a
 	# shared project profile must not overwrite the depths derived above.
 	_evaluator.apply_profile(poke_profile, false)
@@ -94,12 +87,20 @@ func _sync_evaluator() -> void:
 func poke_update(source_id: int, world_point: Vector3) -> void:
 	_sync_evaluator()
 	var local := global_transform.affine_inverse() * world_point
-	# Round cap: the button owns this bounds test, the evaluator owns the rest.
+	# Round cap: the button owns this bounds test, the evaluator owns the
+	# rest. Leaving the cap's radius is a SHAPE exit, not a reach exit - the
+	# finger is still nearby, just off the round cap the evaluator's own
+	# half_size can't describe - so it must keep sample history the same way
+	# the evaluator's own rectangular-bounds exit does, or a fast approach
+	# whose previous sample fell outside the cap can never be rescued by the
+	# angle test.
 	if Vector2(local.x, local.z).length() > cap_radius + _FINGER_RADIUS:
-		poke_end(source_id)
+		_leave_shape(source_id)
 		return
 	var cap_rest_top := _cap_rest_y + _cap_height * 0.5
 	var finger_bottom := local.y - _FINGER_RADIUS
+	# Genuinely out of reach (more than 5 cm above the cap) - the source is
+	# gone, not merely beside the shape, so this forgets it outright.
 	if finger_bottom > cap_rest_top + 0.05:
 		poke_end(source_id)
 		return
@@ -129,6 +130,19 @@ func poke_end(source_id: int) -> void:
 	if _evaluator != null:
 		_evaluator.forget(source_id)
 		_pressed_sources.erase(source_id)
+	_update_pressed_state()
+
+
+## The source left the cap's round SHAPE but may still be nearby (unlike
+## poke_end, which means the source is gone). Keeps the evaluator's sample
+## history via leave_bounds() instead of wiping it via forget().
+func _leave_shape(source_id: int) -> void:
+	_penetrations.erase(source_id)
+	_pins.erase(source_id)
+	if _evaluator != null:
+		var event: int = _evaluator.leave_bounds(source_id)
+		if event == _PokeEvaluator.Event.CANCELLED:
+			_pressed_sources.erase(source_id)
 	_update_pressed_state()
 
 

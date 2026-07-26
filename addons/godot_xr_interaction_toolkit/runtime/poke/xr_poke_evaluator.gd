@@ -141,6 +141,17 @@ func forget(source_id: int) -> Event:
 	return _exit(_sources[source_id], false)
 
 
+## The source left this target's SHAPE but is still nearby - the counterpart of
+## the evaluator's own bounds exit, for adapters whose face is not a rectangle
+## (a round cap). Keeps the sample history, so a fast approach whose previous
+## sample fell outside the shape can still be rescued by the angle test.
+## Use forget() instead when the source is genuinely gone.
+func leave_bounds(source_id: int) -> Event:
+	if not _sources.has(source_id):
+		return Event.NONE
+	return _exit(_sources[source_id], true)
+
+
 ## True while any source is pressed - for adapters that expose is_pressed().
 func is_pressed() -> bool:
 	for state in _sources.values():

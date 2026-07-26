@@ -66,6 +66,8 @@ func _process(_delta: float) -> bool:
 	_test_canvas_drag_is_gated_per_source(_failures)
 	_test_poke_button_fires_on_a_fast_poke(_failures)
 	_test_poke_button_thresholds_are_unchanged(_failures)
+	_test_poke_button_lateral_sweep_never_presses(_failures)
+	_test_poke_button_fast_diagonal_rescued_by_history(_failures)
 	if _failures.is_empty():
 		print("XR poke fidelity: PASS")
 		quit(0)
@@ -707,18 +709,72 @@ func _test_mixed_axis_half_size(failures: Array[String]) -> void:
 			"mixed axis: half_size.y = 0.05 must still bound y and cancel, got %s" % [y_events])
 
 
+## Both samples land within the reach window (cap_rest_top ~= 0.048, reach
+## guard 0.098), so this isolates the fast-poke bottoming-out fix from the
+## reach/entry gate: sample 1 (y=0.060) is in front (arms in_front, no
+## penetration), sample 2 (y=-0.020, ~8 cm lower - a hard slap, ~4.8 m/s at
+## 60 Hz) lands fully bottomed out in ONE step - the sample the old
+## `local.y < -0.01: continue` guard threw away. entry_passes (in_front, set
+## by sample 1) rescues the press; the clamp is what lets it register as
+## bottomed out instead of "absent."
 func _test_poke_button_fires_on_a_fast_poke(failures: Array[String]) -> void:
 	var button := Node3D.new()
 	button.set_script(XRPokeButtonScript)
 	get_root().add_child(button)
 	var fired := {"count": 0}
 	button.pressed.connect(func(): fired["count"] += 1)
-	# Above the cap, then in ONE step past the base - the sample the old
-	# `local.y < -0.01: continue` guard threw away.
-	button.poke_update(0, button.global_transform * Vector3(0.0, 0.120, 0.0))
+	button.poke_update(0, button.global_transform * Vector3(0.0, 0.060, 0.0))
 	button.poke_update(0, button.global_transform * Vector3(0.0, -0.020, 0.0))
 	_check(failures, fired["count"] == 1,
 			"poke button: a fast poke must fire once, fired %d" % fired["count"])
+	button.queue_free()
+
+
+## A lateral sweep through the cap at a CONSTANT, already-bottomed-out depth,
+## entering and leaving through the round shape rather than approaching from
+## above. require_entry_through_face must reject this (in_front is never set,
+## since every in-radius sample is already past press_depth) and the angle
+## test must independently reject it too (the travel between in-radius
+## samples is almost pure lateral, z-component ~0, failing max_approach_angle
+## well before the 60 degree limit). This is the behaviour the restored gate
+## exists to provide - nothing previously asserted it for the button.
+func _test_poke_button_lateral_sweep_never_presses(failures: Array[String]) -> void:
+	var button := Node3D.new()
+	button.set_script(XRPokeButtonScript)
+	get_root().add_child(button)
+	var fired := {"count": 0}
+	button.pressed.connect(func(): fired["count"] += 1)
+	button.poke_update(0, button.global_transform * Vector3(-0.100, -0.020, 0.0))
+	button.poke_update(0, button.global_transform * Vector3(-0.020, -0.020, 0.0))
+	button.poke_update(0, button.global_transform * Vector3(0.000, -0.020, 0.0))
+	button.poke_update(0, button.global_transform * Vector3(0.020, -0.020, 0.0))
+	button.poke_update(0, button.global_transform * Vector3(0.100, -0.020, 0.0))
+	_check(failures, fired["count"] == 0,
+			"poke button: a lateral sweep through the cap must not press, fired %d" % fired["count"])
+	button.queue_free()
+
+
+## The fast-diagonal-rescue-via-history case, for the round cap specifically.
+## Sample A lands inside the cap's radius, in front (arms in_front, and is
+## the evaluator's first-ever history entry for this source). Sample B lands
+## OUTSIDE the radius - a shape exit - which must keep that history entry
+## alive (and, like any exit, clears in_front). Sample C lands back inside
+## the radius, bottomed out: entry_passes is false (in_front was cleared by
+## B), so only the angle test - comparing C against the SURVIVING sample A,
+## skipping B entirely - can rescue the press. If the radius exit forgets
+## instead of merely leaving bounds, A is wiped along with B and there is
+## nothing left for the angle test to compare against.
+func _test_poke_button_fast_diagonal_rescued_by_history(failures: Array[String]) -> void:
+	var button := Node3D.new()
+	button.set_script(XRPokeButtonScript)
+	get_root().add_child(button)
+	var fired := {"count": 0}
+	button.pressed.connect(func(): fired["count"] += 1)
+	button.poke_update(0, button.global_transform * Vector3(0.000, 0.060, 0.0))  # A: inside, in front
+	button.poke_update(0, button.global_transform * Vector3(0.100, 0.060, 0.0))  # B: outside the radius
+	button.poke_update(0, button.global_transform * Vector3(0.010, -0.020, 0.0))  # C: inside, bottomed out
+	_check(failures, fired["count"] == 1,
+			"poke button: a fast diagonal rescued via surviving history must fire once, fired %d" % fired["count"])
 	button.queue_free()
 
 
