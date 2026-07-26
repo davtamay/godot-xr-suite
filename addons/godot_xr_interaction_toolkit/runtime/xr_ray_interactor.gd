@@ -249,6 +249,14 @@ func _update_ray(delta := 0.0) -> void:
         "hit": hit_anything,
         "hovered": hovered,
         "grab_distance": _grab_distance,
+        # Once the held object has arrived in the grip this is no longer a far
+        # interaction - it is a hand-hold that happens to have started as one.
+        # Consumers (the line visual) use this to stop drawing a beam to
+        # something already in your fist. David, on device: "we still see the
+        # far ray cast ... i thought we should have seen the grabed item going
+        # smoothly towards to hand to be on the grip, not showing any far
+        # raycast".
+        "grip_latched": _grip_latched,
     }
     _last_ray_origin = origin
     _last_ray_direction = direction

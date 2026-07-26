@@ -295,7 +295,15 @@ func in_transit() -> bool:
 func _arm_transit(interactor) -> void:
 	_transit_duration = 0.0
 	_transit_time_left = 0.0
-	if not (_point_grab or (snap_to_attach and _grab_points.is_empty())):
+	# ATTRACT is a travel operation by definition, so it needs the tween even
+	# with no authored grip. The original guard only armed for point grabs and
+	# snap_to_attach, because an ordinary grab keeps the object where it already
+	# sits relative to the hand and has nothing to travel. That made the design
+	# claim "ATTRACT composes the existing transit" true only for authored
+	# grips - a plain grabbable armed no transit at all and jumped. David, on
+	# device: "it feels like a snap near the hand".
+	var attracting: bool = interactor is XRRayInteractor and far_grab_mode == FarGrabMode.ATTRACT
+	if not (_point_grab or (snap_to_attach and _grab_points.is_empty()) or attracting):
 		return
 	var target_node := get_target()
 	# Same out-of-tree hazard as _compute_grab_offset, and this one is reached

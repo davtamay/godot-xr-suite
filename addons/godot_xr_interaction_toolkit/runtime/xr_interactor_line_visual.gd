@@ -35,6 +35,13 @@ func _process(_delta: float) -> void:
         visible = false
         return
 
+    # A latched grip means the object has arrived in the hand, so this stopped
+    # being a far interaction. Drawing a beam from your hand to something you
+    # are already holding reads as the grab having failed.
+    if state.get("grip_latched", false):
+        visible = false
+        return
+
     var from_point: Vector3 = state["origin"]
     var to_point: Vector3 = state["end"]
     if from_point.distance_squared_to(to_point) < 0.000001:
