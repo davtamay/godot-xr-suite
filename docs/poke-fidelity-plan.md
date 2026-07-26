@@ -1419,9 +1419,22 @@ git commit -m "feat: the poke dot stops on the surface instead of sinking throug
 ### Task 7: The station that proves it
 
 **Files:**
-- Modify: `addons/godot_xr_interaction_toolkit/runtime/xr_poke_station.gd`
-- Modify: `addons/godot_xr_interaction_toolkit/samples/poke_playground_demo.tscn`
-- Modify: `addons/godot_xr_interaction_toolkit/samples/poke_playground_demo.gd`
+- Modify: `addons/godot_xr_interaction_toolkit/runtime/xr_poke_station.gd` (the only file this task changes)
+
+**Correction to an earlier draft of this plan.** It named
+`poke_playground_demo.tscn` / `.gd`. That was wrong: `XRPokeStation` is
+instanced in exactly one place, `control_panel_demo.tscn`, as the script on a
+`PokeSection` node whose children are `Stand/CounterButton`,
+`Stand/LightButton`, `Stand/ColorButton`, `TouchPanel`, `Orb`.
+`poke_playground_demo.tscn` does NOT use the station script at all — it
+duplicates the same wiring in its own `poke_playground_demo.gd`. Adding nodes
+there and wiring them in the station would have touched two disconnected
+things and produced no working demo.
+
+The wiring therefore goes in `xr_poke_station.gd`, which is the droppable
+block the dock ships, and which `control_panel_demo.tscn` already instances. The pre-existing duplication between the station script and
+`poke_playground_demo.gd` is left alone and recorded as a follow-up — folding
+the playground onto the station block is its own change.
 
 **Interfaces:**
 - Consumes: `XRPokeable` signals `pressed`, `cancelled`, `dragged` from Task 3.
@@ -1430,105 +1443,65 @@ git commit -m "feat: the poke dot stops on the surface instead of sinking throug
 `XRPokeable` has had zero consumers anywhere in the suite. This task creates
 the first ones, and each exists to make one gate behaviour visible.
 
-- [ ] **Step 1: Add the dense button row to the station scene**
+- [ ] **Step 1: Build the new targets in code, not in the scene file**
 
-In `poke_playground_demo.tscn`, add under `Stand` a `Node3D` named `DenseRow`
-containing five `StaticBody3D` children named `Key0`..`Key4`, each with a
-`BoxMesh` of size `(0.03, 0.03, 0.01)` and a matching `BoxShape3D`, spaced
-0.035 m apart along local X (so the gaps are smaller than the keys — the
-layout that is unusable without the gate). Each body gets a child `Node3D`
-with `xr_pokeable.gd` attached, `poke_face = Z_PLUS`, `half_size = Vector2(0.015, 0.015)`.
+**Second correction to this task.** An earlier draft had the dense row, drag
+handle and cancel target hand-authored as nodes in `control_panel_demo.tscn`.
+Build them in `xr_poke_station.gd` instead. Reasons, in order of weight:
 
-Then add a `Label3D` named `DenseRowLabel` above the row, text
-`SWEEP ME - only a poke through the face presses`.
+1. Hand-editing a 400-line `.tscn` (unique `sub_resource` ids, `ext_resource`
+   ids, `load_steps` in the header, exact `parent=` paths) is a large surface
+   for silent breakage, and the failure mode is a scene that loads with
+   missing nodes rather than an error.
+2. `XRPokeButton._build_visuals` already establishes the precedent: sample
+   geometry in this addon is built in code.
+3. It makes `XRPokeStation` self-contained — drop the block into any scene and
+   the full demo appears, instead of only working where someone authored the
+   right children.
 
-- [ ] **Step 2: Add a drag handle and a cancel target**
+`control_panel_demo.tscn` is therefore NOT modified. The only file this task
+changes is `xr_poke_station.gd`.
 
-Under `Stand`, add a `StaticBody3D` named `DragHandle` with a `BoxMesh`
-`(0.12, 0.02, 0.01)` and matching shape, holding an `xr_pokeable.gd` child with
-`interpret_drag = true`, `drag_threshold = 0.01`,
-`half_size = Vector2(0.06, 0.01)`. Add `Label3D` `DragHandleLabel`, text
-`DRAG ME - a handle does not fire on let-go`.
+Add a `_build_gate_demo()` called from `_ready()`, after the existing lookups,
+which constructs three things under the station:
 
-Under `Stand`, add a `StaticBody3D` named `CancelTarget` with a `BoxMesh`
-`(0.06, 0.06, 0.01)`, an `xr_pokeable.gd` child with default settings, and a
-`Label3D` `CancelTargetLabel` with text
-`PRESS THEN SLIDE OFF - it cancels, it does not fire`.
+- **DenseRow** — five `StaticBody3D` keys in a row, each a `BoxMesh`
+  `(0.03, 0.03, 0.01)` with a matching `BoxShape3D`, spaced **0.035 m** apart
+  along local X so the gaps are smaller than the keys. Each carries an
+  `XRPokeable` child with `poke_face = Face.Z_PLUS` and
+  `half_size = Vector2(0.015, 0.015)`. This layout is unusable without the
+  approach gate — that is the point of it.
+- **DragHandle** — a `StaticBody3D` with a `BoxMesh` `(0.12, 0.02, 0.01)` and
+  matching shape, carrying an `XRPokeable` with `interpret_drag = true`,
+  `drag_threshold = 0.01`, `half_size = Vector2(0.06, 0.01)`.
+- **CancelTarget** — a `StaticBody3D` with a `BoxMesh` `(0.06, 0.06, 0.01)`
+  and matching shape, carrying an `XRPokeable` with default settings.
 
-- [ ] **Step 3: Wire them in the station script**
+Give each a `Label3D` caption: `SWEEP ME - only a poke through the face
+presses`, `DRAG ME - a handle does not fire on let-go`, and `PRESS THEN SLIDE
+OFF - it cancels, it does not fire`. Place the group clear of the existing
+`Stand` children so nothing overlaps.
 
-Add to `xr_poke_station.gd` (TABS), inside `_ready` after the existing lookups:
+Use the addon's existing bake-safe material (`_LINE_MATERIAL` in
+`xr_poke_button.gd` is loaded from
+`res://addons/godot_xr_interaction_toolkit/runtime/xr_line_material.tres`) —
+runtime-created `StandardMaterial3D`s do not survive WebGPU shader baking
+without a bake anchor, and this addon targets web.
 
-```gdscript
-	_wire_dense_row()
-	_wire_drag_handle()
-	_wire_cancel_target()
-```
+Set collision layers to match what `XRPokeInteractor.poke_collision_mask`
+scans (default mask 1), or the interactor's sphere query will never find these
+bodies. Verify against the existing pokeable bodies in the scene rather than
+assuming.
 
-And the methods:
+- [ ] **Step 2: Wire them up**
 
-```gdscript
-## Five keys spaced closer than their own width. Sweeping a fingertip across
-## them presses nothing; poking one through its face presses exactly one. This
-## layout is the reason the approach gate exists.
-func _wire_dense_row() -> void:
-	var row := get_node_or_null("Stand/DenseRow")
-	if row == null:
-		return
-	for index in row.get_child_count():
-		var key := row.get_child(index)
-		for child in key.get_children():
-			if child is XRPokeable:
-				child.pressed.connect(_on_dense_key.bind(index))
+Guard every lookup — the station must not error when a piece is absent. Keep
+the handlers small; each exists to make one gate behaviour visible.
 
-
-func _on_dense_key(_hand: int, index: int) -> void:
-	if _orb_material:
-		_orb_material.albedo_color = _COLORS[index % _COLORS.size()]
-
-
-## A handle reports drags and does NOT activate on let-go, so releasing it
-## after a slide cannot read as a button press.
-func _wire_drag_handle() -> void:
-	var handle := get_node_or_null("Stand/DragHandle")
-	if handle == null:
-		return
-	for child in handle.get_children():
-		if child is XRPokeable:
-			child.dragged.connect(_on_handle_dragged)
-
-
-func _on_handle_dragged(_hand: int, delta: Vector2) -> void:
-	if _orb:
-		_orb.position.x = clampf(delta.x * 4.0, -0.4, 0.4)
-
-
-## Press it, then slide sideways off its face: it CANCELS. Before this change
-## that slide emitted `released`, which is what a button fires on.
-func _wire_cancel_target() -> void:
-	var target := get_node_or_null("Stand/CancelTarget")
-	if target == null:
-		return
-	for child in target.get_children():
-		if child is XRPokeable:
-			child.released.connect(_on_cancel_target_released)
-			child.cancelled.connect(_on_cancel_target_cancelled)
-
-
-func _on_cancel_target_released(_hand: int) -> void:
-	if _counter_label:
-		_counter_label.text = "CANCEL TARGET: FIRED"
-
-
-func _on_cancel_target_cancelled(_hand: int) -> void:
-	if _counter_label:
-		_counter_label.text = "CANCEL TARGET: cancelled, not fired"
-```
-
-- [ ] **Step 4: Verify the scene boots with no errors**
+- [ ] **Step 3: Verify the scene boots with no errors**
 
 ```bash
-'C:\tmp\Godot47\Godot_v4.7-stable_win64_console.exe' --headless --xr-mode off --path 'C:\Users\davta\Repos\Godot_WebXR_gh\demo' res://addons/godot_xr_interaction_toolkit/samples/poke_playground_demo.tscn --quit-after 150
+'C:\tmp\Godot47\Godot_v4.7-stable_win64_console.exe' --headless --xr-mode off --path 'C:\Users\davta\Repos\Godot_WebXR_gh\demo' res://addons/godot_xr_interaction_toolkit/samples/control_panel_demo.tscn --quit-after 150
 ```
 
 Expected: exit 0 with **zero** lines matching `ERROR:`, `SCRIPT ERROR` or
@@ -1538,7 +1511,7 @@ the last two.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add addons/godot_xr_interaction_toolkit/runtime/xr_poke_station.gd addons/godot_xr_interaction_toolkit/samples/poke_playground_demo.tscn addons/godot_xr_interaction_toolkit/samples/poke_playground_demo.gd
+git add addons/godot_xr_interaction_toolkit/runtime/xr_poke_station.gd
 git commit -m "demo: a button row too dense to sweep, and a handle that will not fire"
 ```
 
@@ -1669,9 +1642,9 @@ On Quest, in one session:
 |---|---|
 | `control_panel_demo`, three `XRPokeButton`s | feel IDENTICAL to before — same depth, same firing point |
 | `control_panel_demo`, `TouchPanel` buttons and slider | press and drag unchanged |
-| `poke_playground_demo`, dense row | sweeping across presses NOTHING; poking one presses exactly that one |
-| `poke_playground_demo`, drag handle | slides the orb, does not fire on let-go |
-| `poke_playground_demo`, cancel target | press-then-slide-off reads "cancelled, not fired" |
+| `control_panel_demo`, dense row | sweeping across presses NOTHING; poking one presses exactly that one |
+| `control_panel_demo`, drag handle | slides the orb, does not fire on let-go |
+| `control_panel_demo`, cancel target | press-then-slide-off reads "cancelled, not fired" |
 | Any button, deliberate slow press | presses — the abstain rule holds |
 | Any button, hard fast slap | presses once, no double-fire |
 
