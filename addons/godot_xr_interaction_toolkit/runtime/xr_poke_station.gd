@@ -23,6 +23,8 @@ const _KEY_SPACING := 0.035
 const _KEY_SIZE := Vector3(0.03, 0.03, 0.01)
 const _HANDLE_SIZE := Vector3(0.12, 0.02, 0.01)
 const _CANCEL_SIZE := Vector3(0.06, 0.06, 0.01)
+## How long an outcome colour stays up before the target re-arms.
+const _FLASH_SECONDS := 1.2
 
 var _counter_button: XRPokeButton
 var _light_button: XRPokeButton
@@ -168,6 +170,17 @@ func _make_gate_body(node_name: String, size: Vector3, color: Color) -> Dictiona
 	return {"body": body, "material": material, "mesh": mesh_instance}
 
 
+## Shows an outcome colour long enough to read, then re-arms the target.
+## Guards on the timer's own validity because a scene change can free the
+## station between the flash and the reset.
+func _flash_then_rest(material: StandardMaterial3D, flash: Color, rest: Color) -> void:
+	material.albedo_color = flash
+	var timer := get_tree().create_timer(_FLASH_SECONDS)
+	timer.timeout.connect(func() -> void:
+		if is_instance_valid(material):
+			material.albedo_color = rest)
+
+
 func _make_gate_caption(text: String, at: Vector3) -> Label3D:
 	var label := Label3D.new()
 	label.text = text
@@ -296,7 +309,17 @@ func _build_cancel_target(parent: Node3D) -> void:
 	# reaches it and the marker pin clamps to a plane inside the box.
 	pokeable.position.z = _CANCEL_SIZE.z * 0.5
 
-	pokeable.released.connect(func(_hand: int) -> void: material.albedo_color = fired_color)
-	pokeable.cancelled.connect(func(_hand: int) -> void: material.albedo_color = cancelled_color)
+	# Three states, and every one of them RETURNS. Reported on device: "after it
+	# starts red it remains red". The outcome colours were latched with no path
+	# back to rest, so the first cancel painted the target permanently and there
+	# was no touch feedback at all - it read as unresponsive rather than as a
+	# demo of cancelling. Touch now shows immediately, the outcome shows for long
+	# enough to read, then it re-arms so the gesture can be repeated.
+	var held_color := Color(1.0, 0.75, 0.25)
+	pokeable.pressed.connect(func(_hand: int) -> void: material.albedo_color = held_color)
+	pokeable.released.connect(func(_hand: int) -> void:
+		_flash_then_rest(material, fired_color, rest_color))
+	pokeable.cancelled.connect(func(_hand: int) -> void:
+		_flash_then_rest(material, cancelled_color, rest_color))
 
 	body.add_child(_make_gate_caption("PRESS THEN SLIDE OFF - it cancels, it does not fire", Vector3(0, 0.045, 0)))

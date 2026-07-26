@@ -72,8 +72,12 @@ var _live := false
 const _LOG_EPSILON := 0.01
 
 var _last_height := NAN
-## Last value actually logged, so a steady measurement prints once, not forever.
+## Last value actually logged, so a repeated absent-tracking reading prints
+## once rather than every window.
 var _last_logged := NAN
+## True once the "plausible" state has been reported. Cleared whenever the
+## state leaves plausible, so a real transition is never swallowed.
+var _logged_plausible := false
 var _samples: Array[float] = []
 var _applied := false
 var _consecutive_low := 0
@@ -189,6 +193,7 @@ func _evaluate_window() -> void:
 	# still needs its own consecutive windows.
 	if measured <= tracking_absent_at_or_below:
 		_consecutive_low = 0
+		_logged_plausible = false
 		if debug_log and (is_nan(_last_logged) or absf(measured - _last_logged) >= _LOG_EPSILON):
 			_last_logged = measured
 			print("[eye-height] measured %.2f m - no head pose yet, not correcting" % measured)
@@ -202,19 +207,21 @@ func _evaluate_window() -> void:
 		# launcher logged 'measured 1.50 - plausible' and never corrected, while
 		# a later scene measured 0.82 and did. Keep watching instead.
 		_consecutive_low = 0
-		# CHANGE-GATED. This branch is the HEALTHY path -- a correctly calibrated
-		# floor never leaves it -- and _evaluate_window runs every
-		# live_settle_frames (10). Printing unconditionally produced 91,530 lines
-		# in one Link session, 99.7% of all stdout, which buries every other
-		# diagnostic and costs string formatting plus I/O forever. Log only when
-		# the measurement actually moves.
-		if debug_log and (is_nan(_last_logged) or absf(measured - _last_logged) >= _LOG_EPSILON):
-			_last_logged = measured
+		# STATE-GATED, not value-gated. This branch is the HEALTHY path -- a
+		# correctly calibrated floor never leaves it -- and _evaluate_window runs
+		# every live_settle_frames (10). Printing unconditionally produced 91,530
+		# lines in one Link session, 99.7% of all stdout. Gating on a 1 cm change
+		# still left 89, because a head bobs across a centimetre constantly. What
+		# this line reports is a STATE, not a measurement worth tracking, so it
+		# prints once on entry and stays quiet until the state actually changes.
+		if debug_log and not _logged_plausible:
+			_logged_plausible = true
 			print("[eye-height] measured %.2f m - plausible, still watching" % measured)
 		return
 
 	# Two windows in a row, so leaning down to look at something cannot be
 	# mistaken for a broken floor.
+	_logged_plausible = false
 	_consecutive_low += 1
 	if _consecutive_low < required_low_windows:
 		if debug_log:
