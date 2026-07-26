@@ -25,6 +25,7 @@ func _init() -> void:
 	_test_pose_source_flag_picks_the_path(failures)
 	_test_pose_source_reads_raw_across_frames(failures)
 	_test_resolver_scan_excludes_shadow(failures)
+	_test_joint_position_tracked_requires_both_flags(failures)
 	_test_toggle_invalidates_frame_cache(failures)
 	_test_gate_rejection_yields_untracked_shadow(failures)
 	if failures.is_empty():
@@ -1063,6 +1064,46 @@ func _test_resolver_scan_excludes_shadow(failures: Array[String]) -> void:
 	XRConditionedHandPublisher.set_enabled(was_enabled)
 	XRHandTrackerResolver._conditioned = was_conditioned
 	_clear_conditioning_state(hand)
+
+## Item 2 of the far-grab-modes in-headset report (suite-wide, not far-grab
+## specific): "when one hand is not in view, the far ray cast of it goes all
+## over the place". Confirmed diagnosis -- OpenXR sets POSITION_VALID on a
+## joint it is PREDICTING and POSITION_TRACKED only on one it is OBSERVING, and
+## (confirmed by grep) nothing in this suite checked POSITION_TRACKED before
+## this method existed, so every consumer treated a predicted pose as real.
+## Pure flag-logic test on a bare tracker, no XRServer registration needed --
+## joint_position_valid/joint_position_tracked both take the tracker directly.
+func _test_joint_position_tracked_requires_both_flags(failures: Array[String]) -> void:
+	var tracker := XRHandTracker.new()
+	var joint := XRHandTracker.HAND_JOINT_WRIST
+	tracker.set_hand_joint_transform(joint, Transform3D(Basis.IDENTITY, Vector3(0, 1, -0.3)))
+
+	tracker.set_hand_joint_flags(joint, 0)
+	if XRHandTrackerResolver.joint_position_tracked(tracker, joint):
+		failures.append("joint_position_tracked must be false with no flags set")
+
+	# VALID but not TRACKED: the exact "predicting, not observing" state a hand
+	# out of view keeps publishing -- joint_position_valid() alone cannot tell
+	# this apart from a genuinely observed joint, which is the bug itself.
+	tracker.set_hand_joint_flags(joint, XRHandTracker.HAND_JOINT_FLAG_POSITION_VALID)
+	if not XRHandTrackerResolver.joint_position_valid(tracker, joint):
+		failures.append("fixture broken: joint_position_valid must be true once POSITION_VALID is set")
+	if XRHandTrackerResolver.joint_position_tracked(tracker, joint):
+		failures.append("joint_position_tracked must be false when POSITION_VALID is set but POSITION_TRACKED is not (predicted-only)")
+
+	# VALID and TRACKED: genuinely observed.
+	tracker.set_hand_joint_flags(joint, XRHandTracker.HAND_JOINT_FLAG_POSITION_VALID | XRHandTracker.HAND_JOINT_FLAG_POSITION_TRACKED)
+	if not XRHandTrackerResolver.joint_position_tracked(tracker, joint):
+		failures.append("joint_position_tracked must be true with both POSITION_VALID and POSITION_TRACKED set")
+
+	# TRACKED without VALID must not read as tracked either -- joint_position_tracked
+	# requires joint_position_valid first (inherits its finite/non-stale checks).
+	tracker.set_hand_joint_flags(joint, XRHandTracker.HAND_JOINT_FLAG_POSITION_TRACKED)
+	if XRHandTrackerResolver.joint_position_tracked(tracker, joint):
+		failures.append("joint_position_tracked must be false when POSITION_TRACKED is set but POSITION_VALID is not")
+
+	if XRHandTrackerResolver.joint_position_tracked(null, joint):
+		failures.append("joint_position_tracked must be false for a null tracker, same contract as joint_position_valid")
 
 func _test_toggle_invalidates_frame_cache(failures: Array[String]) -> void:
 	# Kills the reviewer's surviving mutant (Task 9 review, Minor #3): every

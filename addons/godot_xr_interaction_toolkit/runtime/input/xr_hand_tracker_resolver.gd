@@ -13,6 +13,7 @@ const TRACKER_PATHS := {
 }
 
 const POSITION_VALID_FLAG := XRHandTracker.HAND_JOINT_FLAG_POSITION_VALID
+const POSITION_TRACKED_FLAG := XRHandTracker.HAND_JOINT_FLAG_POSITION_TRACKED
 const STALE_JOINT_EPSILON_SQUARED := 0.000001
 const JOINTS_TO_SCORE := [
     XRHandTracker.HAND_JOINT_PALM,
@@ -124,6 +125,20 @@ static func joint_position_valid(tracker: XRHandTracker, joint: int) -> bool:
 
     var origin := tracker.get_hand_joint_transform(joint).origin
     return origin.is_finite() and origin.length_squared() > STALE_JOINT_EPSILON_SQUARED
+
+## True only when the runtime is genuinely OBSERVING this joint, as against
+## joint_position_valid()'s POSITION_VALID, which OpenXR also sets on a joint
+## it is merely PREDICTING - a hand out of view keeps publishing valid-looking
+## extrapolated poses with POSITION_TRACKED clear the whole time. Every current
+## consumer in this suite checks joint_position_valid() only (confirmed by
+## grep), which is why a hand out of view still drove a "valid" aim ray that
+## flailed with the extrapolation instead of going away. Same finite/non-stale
+## checks as joint_position_valid() (a tracked-but-degenerate joint is still
+## not usable), plus the POSITION_TRACKED flag.
+static func joint_position_tracked(tracker: XRHandTracker, joint: int) -> bool:
+    if not joint_position_valid(tracker, joint):
+        return false
+    return (tracker.get_hand_joint_flags(joint) & POSITION_TRACKED_FLAG) != 0
 
 static func tracker_debug_name(hand_id: int, tracker: XRHandTracker) -> String:
     if tracker == null:

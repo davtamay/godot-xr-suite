@@ -6,6 +6,8 @@ extends "res://addons/godot_xr_interaction_toolkit/runtime/xr_base_interactor.gd
 ## aim ray and, while selecting, exposes an attach pose at the captured grab
 ## distance so XRGrabInteractable can follow the ray.
 
+const XRHandTrackerResolver := preload("res://addons/godot_xr_interaction_toolkit/runtime/input/xr_hand_tracker_resolver.gd")
+
 @export_group("Raycast")
 @export_range(0.1, 100.0, 0.1, "or_greater") var max_distance := 6.0
 @export_flags_3d_physics var collision_mask := 1
@@ -71,6 +73,27 @@ extends "res://addons/godot_xr_interaction_toolkit/runtime/xr_base_interactor.gd
 ## How far the palm must turn toward your face before the ray hides (dot of the
 ## palm normal with the direction to your head). Higher = harder to hide.
 @export_range(0.0, 1.0, 0.05) var aim_pose_palm_threshold := 0.35
+## OpenXR sets HAND_JOINT_FLAG_POSITION_VALID on a joint it is PREDICTING, and
+## HAND_JOINT_FLAG_POSITION_TRACKED only on one it is actually OBSERVING - a
+## hand out of view keeps publishing valid-looking extrapolated poses, which is
+## why an untracked hand's ray "goes all over the place" instead of going away.
+## When true, this ray hides itself once its aim joint (wrist, falling back to
+## palm - the same anchor xr_hand_gesture_provider.gd's get_hand_ray_pose calls
+## `back`) has been VALID-but-not-TRACKED for longer than
+## untracked_hand_hold_sec. Reads XRHandTrackerResolver directly (the same way
+## xr_pinch_twist_distance_driver.gd already does) rather than going through
+## the modality manager, so it is inert - never true - for a controller (no
+## hand tracker ever resolves for that hand) and needs no dependency this ray
+## does not already have.
+@export var suppress_when_aim_joint_untracked := true
+## How long the aim joint must stay VALID-but-not-TRACKED before the ray
+## suppresses. Absorbs a single dropped tracking frame (a real hand blinking
+## out for one sample) without strobing the ray; a hand genuinely out of view
+## stays untracked well past this. Order-of-magnitude - a fraction of a
+## second - not device-tuned, the same idea xr_hand_confidence_gate.gd's
+## hold_duration_sec encodes for the pose pipeline (not a dependency on that
+## gate itself).
+@export_range(0.0, 1.0, 0.01) var untracked_hand_hold_sec := 0.12
 var _ray_state := {"valid": false}
 ## Live-diagnosis aid: prints when THIS ray starts or stops being suppressed,
 ## with the reason. Change-gated. Paired with XRInteractionArbiter.debug_log.
@@ -96,6 +119,10 @@ var _has_last_ray_pose := false
 ## direction: hand motion is measured against where the ray pointed AT SELECT,
 ## not wherever it happens to be pointing this frame.
 var _reel_axis := Vector3.FORWARD
+## Accumulated seconds the aim joint has been observed VALID-but-not-TRACKED,
+## reset to 0 the instant it is either TRACKED or not a resolvable hand at
+## all. See _aim_joint_untracked_past_hold.
+var _aim_untracked_elapsed := 0.0
 
 func _ready() -> void:
     super()
@@ -176,6 +203,29 @@ func _suppressed_by_hand_pose() -> bool:
     # Palm turned toward your face (menu posture) -> not aiming -> hide the ray.
     return palm_facing.dot(to_head.normalized()) > aim_pose_palm_threshold
 
+## True once this hand's aim joint has been reporting POSITION_VALID without
+## POSITION_TRACKED for longer than untracked_hand_hold_sec -- the OpenXR
+## "predicting, not observing" signal a hand out of view keeps sending
+## forever, which is what made an unseen hand's ray flail with the
+## extrapolation instead of disappearing. Reads XRHandTrackerResolver
+## directly, exactly the way xr_pinch_twist_distance_driver.gd already reads
+## the wrist for TWIST, so it is inert (never true) for a controller: no hand
+## tracker ever resolves for that hand, has_tracking_data is false, or the
+## joint itself never reports POSITION_VALID at all in the first place.
+func _aim_joint_untracked_past_hold(delta: float) -> bool:
+    var tracker := XRHandTrackerResolver.get_tracker(hand)
+    if tracker == null or not tracker.has_tracking_data:
+        _aim_untracked_elapsed = 0.0
+        return false
+    var joint := XRHandTracker.HAND_JOINT_WRIST
+    if not XRHandTrackerResolver.joint_position_valid(tracker, joint):
+        joint = XRHandTracker.HAND_JOINT_PALM
+    if XRHandTrackerResolver.joint_position_tracked(tracker, joint):
+        _aim_untracked_elapsed = 0.0
+        return false
+    _aim_untracked_elapsed += maxf(delta, 0.0)
+    return _aim_untracked_elapsed >= untracked_hand_hold_sec
+
 func _update_ray(delta := 0.0) -> void:
     # A selection the input no longer backs is STALE, and it is silently
     # crippling: with _selected set, the ray skips hovering entirely and runs
@@ -192,13 +242,19 @@ func _update_ray(delta := 0.0) -> void:
     var linked_suppressed := _is_suppressed_by_linked_interactor()
     var held_near := _held_object_is_in_hand()
     var pose_suppressed: bool = hand_ray_requires_aim_pose and _suppressed_by_hand_pose()
-    var suppressed: bool = (_selected == null or held_near) \
-            and (linked_suppressed or held_near or pose_suppressed)
+    # Independent of hold state (unlike the clause below): a hand that is not
+    # genuinely tracked should not keep steering an active far-grab any more
+    # than it should keep hovering, so this is OR'd in unconditionally rather
+    # than gated by `_selected == null or held_near`.
+    var aim_untracked: bool = suppress_when_aim_joint_untracked and _aim_joint_untracked_past_hold(delta)
+    var suppressed: bool = aim_untracked \
+            or ((_selected == null or held_near) \
+                    and (linked_suppressed or held_near or pose_suppressed))
     if debug_log and int(suppressed) != _debug_last_suppressed:
         _debug_last_suppressed = int(suppressed)
         var dbg := _resolve_arbiter()
-        print("[ray] hand=%d suppressed=%s | linked=%s held_near=%s pose_gate=%s selected=%s pose_empty=%s | arbiter=%s" % [
-            hand, suppressed, linked_suppressed, held_near, pose_suppressed,
+        print("[ray] hand=%d suppressed=%s | linked=%s held_near=%s pose_gate=%s aim_untracked=%s selected=%s pose_empty=%s | arbiter=%s" % [
+            hand, suppressed, linked_suppressed, held_near, pose_suppressed, aim_untracked,
             _selected != null, pose.is_empty(),
             "none" if dbg == null else dbg._mode_name(dbg.mode_for(hand))])
     if debug_log and pose.is_empty() != _debug_pose_was_empty:
