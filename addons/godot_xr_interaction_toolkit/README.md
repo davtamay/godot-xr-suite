@@ -105,6 +105,30 @@ runtime `XRController3D` aim pose first. On Quest hand tracking this better
 matches the stable Meta OS cursor. The joint-derived hand ray remains available
 as a fallback or experiment by setting `prefer_hand_ray = true`.
 
+### Poke feel
+
+`XRPokeProfile` is one resource carrying a project's whole poke feel: press
+and release depth, and how strictly arming is gated on approach. Assign it to
+any `XRPokeable`, `XRUICanvasInteractable` or `XRPokeButton` and they all move
+together.
+
+An assigned profile WINS over the node's own exports, which are the fallback.
+Godot cannot tell an export left at its default from one deliberately set to
+that value, so per-property override would silently ignore the profile
+whenever the two matched.
+
+Arming is the OR of two tests. **Entry through the face**: the point must have
+been seen in front of the surface before it can press, so a hand sweeping
+sideways presses nothing. **Approach angle**: travel at the moment of crossing
+must point inward within `max_approach_angle`; below `min_approach_travel` the
+direction is noise and this test declines rather than approving, so it never
+becomes a blanket pass for a barely-moving or stationary point. A slow,
+deliberate press still isn't rejected on jitter - it presses via entry
+through the face instead, since it approaches from in front of the surface.
+Neither test dominates - each rescues a case the other falsely rejects.
+
+To restore pre-gate behaviour exactly: `require_entry_through_face = false`.
+
 ## Platform Notes
 
 - Quest 3 / Quest Browser: works in the feasibility spike path; this addon

@@ -62,7 +62,8 @@ Design: `docs/poke-fidelity-design.md`. Read it before Task 1.
   `evaluate(source_id: int, point: Vector3) -> Dictionary` returning keys
   `event: Event`, `depth_ratio: float`, `pinned_point: Vector3`,
   `drag_delta: Vector2`; `forget(source_id: int) -> Event`;
-  `apply_profile(profile) -> void`.
+  `is_pressed() -> bool`; `is_source_pressed(source_id: int) -> bool`;
+  `apply_profile(profile, include_depth := true) -> void`.
 
 - [ ] **Step 1: Write the failing test file**
 
@@ -378,11 +379,16 @@ var _sources := {}
 ## Copy configuration from an XRPokeProfile. An assigned profile WINS; the
 ## adapter's own exports are the fallback (Godot cannot distinguish an export
 ## left at its default from one deliberately set to that value).
-func apply_profile(profile) -> void:
+##
+## include_depth = false takes ONLY the approach gate. XRPokeButton needs this:
+## a cap's throw is geometry (travel, press_fraction), not project feel, so a
+## shared profile must not overwrite it.
+func apply_profile(profile, include_depth := true) -> void:
 	if profile == null:
 		return
-	press_depth = profile.press_depth
-	release_depth = profile.release_depth
+	if include_depth:
+		press_depth = profile.press_depth
+		release_depth = profile.release_depth
 	require_entry_through_face = profile.require_entry_through_face
 	max_approach_angle = profile.max_approach_angle
 	min_approach_travel = profile.min_approach_travel
@@ -463,6 +469,15 @@ func is_pressed() -> bool:
 		if state["pressed"]:
 			return true
 	return false
+
+
+## True while THIS source is pressed. Adapters that drive per-source state -
+## the canvas pushing drag motion for one hand while the other is idle - must
+## use this, not is_pressed().
+func is_source_pressed(source_id: int) -> bool:
+	if not _sources.has(source_id):
+		return false
+	return bool(_sources[source_id]["pressed"])
 
 
 func _state_for(source_id: int) -> Dictionary:
@@ -561,7 +576,8 @@ git commit -m "feat: one poke press decision, armed by either approach test"
 - Test: `addons/godot_xr_interaction_toolkit/tests/test_poke_fidelity.gd` (modify)
 
 **Interfaces:**
-- Consumes: `XRPokeEvaluator.apply_profile(profile)` from Task 1.
+- Consumes: `XRPokeEvaluator.apply_profile(profile, include_depth := true)`
+  from Task 1.
 - Produces: `XRPokeProfile` (`Resource`) with exports `press_depth: float`,
   `release_depth: float`, `require_entry_through_face: bool`,
   `max_approach_angle: float`, `min_approach_travel: float`.
@@ -1039,7 +1055,9 @@ func poke_update(source_id: int, world_point: Vector3) -> void:
 			_push_mouse_motion(_OFF_PANEL)
 			_push_mouse_button(_OFF_PANEL, false)
 		_:
-			if _poke_evaluator.is_pressed():
+			# Per SOURCE, not is_pressed(): with two hands on the panel, one
+			# pressed hand would otherwise drag the cursor for the idle one.
+			if _poke_evaluator.is_source_pressed(source_id):
 				_push_mouse_motion(pixels)  # Drag: sliders track the finger.
 				_last_pointer_position = pixels
 
@@ -1204,11 +1222,9 @@ func _sync_evaluator() -> void:
 	_evaluator.release_depth = canonical_release_depth()
 	_evaluator.half_size = Vector2.ZERO  # Round cap: the button bounds it below.
 	_evaluator.interpret_drag = false
-	_evaluator.apply_profile(poke_profile)
-	# The profile carries no cap geometry, so restore the derived depths after
-	# it has supplied the gate settings.
-	_evaluator.press_depth = canonical_press_depth()
-	_evaluator.release_depth = canonical_release_depth()
+	# Gate only: a cap's throw is geometry (travel, press_fraction), so a
+	# shared project profile must not overwrite the depths derived above.
+	_evaluator.apply_profile(poke_profile, false)
 
 
 ## One poke point, in world space, from one source. Public so the button can
@@ -1318,6 +1334,8 @@ git commit -m "feat: a fast poke bottoms the cap out instead of being dropped"
 - Consumes: `get_poke_pin(source_id) -> Vector3` from Tasks 3-5.
 - Produces: `XRPokeInteractor.get_marker_point(hand: int) -> Vector3` — the
   pinned point when any active target reports one, else the raw poke point.
+  **No test seam is added to production code**: GDScript's underscore is
+  convention, not privacy, so the test writes `_active` and `_points` directly.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1332,7 +1350,11 @@ func _test_marker_prefers_the_pinned_point(failures: Array[String]) -> void:
 	var pokeable := _make_pokeable()
 	pokeable.poke_update(0, Vector3(0.0, 0.0, 0.050))
 	pokeable.poke_update(0, Vector3(0.0, 0.0, -0.030))
-	interactor.set_active_targets_for_test(0, [pokeable], Vector3(0.0, 0.0, -0.030))
+	# GDScript has no true privacy - the underscore is convention - so the test
+	# sets the dispatch state directly rather than adding a test seam to
+	# production code.
+	interactor._active[0] = {pokeable: true}
+	interactor._points[0] = Vector3(0.0, 0.0, -0.030)
 	var marker: Vector3 = interactor.get_marker_point(0)
 	_check(failures, is_equal_approx(marker.z, 0.0),
 			"marker: expected the pinned point on the surface, got z=%f" % marker.z)
@@ -1346,8 +1368,7 @@ func _test_marker_prefers_the_pinned_point(failures: Array[String]) -> void:
 'C:\tmp\Godot47\Godot_v4.7-stable_win64_console.exe' --headless --xr-mode off --path 'C:\Users\davta\Repos\Godot_WebXR_gh\demo' --script 'res://addons/godot_xr_interaction_toolkit/tests/test_poke_fidelity.gd'
 ```
 
-Expected: FAIL — neither `get_marker_point` nor `set_active_targets_for_test`
-exists.
+Expected: FAIL — `get_marker_point` does not exist on `XRPokeInteractor`.
 
 - [ ] **Step 3: Add the pin preference**
 
@@ -1365,15 +1386,6 @@ func get_marker_point(hand: int) -> Vector3:
 			if pin != Vector3.INF:
 				return pin
 	return _points[hand]
-
-
-## Test seam: populate the dispatch state without a physics world.
-func set_active_targets_for_test(hand: int, targets: Array, point: Vector3) -> void:
-	var touched := {}
-	for target in targets:
-		touched[target] = true
-	_active[hand] = touched
-	_points[hand] = point
 ```
 
 In `_update_markers`, replace the final positioning line:
@@ -1407,9 +1419,22 @@ git commit -m "feat: the poke dot stops on the surface instead of sinking throug
 ### Task 7: The station that proves it
 
 **Files:**
-- Modify: `addons/godot_xr_interaction_toolkit/runtime/xr_poke_station.gd`
-- Modify: `addons/godot_xr_interaction_toolkit/samples/poke_playground_demo.tscn`
-- Modify: `addons/godot_xr_interaction_toolkit/samples/poke_playground_demo.gd`
+- Modify: `addons/godot_xr_interaction_toolkit/runtime/xr_poke_station.gd` (the only file this task changes)
+
+**Correction to an earlier draft of this plan.** It named
+`poke_playground_demo.tscn` / `.gd`. That was wrong: `XRPokeStation` is
+instanced in exactly one place, `control_panel_demo.tscn`, as the script on a
+`PokeSection` node whose children are `Stand/CounterButton`,
+`Stand/LightButton`, `Stand/ColorButton`, `TouchPanel`, `Orb`.
+`poke_playground_demo.tscn` does NOT use the station script at all — it
+duplicates the same wiring in its own `poke_playground_demo.gd`. Adding nodes
+there and wiring them in the station would have touched two disconnected
+things and produced no working demo.
+
+The wiring therefore goes in `xr_poke_station.gd`, which is the droppable
+block the dock ships, and which `control_panel_demo.tscn` already instances. The pre-existing duplication between the station script and
+`poke_playground_demo.gd` is left alone and recorded as a follow-up — folding
+the playground onto the station block is its own change.
 
 **Interfaces:**
 - Consumes: `XRPokeable` signals `pressed`, `cancelled`, `dragged` from Task 3.
@@ -1418,105 +1443,65 @@ git commit -m "feat: the poke dot stops on the surface instead of sinking throug
 `XRPokeable` has had zero consumers anywhere in the suite. This task creates
 the first ones, and each exists to make one gate behaviour visible.
 
-- [ ] **Step 1: Add the dense button row to the station scene**
+- [ ] **Step 1: Build the new targets in code, not in the scene file**
 
-In `poke_playground_demo.tscn`, add under `Stand` a `Node3D` named `DenseRow`
-containing five `StaticBody3D` children named `Key0`..`Key4`, each with a
-`BoxMesh` of size `(0.03, 0.03, 0.01)` and a matching `BoxShape3D`, spaced
-0.035 m apart along local X (so the gaps are smaller than the keys — the
-layout that is unusable without the gate). Each body gets a child `Node3D`
-with `xr_pokeable.gd` attached, `poke_face = Z_PLUS`, `half_size = Vector2(0.015, 0.015)`.
+**Second correction to this task.** An earlier draft had the dense row, drag
+handle and cancel target hand-authored as nodes in `control_panel_demo.tscn`.
+Build them in `xr_poke_station.gd` instead. Reasons, in order of weight:
 
-Then add a `Label3D` named `DenseRowLabel` above the row, text
-`SWEEP ME - only a poke through the face presses`.
+1. Hand-editing a 400-line `.tscn` (unique `sub_resource` ids, `ext_resource`
+   ids, `load_steps` in the header, exact `parent=` paths) is a large surface
+   for silent breakage, and the failure mode is a scene that loads with
+   missing nodes rather than an error.
+2. `XRPokeButton._build_visuals` already establishes the precedent: sample
+   geometry in this addon is built in code.
+3. It makes `XRPokeStation` self-contained — drop the block into any scene and
+   the full demo appears, instead of only working where someone authored the
+   right children.
 
-- [ ] **Step 2: Add a drag handle and a cancel target**
+`control_panel_demo.tscn` is therefore NOT modified. The only file this task
+changes is `xr_poke_station.gd`.
 
-Under `Stand`, add a `StaticBody3D` named `DragHandle` with a `BoxMesh`
-`(0.12, 0.02, 0.01)` and matching shape, holding an `xr_pokeable.gd` child with
-`interpret_drag = true`, `drag_threshold = 0.01`,
-`half_size = Vector2(0.06, 0.01)`. Add `Label3D` `DragHandleLabel`, text
-`DRAG ME - a handle does not fire on let-go`.
+Add a `_build_gate_demo()` called from `_ready()`, after the existing lookups,
+which constructs three things under the station:
 
-Under `Stand`, add a `StaticBody3D` named `CancelTarget` with a `BoxMesh`
-`(0.06, 0.06, 0.01)`, an `xr_pokeable.gd` child with default settings, and a
-`Label3D` `CancelTargetLabel` with text
-`PRESS THEN SLIDE OFF - it cancels, it does not fire`.
+- **DenseRow** — five `StaticBody3D` keys in a row, each a `BoxMesh`
+  `(0.03, 0.03, 0.01)` with a matching `BoxShape3D`, spaced **0.035 m** apart
+  along local X so the gaps are smaller than the keys. Each carries an
+  `XRPokeable` child with `poke_face = Face.Z_PLUS` and
+  `half_size = Vector2(0.015, 0.015)`. This layout is unusable without the
+  approach gate — that is the point of it.
+- **DragHandle** — a `StaticBody3D` with a `BoxMesh` `(0.12, 0.02, 0.01)` and
+  matching shape, carrying an `XRPokeable` with `interpret_drag = true`,
+  `drag_threshold = 0.01`, `half_size = Vector2(0.06, 0.01)`.
+- **CancelTarget** — a `StaticBody3D` with a `BoxMesh` `(0.06, 0.06, 0.01)`
+  and matching shape, carrying an `XRPokeable` with default settings.
 
-- [ ] **Step 3: Wire them in the station script**
+Give each a `Label3D` caption: `SWEEP ME - only a poke through the face
+presses`, `DRAG ME - a handle does not fire on let-go`, and `PRESS THEN SLIDE
+OFF - it cancels, it does not fire`. Place the group clear of the existing
+`Stand` children so nothing overlaps.
 
-Add to `xr_poke_station.gd` (TABS), inside `_ready` after the existing lookups:
+Use the addon's existing bake-safe material (`_LINE_MATERIAL` in
+`xr_poke_button.gd` is loaded from
+`res://addons/godot_xr_interaction_toolkit/runtime/xr_line_material.tres`) —
+runtime-created `StandardMaterial3D`s do not survive WebGPU shader baking
+without a bake anchor, and this addon targets web.
 
-```gdscript
-	_wire_dense_row()
-	_wire_drag_handle()
-	_wire_cancel_target()
-```
+Set collision layers to match what `XRPokeInteractor.poke_collision_mask`
+scans (default mask 1), or the interactor's sphere query will never find these
+bodies. Verify against the existing pokeable bodies in the scene rather than
+assuming.
 
-And the methods:
+- [ ] **Step 2: Wire them up**
 
-```gdscript
-## Five keys spaced closer than their own width. Sweeping a fingertip across
-## them presses nothing; poking one through its face presses exactly one. This
-## layout is the reason the approach gate exists.
-func _wire_dense_row() -> void:
-	var row := get_node_or_null("Stand/DenseRow")
-	if row == null:
-		return
-	for index in row.get_child_count():
-		var key := row.get_child(index)
-		for child in key.get_children():
-			if child is XRPokeable:
-				child.pressed.connect(_on_dense_key.bind(index))
+Guard every lookup — the station must not error when a piece is absent. Keep
+the handlers small; each exists to make one gate behaviour visible.
 
-
-func _on_dense_key(_hand: int, index: int) -> void:
-	if _orb_material:
-		_orb_material.albedo_color = _COLORS[index % _COLORS.size()]
-
-
-## A handle reports drags and does NOT activate on let-go, so releasing it
-## after a slide cannot read as a button press.
-func _wire_drag_handle() -> void:
-	var handle := get_node_or_null("Stand/DragHandle")
-	if handle == null:
-		return
-	for child in handle.get_children():
-		if child is XRPokeable:
-			child.dragged.connect(_on_handle_dragged)
-
-
-func _on_handle_dragged(_hand: int, delta: Vector2) -> void:
-	if _orb:
-		_orb.position.x = clampf(delta.x * 4.0, -0.4, 0.4)
-
-
-## Press it, then slide sideways off its face: it CANCELS. Before this change
-## that slide emitted `released`, which is what a button fires on.
-func _wire_cancel_target() -> void:
-	var target := get_node_or_null("Stand/CancelTarget")
-	if target == null:
-		return
-	for child in target.get_children():
-		if child is XRPokeable:
-			child.released.connect(_on_cancel_target_released)
-			child.cancelled.connect(_on_cancel_target_cancelled)
-
-
-func _on_cancel_target_released(_hand: int) -> void:
-	if _counter_label:
-		_counter_label.text = "CANCEL TARGET: FIRED"
-
-
-func _on_cancel_target_cancelled(_hand: int) -> void:
-	if _counter_label:
-		_counter_label.text = "CANCEL TARGET: cancelled, not fired"
-```
-
-- [ ] **Step 4: Verify the scene boots with no errors**
+- [ ] **Step 3: Verify the scene boots with no errors**
 
 ```bash
-'C:\tmp\Godot47\Godot_v4.7-stable_win64_console.exe' --headless --xr-mode off --path 'C:\Users\davta\Repos\Godot_WebXR_gh\demo' res://addons/godot_xr_interaction_toolkit/samples/poke_playground_demo.tscn --quit-after 150
+'C:\tmp\Godot47\Godot_v4.7-stable_win64_console.exe' --headless --xr-mode off --path 'C:\Users\davta\Repos\Godot_WebXR_gh\demo' res://addons/godot_xr_interaction_toolkit/samples/control_panel_demo.tscn --quit-after 150
 ```
 
 Expected: exit 0 with **zero** lines matching `ERROR:`, `SCRIPT ERROR` or
@@ -1526,7 +1511,7 @@ the last two.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add addons/godot_xr_interaction_toolkit/runtime/xr_poke_station.gd addons/godot_xr_interaction_toolkit/samples/poke_playground_demo.tscn addons/godot_xr_interaction_toolkit/samples/poke_playground_demo.gd
+git add addons/godot_xr_interaction_toolkit/runtime/xr_poke_station.gd
 git commit -m "demo: a button row too dense to sweep, and a handle that will not fire"
 ```
 
@@ -1539,19 +1524,68 @@ git commit -m "demo: a button row too dense to sweep, and a handle that will not
 - Modify: `addons/godot_xr_interaction_toolkit/editor/xr_blocks_dock.gd:60`
 - Modify: `docs/poke-fidelity-design.md`
 
-- [ ] **Step 1: Run every suite**
+- [ ] **Step 0: Add an error-checking test runner — a `PASS` line is not proof**
 
-```bash
-for t in test_hand_conditioning test_grab_feel test_interaction_arbiter test_ui_canvas_pointer test_poke_fidelity; do 'C:\tmp\Godot47\Godot_v4.7-stable_win64_console.exe' --headless --xr-mode off --path 'C:\Users\davta\Repos\Godot_WebXR_gh\demo' --script "res://addons/godot_xr_interaction_toolkit/tests/$t.gd"; done
+Found during Task 6 and verified empirically on this Godot build: **a test
+function that hits a runtime error aborts silently, `_init` continues to the
+next test, and the suite prints its `PASS` line and exits 0.** A crashed test
+is indistinguishable from a passing one.
+
+A wrapper counter cannot detect it either — the abort unwinds only the
+erroring function, so a `_run(fn); _completed += 1` wrapper still increments.
+Verified with a probe. Detection has to be external: scan the process output.
+
+Create `tools/run_tests.ps1`:
+
+```powershell
+# Runs an XR suite headlessly and FAILS on a script error as well as a
+# non-zero exit. A suite's own PASS line is not sufficient: a test that hits
+# a runtime error aborts silently, the runner continues, and the summary
+# still says PASS. Verified on Godot 4.7.stable.
+param(
+	[Parameter(Mandatory = $true)][string[]]$Suite,
+	[string]$Godot = 'C:\tmp\Godot47\Godot_v4.7-stable_win64_console.exe',
+	[string]$Demo = 'C:\Users\davta\Repos\Godot_WebXR_gh\demo'
+)
+$failed = 0
+foreach ($s in $Suite) {
+	$out = & $Godot --headless --xr-mode off --path $Demo --script "res://addons/$s.gd"
+	$code = $LASTEXITCODE
+	$errors = ($out | Select-String -Pattern 'SCRIPT ERROR|^ERROR:' -AllMatches).Count
+	$verdict = ($out | Select-String -Pattern 'PASS|FAILURE' | Select-Object -First 1)
+	"{0,-58} exit={1} scripterrors={2}  {3}" -f $s.Split('/')[-1], $code, $errors, $verdict
+	if ($code -ne 0 -or $errors -gt 0) { $failed += 1 }
+}
+if ($failed -gt 0) { Write-Error "$failed suite(s) failed or emitted script errors"; exit 1 }
+exit 0
 ```
 
-Expected: five PASS lines, every exit code 0.
+Baseline recorded by the controller before this task: all eight suites give
+`exit=0 scripterrors=0` and a genuine PASS, so nothing is currently hiding.
+
+- [ ] **Step 1: Run every suite through the error-checking runner**
 
 ```bash
-for t in godot_xr_hands/tests/test_gesture_foundation godot_xr_hands/tests/test_adaptive_contact godot_webxr_kit/tests/test_eye_height_calibrator; do 'C:\tmp\Godot47\Godot_v4.7-stable_win64_console.exe' --headless --xr-mode off --path 'C:\Users\davta\Repos\Godot_WebXR_gh\demo' --script "res://addons/$t.gd"; done
+powershell -ExecutionPolicy Bypass -File tools/run_tests.ps1 -Suite godot_xr_interaction_toolkit/tests/test_poke_fidelity,godot_xr_interaction_toolkit/tests/test_ui_canvas_pointer,godot_xr_interaction_toolkit/tests/test_grab_feel,godot_xr_interaction_toolkit/tests/test_hand_conditioning,godot_xr_interaction_toolkit/tests/test_interaction_arbiter,godot_xr_hands/tests/test_gesture_foundation,godot_xr_hands/tests/test_adaptive_contact,godot_webxr_kit/tests/test_eye_height_calibrator
 ```
 
-Expected: three PASS lines, every exit code 0.
+Note `powershell`, not `pwsh` — PowerShell 7 is not installed on this
+machine, and `pwsh` fails with a CommandNotFoundException.
+
+**Also note:** this `-File` invocation form hands the whole comma-joined list
+to the child process as a single string, and PowerShell's own `[string[]]`
+binding does not split it back apart — without an explicit split in the
+script, `-Suite a,b,c` (via `-File`) silently becomes ONE suite named
+`"a,b,c"`, which does not exist, and the runner reports one failure instead
+of testing all of them. This was caught (agent/poke-fidelity, final pass) and
+fixed by having `run_tests.ps1` split every `-Suite` element on commas itself,
+so both this `-File` form and the in-process `& '.\run_tests.ps1' -Suite
+a,b,c` form now bind identically. Re-verify this exact invocation after any
+change to the runner's `param()` block.
+
+Expected: eight lines, every one `exit=0 scripterrors=0` with a PASS verdict,
+and the script itself exiting 0. **`scripterrors` must be 0 on every line** —
+that column, not the PASS text, is what proves no test aborted.
 
 - [ ] **Step 2: Boot-check the two scenes that must not regress**
 
@@ -1622,9 +1656,9 @@ On Quest, in one session:
 |---|---|
 | `control_panel_demo`, three `XRPokeButton`s | feel IDENTICAL to before — same depth, same firing point |
 | `control_panel_demo`, `TouchPanel` buttons and slider | press and drag unchanged |
-| `poke_playground_demo`, dense row | sweeping across presses NOTHING; poking one presses exactly that one |
-| `poke_playground_demo`, drag handle | slides the orb, does not fire on let-go |
-| `poke_playground_demo`, cancel target | press-then-slide-off reads "cancelled, not fired" |
+| `control_panel_demo`, dense row | sweeping across presses NOTHING; poking one presses exactly that one |
+| `control_panel_demo`, drag handle | slides the orb, does not fire on let-go |
+| `control_panel_demo`, cancel target | press-then-slide-off reads "cancelled, not fired" |
 | Any button, deliberate slow press | presses — the abstain rule holds |
 | Any button, hard fast slap | presses once, no double-fire |
 

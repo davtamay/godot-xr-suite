@@ -22,6 +22,14 @@ extends Node
 ## or reclining wearer. Seated eyes sit near 1.15 m even for a small adult, so
 ## 1.00 leaves real headroom before we intervene.
 @export_range(0.0, 1.6, 0.01) var implausible_below := 1.00
+## Below THIS the reading is not a floor problem at all - it means no real head
+## pose has arrived and the camera is still sitting on the origin. Measured on
+## device: a Quest Link session reported 0.01 m for two consecutive windows, so
+## the calibrator "corrected" a broken floor by raising the origin 1.19 m and
+## the wearer spent the whole session a metre in the air. The liveness check
+## does not catch this - a near-zero reading that jitters by more than
+## live_epsilon looks live. Treat it as not-yet-tracking and keep waiting.
+@export_range(0.0, 0.8, 0.01) var tracking_absent_at_or_below := 0.30
 ## What we correct TO. Seated rather than standing on purpose: lifting a seated
 ## wearer to standing eye height would over-correct and float them above the
 ## scene, which is the same class of error in the other direction.
@@ -60,7 +68,16 @@ static func reset_session_calibration() -> void:
 
 var _origin: XROrigin3D
 var _live := false
+## Metres of change before the "still watching" line is worth reprinting.
+const _LOG_EPSILON := 0.01
+
 var _last_height := NAN
+## Last value actually logged, so a repeated absent-tracking reading prints
+## once rather than every window.
+var _last_logged := NAN
+## True once the "plausible" state has been reported. Cleared whenever the
+## state leaves plausible, so a real transition is never swallowed.
+var _logged_plausible := false
 var _samples: Array[float] = []
 var _applied := false
 var _consecutive_low := 0
@@ -170,6 +187,18 @@ func _evaluate_window() -> void:
 	var measured: float = sorted[sorted.size() / 2]
 	_samples.clear()
 
+	# Checked BEFORE the floor test: a near-zero height is absent tracking, not a
+	# mis-calibrated floor, and correcting on it floats the wearer by nearly the
+	# whole corrected_eye_height. Reset the low streak so a real low reading
+	# still needs its own consecutive windows.
+	if measured <= tracking_absent_at_or_below:
+		_consecutive_low = 0
+		_logged_plausible = false
+		if debug_log and (is_nan(_last_logged) or absf(measured - _last_logged) >= _LOG_EPSILON):
+			_last_logged = measured
+			print("[eye-height] measured %.2f m - no head pose yet, not correcting" % measured)
+		return
+
 	if measured >= implausible_below:
 		# Deliberately NOT latching here. Head tracking reports a fixed default
 		# (1.50 on the device measured) for the first stretch of a session, and
@@ -178,12 +207,21 @@ func _evaluate_window() -> void:
 		# launcher logged 'measured 1.50 - plausible' and never corrected, while
 		# a later scene measured 0.82 and did. Keep watching instead.
 		_consecutive_low = 0
-		if debug_log:
+		# STATE-GATED, not value-gated. This branch is the HEALTHY path -- a
+		# correctly calibrated floor never leaves it -- and _evaluate_window runs
+		# every live_settle_frames (10). Printing unconditionally produced 91,530
+		# lines in one Link session, 99.7% of all stdout. Gating on a 1 cm change
+		# still left 89, because a head bobs across a centimetre constantly. What
+		# this line reports is a STATE, not a measurement worth tracking, so it
+		# prints once on entry and stays quiet until the state actually changes.
+		if debug_log and not _logged_plausible:
+			_logged_plausible = true
 			print("[eye-height] measured %.2f m - plausible, still watching" % measured)
 		return
 
 	# Two windows in a row, so leaning down to look at something cannot be
 	# mistaken for a broken floor.
+	_logged_plausible = false
 	_consecutive_low += 1
 	if _consecutive_low < required_low_windows:
 		if debug_log:
