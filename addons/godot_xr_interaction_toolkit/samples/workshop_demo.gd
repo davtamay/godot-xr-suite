@@ -28,25 +28,23 @@ func _ready() -> void:
 			loco.anchors_only = true
 
 
-## The TWIST sphere does nothing without a pinch-twist driver in the scene, and
-## a demo object that silently does nothing reads as a broken feature rather
-## than a missing node. Added here so the bench is self-contained; guarded so a
-## project that already placed one does not get two fighting over the same
-## distance.
-func _ensure_twist_driver() -> void:
+## The driver resolves its target by walking UP for an XRBaseInteractable, the
+## same shape as XRHandActivator - so it must live INSIDE the grabbable it
+## drives, not beside it in the scene. Parented to the demo root it found no
+## interactable, `_interactable` stayed null, and `_physics_process` returned on
+## its first line: present in the tree and completely inert. Reported on device
+## as "cant notice it moving towards hand when i twist my pinch".
+func _attach_twist_driver(ball: Node) -> void:
 	const DRIVER := "res://addons/godot_xr_interaction_toolkit/runtime/xr_pinch_twist_distance_driver.gd"
 	if not ResourceLoader.exists(DRIVER):
 		return
 	var script := load(DRIVER) as GDScript
 	if script == null:
 		return
-	for child in get_children():
-		if child.get_script() == script:
-			return
 	var driver := Node.new()
 	driver.name = "PinchTwistDistance"
 	driver.set_script(script)
-	add_child(driver)
+	ball.add_child(driver)
 
 
 ## Built from the shipped grabbable block rather than hand-assembled: it already
@@ -71,11 +69,6 @@ func _build_far_grab_bench() -> void:
 			"caption": "TWIST\nroll your wrist to throttle it in/out"},
 	]
 
-	# TWIST needs its driver present or that sphere is inert - and an inert
-	# demo object is indistinguishable from a broken feature in a headset.
-	# Drivers in this suite are per-scene rather than rig-default (see
-	# MicrogestureLocomotion in this scene), so the bench brings its own.
-	_ensure_twist_driver()
 
 	var bench := Node3D.new()
 	bench.name = "FarGrabBench"
@@ -104,6 +97,8 @@ func _build_far_grab_bench() -> void:
 			mesh_instance.set_surface_override_material(0, material)
 
 		bench.add_child(ball)
+		if entry["mode"] == 3:
+			_attach_twist_driver(ball)
 
 		var label := Label3D.new()
 		label.text = entry["caption"]
