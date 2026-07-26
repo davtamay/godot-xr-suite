@@ -16,6 +16,7 @@ var _failures: Array[String] = []
 
 func _init() -> void:
     _test_startup_default_does_not_latch(_failures)
+    _test_absent_tracking_is_not_a_broken_floor(_failures)
     _test_corrects_a_broken_floor(_failures)
     _test_plausible_height_is_left_alone(_failures)
     _test_a_single_lean_does_not_correct(_failures)
@@ -67,6 +68,24 @@ func _test_startup_default_does_not_latch(failures: Array[String]) -> void:
         failures.append("startup: never corrected after the real %s m arrived" % REAL_SEATED)
     if cal.get_applied_offset() <= 0.0:
         failures.append("startup: offset %s should raise the origin" % cal.get_applied_offset())
+    cal.free()
+
+## THE DEVICE BUG (Quest Link, 2026-07-25): the runtime reported 0.01 m for two
+## consecutive windows before real poses arrived. That is below implausible_below,
+## so the calibrator called it a broken floor and raised the origin by 1.19 m -
+## the wearer spent the rest of the session floating, because the correction
+## latches for the whole app run. A near-zero reading is absent tracking, not a
+## floor to correct.
+func _test_absent_tracking_is_not_a_broken_floor(failures: Array[String]) -> void:
+    var cal = _fresh()
+    _feed(cal, 0.01, cal.required_low_windows + 2)
+    if cal._applied:
+        failures.append("absent: corrected on a 0.01 m reading, raising the origin by %s" % cal.get_applied_offset())
+    # And a real low reading arriving afterwards must still be corrected, so the
+    # guard delays the decision rather than disabling it.
+    _feed(cal, REAL_SEATED, cal.required_low_windows)
+    if not cal._applied:
+        failures.append("absent: never corrected once a real %s m arrived" % REAL_SEATED)
     cal.free()
 
 func _test_corrects_a_broken_floor(failures: Array[String]) -> void:

@@ -33,8 +33,15 @@ foreach ($s in $suites) {
 	$cmdLine = "`"$Godot`" --headless --xr-mode off --path `"$Demo`" --script res://addons/$s.gd 2>&1"
 	$out = cmd /c $cmdLine
 	$code = $LASTEXITCODE
+	# NOTE: some suites report assertion failures via push_error, whose output
+	# also starts with "ERROR:", so a nonzero count here can mean either a real
+	# crash OR an ordinary test failure. Both must fail the gate, so the count
+	# stays -- but read the verdict column before concluding the suite crashed.
 	$errors = ($out | Select-String -Pattern 'SCRIPT ERROR|^ERROR:' -AllMatches).Count
-	$verdict = ($out | Select-String -Pattern 'PASS|FAILURE' | Select-Object -First 1)
+	# 'FAIL' as well as 'FAILURE': suites word their verdict differently
+	# ("XR eye height: FAIL (1)" vs "XR poke fidelity: 2 FAILURE(S)"), and a
+	# blank verdict column sent this reader chasing a phantom crash twice.
+	$verdict = ($out | Select-String -Pattern 'PASS|FAIL' | Select-Object -First 1)
 	"{0,-58} exit={1} scripterrors={2}  {3}" -f $s.Split('/')[-1], $code, $errors, $verdict
 	if ($code -ne 0 -or $errors -gt 0) { $failed += 1 }
 }

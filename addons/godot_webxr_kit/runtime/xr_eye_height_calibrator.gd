@@ -22,6 +22,14 @@ extends Node
 ## or reclining wearer. Seated eyes sit near 1.15 m even for a small adult, so
 ## 1.00 leaves real headroom before we intervene.
 @export_range(0.0, 1.6, 0.01) var implausible_below := 1.00
+## Below THIS the reading is not a floor problem at all - it means no real head
+## pose has arrived and the camera is still sitting on the origin. Measured on
+## device: a Quest Link session reported 0.01 m for two consecutive windows, so
+## the calibrator "corrected" a broken floor by raising the origin 1.19 m and
+## the wearer spent the whole session a metre in the air. The liveness check
+## does not catch this - a near-zero reading that jitters by more than
+## live_epsilon looks live. Treat it as not-yet-tracking and keep waiting.
+@export_range(0.0, 0.8, 0.01) var tracking_absent_at_or_below := 0.30
 ## What we correct TO. Seated rather than standing on purpose: lifting a seated
 ## wearer to standing eye height would over-correct and float them above the
 ## scene, which is the same class of error in the other direction.
@@ -174,6 +182,17 @@ func _evaluate_window() -> void:
 	sorted.sort()
 	var measured: float = sorted[sorted.size() / 2]
 	_samples.clear()
+
+	# Checked BEFORE the floor test: a near-zero height is absent tracking, not a
+	# mis-calibrated floor, and correcting on it floats the wearer by nearly the
+	# whole corrected_eye_height. Reset the low streak so a real low reading
+	# still needs its own consecutive windows.
+	if measured <= tracking_absent_at_or_below:
+		_consecutive_low = 0
+		if debug_log and (is_nan(_last_logged) or absf(measured - _last_logged) >= _LOG_EPSILON):
+			_last_logged = measured
+			print("[eye-height] measured %.2f m - no head pose yet, not correcting" % measured)
+		return
 
 	if measured >= implausible_below:
 		# Deliberately NOT latching here. Head tracking reports a fixed default
