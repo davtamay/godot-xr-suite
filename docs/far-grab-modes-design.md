@@ -296,3 +296,54 @@ pose could start mid-throttle.
 
 The third is the one most likely to sink the technique, and no test can raise
 it.
+
+## TWIST correction: absolute, not a throttle (2026-07-26)
+
+Reported on device: "seems like it only goes further". The throttle was
+working; the mechanic was wrong.
+
+### Why the throttle fails from a pinch pose
+
+Rate control requires **bidirectional wrist travel from wherever the grab
+started**, and a pinch-grab pose does not have it. Supination one way is
+comfortable; pronation the other is limited. So there is real travel in one
+direction and almost none in the other — and with a throttle the only way to
+reverse is to roll *past* neutral the opposite way, into the range the wrist
+does not have.
+
+Absolute mapping removes the constraint entirely: **rolling back toward the
+start retraces the value.** Undo is retracing, not overshooting, so only one
+direction of travel is ever needed.
+
+This corrects the earlier decision on this page. Absolute was rejected on range
+grounds — a wide output span forces a gain that amplifies jitter — and that
+reasoning is true but incomplete. Bidirectional travel from a constrained pose
+is the harder constraint, and absolute is what removes it. The range objection
+is answered by bounding the span rather than by changing the mechanic.
+
+### What Meta does (read for technique only)
+
+`PinchAndTwistEventSource` in the Hand-Tracking-Template emits a **normalized
+value from the twist angle** — 0..1 absolute or -1..1 signed — and leaves the
+meaning to the consumer; `UpdateSliderOnPinchAndTwist` drives a slider with it.
+Roughly a quarter turn maps to full range, with a small start threshold before
+a twist registers at all, a ~1 degree deadband, and change-gated emission. The
+angle is the signed angle between the ray transform's up vector at pinch-start
+and now, about the ray's forward axis — captured-relative, like ours, but read
+off the ray rather than the wrist joint.
+
+Per `CLAUDE.md`, those numbers are order-of-magnitude sanity checks. No code was
+copied; the constants we ship are ours and are named below.
+
+### As specified here
+
+- **Absolute**: twist angle maps to a distance offset from the distance the
+  object was held at when TWIST engaged. Rolling back retraces.
+- **Span, not full range**: the offset covers a bounded `twist_span_metres`
+  around the engagement distance rather than the whole 0.25-6 m. That keeps the
+  gain sane, which was the real content of the original objection.
+- **Full deflection at `twist_full_angle`**, with a start threshold before it
+  engages and a deadband on the reported angle.
+- Still driven through the ray's existing `adjust_grab_distance()`, so
+  `min_grab_distance`, `max_distance` and `max_distance_change_per_second`
+  continue to apply — the last of which usefully smooths the approach.
