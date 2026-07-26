@@ -81,6 +81,12 @@ var _arbiter: XRInteractionArbiter
 var _last_ray_origin := Vector3.ZERO
 var _last_ray_direction := Vector3.FORWARD
 var _has_last_ray_pose := false
+## The reel projection axis, captured once at select and never updated again
+## while held - unlike _last_ray_direction, which _update_ray refreshes every
+## frame. Aiming and reeling are decoupled by using this instead of the live
+## direction: hand motion is measured against where the ray pointed AT SELECT,
+## not wherever it happens to be pointing this frame.
+var _reel_axis := Vector3.FORWARD
 
 func _ready() -> void:
     super()
@@ -272,6 +278,10 @@ func _notify_select_granted(interactable) -> void:
     _pending_distance_delta = 0.0
     _grip_latched = false
     _seed_last_ray_pose_from_state()
+    # Freeze the reel axis at the moment of select, from whatever ray
+    # direction was last observed - aiming after this point must not change
+    # what "pull" means.
+    _reel_axis = _last_ray_direction
     super(interactable)
 
 func _notify_select_released(interactable) -> void:
@@ -279,6 +289,7 @@ func _notify_select_released(interactable) -> void:
     _pending_distance_delta = 0.0
     _grip_latched = false
     _far_grab_mode = XRGrabInteractable.FarGrabMode.ATTRACT
+    _reel_axis = Vector3.FORWARD
     _seed_last_ray_pose_from_state()
 
 func _apply_motion_distance_manipulation(origin: Vector3, _direction: Vector3, delta: float) -> void:
@@ -293,7 +304,10 @@ func _apply_motion_distance_manipulation(origin: Vector3, _direction: Vector3, d
     # movement adds up instead of being discarded, and the threshold is not
     # frame-rate dependent.
     var movement := origin - _last_ray_origin
-    _pending_distance_delta += movement.dot(_last_ray_direction.normalized()) * distance_motion_scale
+    # Projected onto the axis frozen at select (_reel_axis), NOT the live
+    # _last_ray_direction: re-aiming mid-pull must not change what "pull"
+    # means. _last_ray_origin is still what pairs with `movement` here.
+    _pending_distance_delta += movement.dot(_reel_axis) * distance_motion_scale
     if _pending_distance_delta > 0.0 and not allow_push_distance_manipulation:
         _pending_distance_delta = 0.0
         return

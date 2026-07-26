@@ -65,6 +65,7 @@ func _init() -> void:
 	_test_fixed_does_not_blend_or_latch_within_reel_to_grip_distance(_failures)
 	_test_attract_still_latches_within_reel_to_grip_distance(_failures)
 	_test_fixed_does_not_latch_when_grabbed_below_min_grab_distance(_failures)
+	_test_reel_axis_frozen_survives_aim_rotation(_failures)
 	if _failures.is_empty():
 		print("XR far grab modes: PASS")
 		quit(0)
@@ -228,3 +229,43 @@ func _test_fixed_does_not_latch_when_grabbed_below_min_grab_distance(failures: A
 	ray.free()
 	stub.free()
 	grip.free()
+
+## Task 2: the coupling bug. _apply_motion_distance_manipulation used to
+## project hand motion onto _last_ray_direction, which _update_ray refreshes
+## every frame -- so a pure re-aim between samples changed what "pull" meant
+## even though the hand never moved. Selects in REEL mode, applies a known
+## 5 cm pull, then ROTATES the reported ray direction 25 degrees WITHOUT
+## moving the hand, then applies the identical 5 cm pull again. A test that
+## only checks "some delta occurred" passes against the bug -- the rotation
+## between samples, and comparing the two deltas, is the whole point.
+func _test_reel_axis_frozen_survives_aim_rotation(failures: Array[String]) -> void:
+	var ray := _make_ray()
+	var stub := ModeStub.new()
+	stub.far_grab_mode = XRGrabInteractable.FarGrabMode.REEL
+	ray._notify_select_granted(stub)
+	ray._last_ray_origin = Vector3.ZERO
+	ray._last_ray_direction = Vector3.FORWARD
+	ray._has_last_ray_pose = true
+
+	var before1 := ray.get_grab_distance()
+	var origin1 := Vector3(0, 0, -0.05)  # a 5 cm pull along the select-time aim
+	ray._apply_motion_distance_manipulation(origin1, ray._last_ray_direction, 1.0 / 60.0)
+	var delta1 := ray.get_grab_distance() - before1
+
+	# Advance frame-tracking state the way _update_ray would at frame end,
+	# but ROTATE the reported aim direction 25 degrees in between -- without
+	# moving the hand. This is the coupling bug's exact shape: re-aiming,
+	# with no hand motion, must not change the next sample's result.
+	ray._last_ray_origin = origin1
+	ray._last_ray_direction = Vector3.FORWARD.rotated(Vector3.UP, deg_to_rad(25.0))
+	ray._pending_distance_delta = 0.0  # isolate sample 2 from sample 1's leftover carry
+
+	var before2 := ray.get_grab_distance()
+	var origin2 := origin1 + Vector3(0, 0, -0.05)  # the SAME 5 cm pull, same world axis
+	ray._apply_motion_distance_manipulation(origin2, ray._last_ray_direction, 1.0 / 60.0)
+	var delta2 := ray.get_grab_distance() - before2
+
+	if not is_equal_approx(delta1, delta2):
+		failures.append("REEL distance delta must be unchanged by a pure re-aim between samples: first %f, second %f (reel axis must freeze at select, not re-read the live ray direction)" % [delta1, delta2])
+	ray.free()
+	stub.free()
