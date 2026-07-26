@@ -1551,19 +1551,54 @@ git commit -m "demo: a button row too dense to sweep, and a handle that will not
 - Modify: `addons/godot_xr_interaction_toolkit/editor/xr_blocks_dock.gd:60`
 - Modify: `docs/poke-fidelity-design.md`
 
-- [ ] **Step 1: Run every suite**
+- [ ] **Step 0: Add an error-checking test runner — a `PASS` line is not proof**
 
-```bash
-for t in test_hand_conditioning test_grab_feel test_interaction_arbiter test_ui_canvas_pointer test_poke_fidelity; do 'C:\tmp\Godot47\Godot_v4.7-stable_win64_console.exe' --headless --xr-mode off --path 'C:\Users\davta\Repos\Godot_WebXR_gh\demo' --script "res://addons/godot_xr_interaction_toolkit/tests/$t.gd"; done
+Found during Task 6 and verified empirically on this Godot build: **a test
+function that hits a runtime error aborts silently, `_init` continues to the
+next test, and the suite prints its `PASS` line and exits 0.** A crashed test
+is indistinguishable from a passing one.
+
+A wrapper counter cannot detect it either — the abort unwinds only the
+erroring function, so a `_run(fn); _completed += 1` wrapper still increments.
+Verified with a probe. Detection has to be external: scan the process output.
+
+Create `tools/run_tests.ps1`:
+
+```powershell
+# Runs an XR suite headlessly and FAILS on a script error as well as a
+# non-zero exit. A suite's own PASS line is not sufficient: a test that hits
+# a runtime error aborts silently, the runner continues, and the summary
+# still says PASS. Verified on Godot 4.7.stable.
+param(
+	[Parameter(Mandatory = $true)][string[]]$Suite,
+	[string]$Godot = 'C:\tmp\Godot47\Godot_v4.7-stable_win64_console.exe',
+	[string]$Demo = 'C:\Users\davta\Repos\Godot_WebXR_gh\demo'
+)
+$failed = 0
+foreach ($s in $Suite) {
+	$out = & $Godot --headless --xr-mode off --path $Demo --script "res://addons/$s.gd"
+	$code = $LASTEXITCODE
+	$errors = ($out | Select-String -Pattern 'SCRIPT ERROR|^ERROR:' -AllMatches).Count
+	$verdict = ($out | Select-String -Pattern 'PASS|FAILURE' | Select-Object -First 1)
+	"{0,-58} exit={1} scripterrors={2}  {3}" -f $s.Split('/')[-1], $code, $errors, $verdict
+	if ($code -ne 0 -or $errors -gt 0) { $failed += 1 }
+}
+if ($failed -gt 0) { Write-Error "$failed suite(s) failed or emitted script errors"; exit 1 }
+exit 0
 ```
 
-Expected: five PASS lines, every exit code 0.
+Baseline recorded by the controller before this task: all eight suites give
+`exit=0 scripterrors=0` and a genuine PASS, so nothing is currently hiding.
+
+- [ ] **Step 1: Run every suite through the error-checking runner**
 
 ```bash
-for t in godot_xr_hands/tests/test_gesture_foundation godot_xr_hands/tests/test_adaptive_contact godot_webxr_kit/tests/test_eye_height_calibrator; do 'C:\tmp\Godot47\Godot_v4.7-stable_win64_console.exe' --headless --xr-mode off --path 'C:\Users\davta\Repos\Godot_WebXR_gh\demo' --script "res://addons/$t.gd"; done
+pwsh tools/run_tests.ps1 -Suite godot_xr_interaction_toolkit/tests/test_poke_fidelity,godot_xr_interaction_toolkit/tests/test_ui_canvas_pointer,godot_xr_interaction_toolkit/tests/test_grab_feel,godot_xr_interaction_toolkit/tests/test_hand_conditioning,godot_xr_interaction_toolkit/tests/test_interaction_arbiter,godot_xr_hands/tests/test_gesture_foundation,godot_xr_hands/tests/test_adaptive_contact,godot_webxr_kit/tests/test_eye_height_calibrator
 ```
 
-Expected: three PASS lines, every exit code 0.
+Expected: eight lines, every one `exit=0 scripterrors=0` with a PASS verdict,
+and the script itself exiting 0. **`scripterrors` must be 0 on every line** —
+that column, not the PASS text, is what proves no test aborted.
 
 - [ ] **Step 2: Boot-check the two scenes that must not regress**
 

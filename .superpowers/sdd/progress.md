@@ -232,3 +232,27 @@ Task 5: IN PROGRESS (implementer commit 5c9aa45; fix pass 1 in flight)
     deep sample. That is the guard the finding needed.
 
 Task 5: complete (commits 5c9aa45..25b468c, review approved, two fix passes).
+
+Task 6: implemented (commit 2292fbb), review pending.
+
+### HARNESS DEFECT FOUND IN TASK 6 - affects every suite in this repo
+A test function that hits a runtime error ABORTS SILENTLY: _init continues to
+the next test, and the suite prints its PASS line and exits 0. A crashed test
+is indistinguishable from a passing one. Verified empirically with a probe on
+Godot 4.7.stable, not inferred.
+
+A wrapper counter does NOT detect it - the abort unwinds only the erroring
+function, so `_run(fn); _completed += 1` still increments. Also verified.
+Detection must be external: scan process output for SCRIPT ERROR / ^ERROR:.
+
+BASELINE TAKEN IMMEDIATELY (controller): all eight suites re-run with error
+counting - test_poke_fidelity, test_ui_canvas_pointer, test_grab_feel,
+test_hand_conditioning, test_interaction_arbiter, test_gesture_foundation,
+test_adaptive_contact, test_eye_height_calibrator. Every one:
+exit=0 scripterrors=0, genuine PASS. Nothing is currently hiding, so every
+green result reported in this plan holds.
+
+Plan amended: Task 8 gains a Step 0 creating tools/run_tests.ps1, which fails
+on a script error as well as a non-zero exit, and Step 1 now runs all eight
+suites through it. The scripterrors column - not the PASS text - is the proof.
+This generalises well beyond this plan and is worth keeping.
