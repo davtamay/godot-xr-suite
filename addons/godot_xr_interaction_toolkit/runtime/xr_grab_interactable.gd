@@ -49,6 +49,36 @@ enum FarGrabMode { ATTRACT, FIXED, REEL }
 ## 3.0 m / 0.5 s = 6.0 m/s.
 @export_range(0.1, 20.0, 0.1, "or_greater") var far_grab_attract_speed := 6.0
 
+## Metres a FREE ATTRACT far-grab's destination sits forward of the grip pose
+## (along the GRIP's own forward axis, not the ray -- rotating the wrist after
+## the grab rotates the standoff with it). Landing exactly ON the grip
+## overcorrected: object and hand occupy the same space and it reads badly on
+## device. David: "with attach i guess we can leave an offset, i see how
+## overlaping hand completely can be a problem, maybe we just give it the
+## offset like before or closer?". The OLD behaviour (parking at
+## min_grab_distance, 0.25 m) was too far AND sat exactly on the ray-hide
+## boundary below, so the cursor stayed visible; this is the middle ground.
+## Ignored for an object with an authored grab point -- that placement is
+## deliberate and a standoff would fight it (see _movement_target_pose_for).
+##
+## CONSTRAINT, ENCODED (not just respected once): this must stay strictly
+## LESS than XRRayInteractor.hide_ray_when_held_within (default 0.25 m, see
+## its doc comment there), which hides the far ray by comparing the held
+## object's position against this SAME adapter grip origin. A standoff at or
+## past that threshold means a held object still draws a ray at you -- the
+## exact symptom that started this thread (f9a2230's "grip_latched", which
+## turned out to be dead code once this was traced back far enough).
+## test_far_grab_modes.gd asserts this relationship directly so a future
+## tuning pass on either number cannot silently reintroduce it.
+##
+## Default 0.12 m: roughly half of hide_ray_when_held_within's 0.25 m, so
+## there is real headroom rather than a hair's-width margin, and in the
+## neighbourhood of where a held object naturally sits forward of an open
+## palm (a closed fist's grip point is a few centimetres in front of the
+## wrist; 0.12 m clears the palm without floating the object visibly off the
+## hand). Picked from geometry, not feel -- earn-in owed on device.
+@export_range(0.0, 0.5, 0.01) var far_grab_attract_standoff := 0.12
+
 ## Bare-hand grab gesture: PINCH (default) or GRIP (curl the lower fingers, index
 ## free). See HandGrab. A gun/blaster uses GRIP so the index can pull a trigger.
 @export var hand_grab_style: HandGrab = HandGrab.PINCH
@@ -533,12 +563,28 @@ func _attach_pose_for(interactor) -> Transform3D:
 ## tracked. Falls back to the interactor's normal attach pose whenever the
 ## grip pose isn't available (not ATTRACT, not a ray, or genuinely untracked),
 ## so ATTRACT degrades to "follow the ray" rather than freezing.
+##
+## A FREE grab (no authored point -- _point_grab false) lands
+## far_grab_attract_standoff forward of the grip along the grip pose's OWN
+## basis, not the ray's: `grip_basis * Vector3.FORWARD` is the grip's local
+## -Z in world space (the same "pointing" convention _hand_grip_pose/
+## _controller_aim_pose already use), so rotating the wrist after the grab
+## rotates the standoff with it -- a ray-relative offset would instead hang
+## in a fixed world direction as the hand turns, which reads as the object
+## NOT being held. An authored grab point's placement is deliberate (an
+## authored mug handle, a blaster grip) and keeps landing exactly on the grip
+## pose, unchanged -- the standoff would fight it.
 func _movement_target_pose_for(interactor) -> Transform3D:
 	if interactor is XRRayInteractor and far_grab_mode == FarGrabMode.ATTRACT \
 			and interactor.has_method("get_hand_grip_pose"):
 		var grip: Dictionary = interactor.get_hand_grip_pose()
 		if grip.get("valid", false):
-			return Transform3D(grip.get("basis", Basis.IDENTITY) as Basis, grip["origin"] as Vector3)
+			var grip_basis: Basis = grip.get("basis", Basis.IDENTITY)
+			var grip_origin: Vector3 = grip["origin"]
+			if _point_grab:
+				return Transform3D(grip_basis, grip_origin)
+			var standoff := (grip_basis * Vector3.FORWARD) * far_grab_attract_standoff
+			return Transform3D(grip_basis, grip_origin + standoff)
 	return _attach_pose_for(interactor)
 
 func _rotation_between_vectors(from_vector: Vector3, to_vector: Vector3) -> Basis:

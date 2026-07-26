@@ -52,6 +52,15 @@ extends "res://addons/godot_xr_interaction_toolkit/runtime/xr_base_interactor.gd
 ## cursor stand down even though this ray is what is holding it -- reeling
 ## something into your hand should not leave a ray drawn through it. The grab
 ## itself is untouched; only the visual and the hover/cursor stop. 0 disables.
+##
+## CONSTRAINT, ENCODED: XRGrabInteractable.far_grab_attract_standoff (default
+## 0.12 m) must stay strictly LESS than this (default 0.25 m) -- ATTRACT
+## delivers a free-grabbed object to a point this many metres forward of the
+## SAME adapter grip origin this threshold measures against, so raising this
+## value, or far_grab_attract_standoff, without checking the other can put a
+## held object back outside the hide radius and leave a ray drawn at it.
+## test_far_grab_modes.gd asserts the relationship between the two shipped
+## defaults directly.
 @export_range(0.0, 1.0, 0.01) var hide_ray_when_held_within := 0.25
 ## Unity/Meta hand-ray rule: a BARE HAND only shows the ray when it's tracked and
 ## in an aim posture (palm facing away from your head). Turn your palm toward your

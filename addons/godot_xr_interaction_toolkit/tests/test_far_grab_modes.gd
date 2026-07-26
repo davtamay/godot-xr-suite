@@ -64,8 +64,9 @@ class RayAdapterStub:
 class AttractRayStub:
 	extends XRRayInteractor
 	var grip_origin := Vector3(0, 1, 0)
+	var grip_basis := Basis.IDENTITY
 	func get_hand_grip_pose() -> Dictionary:
-		return {"valid": true, "origin": grip_origin, "basis": Basis.IDENTITY}
+		return {"valid": true, "origin": grip_origin, "basis": grip_basis}
 
 ## Minimal stand-in for an authored XRGrabPoint: only carries
 ## mirror_to_other_hand (set false, keeping the point-grab test's algebra
@@ -112,6 +113,7 @@ func _init() -> void:
 	_test_fixed_does_not_latch_when_grabbed_below_min_grab_distance(_failures)
 	_test_reel_axis_frozen_survives_aim_rotation(_failures)
 	_test_ray_get_hand_grip_pose_proxies_the_adapter(_failures)
+	_test_far_grab_attract_standoff_is_comfortably_inside_hide_ray_when_held_within(_failures)
 	# The remaining tests need a node genuinely inside the tree
 	# (XRGrabInteractable._arm_transit calls get_target(), which asserts
 	# "!is_inside_tree()") -- a node added to get_root() during _init() is not
@@ -121,6 +123,8 @@ func _init() -> void:
 
 func _process(_delta: float) -> bool:
 	_test_attract_offset_collapses_and_targets_the_grip(_failures)
+	_test_attract_standoff_offsets_along_grip_forward(_failures)
+	_test_attract_standoff_rides_grip_rotation(_failures)
 	_test_fixed_and_reel_do_not_arm_transit_for_a_plain_grabbable(_failures)
 	_test_attract_respects_an_authored_grab_point(_failures)
 	_test_far_grab_attract_speed_drives_duration(_failures)
@@ -371,6 +375,12 @@ func _test_attract_offset_collapses_and_targets_the_grip(failures: Array[String]
 	grab.target_path = grab.get_path_to(body)
 	grab.snap_to_attach = false
 	grab.far_grab_mode = XRGrabInteractable.FarGrabMode.ATTRACT
+	# Standoff is a SEPARATE concern (round 3) with its own dedicated tests
+	# below (_test_attract_standoff_offsets_along_grip_forward and
+	# _test_attract_standoff_rides_grip_rotation) -- zeroed here so this
+	# test's "lands exactly on the grip pose" assertion stays about the
+	# offset-collapse mechanism alone, not entangled with standoff math.
+	grab.far_grab_attract_standoff = 0.0
 	var far_position := Vector3(0, 1, -3.0)
 	body.global_position = far_position
 
@@ -400,10 +410,113 @@ func _test_attract_offset_collapses_and_targets_the_grip(failures: Array[String]
 	if grab.in_transit():
 		failures.append("ATTRACT transit did not finish within the 600-frame test budget -- something is stuck")
 	if not body.global_position.is_equal_approx(ray.grip_origin):
-		failures.append("ATTRACT must deliver the object exactly onto the adapter's grip pose, got %s expected %s" % [body.global_position, ray.grip_origin])
+		failures.append("ATTRACT (standoff zeroed) must deliver the object exactly onto the adapter's grip pose, got %s expected %s" % [body.global_position, ray.grip_origin])
 
 	grab.queue_free()
 	ray.queue_free()
+
+## Round 3 (on-device: "with attach i guess we can leave an offset, i see how
+## overlaping hand completely can be a problem"): landing exactly ON the grip
+## (the test above, with standoff zeroed) overcorrected -- object and hand
+## occupy the same space. ATTRACT now lands far_grab_attract_standoff forward
+## of the grip pose instead. Uses the DEFAULT far_grab_attract_standoff (not
+## overridden), so Mutation "set the standoff to zero" (reverting to the
+## overcorrection this round exists to fix) is caught by the shipped default,
+## not a test-authored value.
+func _test_attract_standoff_offsets_along_grip_forward(failures: Array[String]) -> void:
+	var grab := XRGrabInteractable.new()
+	var body := Node3D.new()
+	grab.add_child(body)
+	get_root().add_child(grab)
+	grab.target_path = grab.get_path_to(body)
+	grab.snap_to_attach = false
+	grab.far_grab_mode = XRGrabInteractable.FarGrabMode.ATTRACT
+	body.global_position = Vector3(0, 1, -3.0)
+
+	var ray := AttractRayStub.new()
+	ray.grip_origin = Vector3(0, 1, 0)
+	ray.grip_basis = Basis.IDENTITY  # forward (-Z) is world -Z here
+	get_root().add_child(ray)
+
+	grab._notify_select_entered(ray)
+	var frames := 0
+	while grab.in_transit() and frames < 600:
+		grab._physics_process(1.0 / 60.0)
+		frames += 1
+	if grab.in_transit():
+		failures.append("standoff test: transit did not finish within the 600-frame budget")
+
+	var expected := ray.grip_origin + (ray.grip_basis * Vector3.FORWARD) * grab.far_grab_attract_standoff
+	if body.global_position.is_equal_approx(ray.grip_origin):
+		failures.append("ATTRACT must NOT land exactly coincident with the grip pose -- got %s, same as the grip origin %s (this is the overcorrection round 3 exists to fix)" % [body.global_position, ray.grip_origin])
+	if not body.global_position.is_equal_approx(expected):
+		failures.append("ATTRACT must land far_grab_attract_standoff (%f m) forward of the grip pose along the grip's OWN axis, got %s expected %s" % [grab.far_grab_attract_standoff, body.global_position, expected])
+
+	grab.queue_free()
+	ray.queue_free()
+
+## The standoff must ride the GRIP's rotation, not hang in a fixed world
+## direction -- a rotated grip pose (wrist turned after the grab) must move
+## the destination with it. Catches Mutation "apply the standoff along a
+## fixed world axis instead of the grip's forward": a world-axis mutant would
+## still pass _test_attract_standoff_offsets_along_grip_forward above (that
+## fixture's grip_basis is IDENTITY, where "the grip's forward" and "a fixed
+## world axis" are the SAME direction and cannot be told apart) -- this is
+## the fixture where they diverge.
+func _test_attract_standoff_rides_grip_rotation(failures: Array[String]) -> void:
+	var grab := XRGrabInteractable.new()
+	var body := Node3D.new()
+	grab.add_child(body)
+	get_root().add_child(grab)
+	grab.target_path = grab.get_path_to(body)
+	grab.snap_to_attach = false
+	grab.far_grab_mode = XRGrabInteractable.FarGrabMode.ATTRACT
+	body.global_position = Vector3(0, 1, -3.0)
+
+	var ray := AttractRayStub.new()
+	ray.grip_origin = Vector3(0, 1, 0)
+	ray.grip_basis = Basis(Vector3.UP, deg_to_rad(90.0))  # wrist turned 90 degrees
+	get_root().add_child(ray)
+
+	grab._notify_select_entered(ray)
+	var frames := 0
+	while grab.in_transit() and frames < 600:
+		grab._physics_process(1.0 / 60.0)
+		frames += 1
+	if grab.in_transit():
+		failures.append("rotated-grip standoff test: transit did not finish within the 600-frame budget")
+
+	var rotated_expected := ray.grip_origin + (ray.grip_basis * Vector3.FORWARD) * grab.far_grab_attract_standoff
+	var world_axis_expected := ray.grip_origin + Vector3.FORWARD * grab.far_grab_attract_standoff
+	if not body.global_position.is_equal_approx(rotated_expected):
+		failures.append("standoff must follow the ROTATED grip's own forward axis, got %s expected %s" % [body.global_position, rotated_expected])
+	if body.global_position.is_equal_approx(world_axis_expected):
+		failures.append("standoff landed along a FIXED WORLD axis (%s) instead of the rotated grip's own forward -- it will hang in place as the wrist turns" % world_axis_expected)
+
+	grab.queue_free()
+	ray.queue_free()
+
+## The constraint the coordinator asked to encode, not just respect once: the
+## shipped default far_grab_attract_standoff must sit comfortably inside the
+## shipped default hide_ray_when_held_within (XRRayInteractor) -- that
+## threshold is what hides the far ray by comparing the held object's
+## position against the SAME adapter grip origin ATTRACT now delivers onto.
+## A standoff at or past it means a held object still draws a ray at you,
+## which is the exact symptom that started this whole thread. Reads both
+## defaults from FRESH instances (never overridden by a test) so a future
+## tuning pass on either number is what this test is actually watching.
+func _test_far_grab_attract_standoff_is_comfortably_inside_hide_ray_when_held_within(failures: Array[String]) -> void:
+	var grab := XRGrabInteractable.new()
+	var ray := XRRayInteractor.new()
+	if not (grab.far_grab_attract_standoff < ray.hide_ray_when_held_within):
+		failures.append("far_grab_attract_standoff (%f) must be strictly LESS than XRRayInteractor.hide_ray_when_held_within (%f) -- otherwise a held ATTRACT object still draws a ray" % [grab.far_grab_attract_standoff, ray.hide_ray_when_held_within])
+	# "Comfortably", not by a hair: at least a 0.05 m margin, so rounding or a
+	# small independent tweak to either number cannot brush the two together.
+	var margin := ray.hide_ray_when_held_within - grab.far_grab_attract_standoff
+	if margin < 0.05:
+		failures.append("far_grab_attract_standoff (%f) is too close to hide_ray_when_held_within (%f) -- margin %f m, want >= 0.05 m of headroom" % [grab.far_grab_attract_standoff, ray.hide_ray_when_held_within, margin])
+	grab.free()
+	ray.free()
 
 ## Companion to the test above: the same plain grabbable in FIXED or REEL mode
 ## must NOT arm a transit -- the guard's "attracting" clause requires
@@ -496,6 +609,7 @@ func _test_far_grab_attract_speed_drives_duration(failures: Array[String]) -> vo
 		grab.snap_to_attach = false
 		grab.far_grab_mode = XRGrabInteractable.FarGrabMode.ATTRACT
 		grab.far_grab_attract_speed = speed
+		grab.far_grab_attract_standoff = 0.0  # keep the 3 m distance exact; standoff has its own tests
 		body.global_position = Vector3(0, 1, -3.0)
 
 		var ray := AttractRayStub.new()
@@ -533,6 +647,7 @@ func _test_attract_transit_eases_out(failures: Array[String]) -> void:
 	grab.snap_to_attach = false
 	grab.far_grab_mode = XRGrabInteractable.FarGrabMode.ATTRACT
 	grab.far_grab_attract_speed = 3.0
+	grab.far_grab_attract_standoff = 0.0  # keep the target exactly at grip_origin; standoff has its own tests
 	var start := Vector3(0, 1, -3.0)
 	var target_pos := Vector3(0, 1, 0)
 	body.global_position = start
