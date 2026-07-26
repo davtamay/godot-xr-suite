@@ -284,3 +284,37 @@ Task 7: IN PROGRESS (implementer commit cd63218; fix pass 1 in flight)
     value (0.040 vs 0.030). That is the response the finding needed.
 
 Task 7: complete (commits cd63218..0722540, review clean after one fix pass).
+
+Task 8: complete for Steps 0-5 (commits c77e742, bef5f47, 919b1b2, 9f960ef;
+  review approved, no Critical/Important). Steps 6-7 are the ON-DEVICE EARN-IN
+  and remain OPEN - they need a Quest and a human, and must not be simulated.
+
+### THE RUNNER I SPECIFIED WAS ITSELF BROKEN (controller correction)
+Step 0's script as I wrote it captured only stdout. Godot writes SCRIPT ERROR
+and ERROR: to STDERR, so the scripterrors column could never have been anything
+but zero - the tool built to catch lying tests was itself lying. My earlier
+"all eight suites, zero script errors" claim rested on that broken measurement
+and was unearned.
+Fixed by the Task 8 implementer with `cmd /c "... 2>&1"` (OS-level merge,
+avoiding PowerShell's ErrorRecord wrapping). Controller then verified
+INDEPENDENTLY: a probe that crashes mid-test and still prints its own PASS with
+exit=0 is now flagged (scripterrors=1, runner exits 1). All eight real suites
+re-run genuinely clean. Also corrected the documented invocation - pwsh is not
+installed here, it is `powershell -ExecutionPolicy Bypass -File`.
+
+### Minor findings for the final whole-branch review to triage
+- Task 1: is_pressed()/is_source_pressed() only exercised indirectly.
+- Task 1: every fixture uses source_id 0; multi-source independence untested.
+- Task 2: _make_profile() returns Resource, not XRPokeProfile.
+- Task 2: XRPokeProfile reuses xr_poke_interactor.svg as its @icon.
+- Task 3: _plane_u's near-parallel-to-UP branch (Y faces only) untested.
+- Task 3: X_MINUS/Y_PLUS/Y_MINUS have no pokeable-level fixture.
+- Task 6: the has_method("get_poke_pin")-false fallback branch is untested
+  (only the INF branch is); multi-target tie-break unverified.
+- Task 7: CancelTarget's poke rectangle (half_size 0.05) is ~2cm larger per
+  side than its visible 0.06 box - deliberate, now commented.
+- Task 8: tools/run_tests.ps1 interpolates $s unquoted into the cmd string; a
+  suite path with a space or cmd metacharacter would break. Loud failure, not
+  a silent false pass, but a real robustness gap in a checked-in tool.
+- Task 8: XRPokeEvaluator._sources never prunes entries. Pre-existing, shared
+  by all three adapters.
