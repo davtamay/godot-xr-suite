@@ -256,3 +256,24 @@ Plan amended: Task 8 gains a Step 0 creating tools/run_tests.ps1, which fails
 on a script error as well as a non-zero exit, and Step 1 now runs all eight
 suites through it. The scripterrors column - not the PASS text - is the proof.
 This generalises well beyond this plan and is worth keeping.
+
+Task 6: complete (commit 2292fbb, review approved, no Critical/Important).
+  - Reviewer independently re-derived the pin math and confirmed the two
+    mutations hit two DISTINCT tests rather than one catching both.
+
+Task 7: IN PROGRESS (implementer commit cd63218; fix pass 1 in flight)
+  - Plan corrected twice BEFORE dispatch, both by checking the plan against
+    the tree: (a) XRPokeStation is instanced only in control_panel_demo.tscn,
+    while poke_playground_demo.tscn duplicates the wiring in its own script and
+    never touches the station - the original file list would have wired a block
+    the edited scene does not run; (b) the demo targets are now built in CODE
+    rather than hand-authored into a 400-line .tscn, following
+    XRPokeButton._build_visuals, which also makes the block self-contained.
+  - Review Important: the DragHandle handler ACCUMULATED a delta that is
+    cumulative-since-press. XRPokeable.dragged re-emits the total offset every
+    physics tick, so adding it each tick saturates the +-0.04 clamp in ~4
+    frames and freezes - a snap-and-stick where a slide was intended. The
+    plan's own wiring SET the position; the implementation deviated to +=.
+  - Nothing the implementer ran could have caught it: the liveness verifier
+    asserted static state (interpret_drag == true) and never exercised a drag.
+    Fix pass adds an evaluator-level test pinning the cumulative contract.
