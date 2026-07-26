@@ -317,7 +317,16 @@ func _apply_motion_distance_manipulation(origin: Vector3, _direction: Vector3, d
 ## it LATCHES into the hand (a real hold) and no longer reels back out along the
 ## ray - you have to let go to release it. Returns the ray pose unchanged when
 ## disabled or there is no grip source.
+##
+## FIXED is gated out entirely: "never reels, never attracts" means the ray
+## pose is the whole story, so a FIXED object grabbed within
+## reel_to_grip_distance must not blend or latch into the grip either -
+## otherwise anything grabbed close would silently behave like ATTRACT. Reads
+## the mode cached at select (_far_grab_mode) rather than the interactable
+## itself, since this runs every frame.
 func _resolve_grab_pose(ray_attach: Transform3D) -> Transform3D:
+    if _far_grab_mode == XRGrabInteractable.FarGrabMode.FIXED:
+        return ray_attach
     var grip := _grip_pose()
     if reel_to_grip_distance <= 0.0 or not grip.get("valid", false):
         return ray_attach

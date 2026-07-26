@@ -26,6 +26,22 @@ class ModeStub:
 class NoModeStub:
 	extends Node
 
+## A grip source for _resolve_grab_pose's reel-to-grip blend/latch -- planted
+## far from every ray_attach pose these tests build, so "did it move toward
+## the grip" is unambiguous from the origin alone.
+class GripStub:
+	extends Node
+	var pose := Transform3D(Basis.IDENTITY, Vector3(9, 9, 9))
+	func get_attach_pose() -> Transform3D:
+		return pose
+
+## A hit distance strictly between min_grab_distance (0.25) and the ray's
+## default reel_to_grip_distance (0.45) -- the only range where the
+## reel-to-grip blend/latch can fire at all. Outside that range the case
+## cannot arise, and a gate test would pass vacuously whether or not the gate
+## exists (same trap as HIT_DISTANCE above, applied to this mechanism).
+const CLOSE_HIT_DISTANCE := 0.35
+
 var _failures: Array[String] = []
 
 func _init() -> void:
@@ -35,6 +51,8 @@ func _init() -> void:
 	_test_fixed_still_clamped_by_min_grab_distance(_failures)
 	_test_reel_responds_to_hand_motion(_failures)
 	_test_unspecified_mode_behaves_as_attract(_failures)
+	_test_fixed_does_not_blend_or_latch_within_reel_to_grip_distance(_failures)
+	_test_attract_still_latches_within_reel_to_grip_distance(_failures)
 	if _failures.is_empty():
 		print("XR far grab modes: PASS")
 		quit(0)
@@ -126,3 +144,51 @@ func _test_unspecified_mode_behaves_as_attract(failures: Array[String]) -> void:
 		failures.append("an interactable with no far_grab_mode must behave as ATTRACT (floor %f), got %f" % [expected_floor, ray.get_grab_distance()])
 	ray.free()
 	stub.free()
+
+## Fix pass 1: FIXED must never blend or latch into the linked grip pose --
+## "never reels, never attracts" was true of distance but not of pose. A hit
+## distance inside reel_to_grip_distance (0.45) is exactly the case that used
+## to silently turn FIXED into ATTRACT: without the gate, _resolve_grab_pose
+## computes t = inverse_lerp(0.45, 0.25, 0.35) = 0.5 and blends the returned
+## pose toward the grip regardless of mode.
+func _test_fixed_does_not_blend_or_latch_within_reel_to_grip_distance(failures: Array[String]) -> void:
+	var ray := _make_ray()
+	ray._hover_distance = CLOSE_HIT_DISTANCE
+	var stub := ModeStub.new()
+	stub.far_grab_mode = XRGrabInteractable.FarGrabMode.FIXED
+	ray._notify_select_granted(stub)  # distance = CLOSE_HIT_DISTANCE (0.35), inside reel_to_grip_distance
+	var grip := GripStub.new()
+	ray._suppress_interactor = grip
+	var ray_attach := Transform3D(Basis.IDENTITY, Vector3(0, 1, -0.35))
+	var result := ray._resolve_grab_pose(ray_attach)
+	if not result.origin.is_equal_approx(ray_attach.origin):
+		failures.append("FIXED within reel_to_grip_distance must return the ray pose unchanged, not blend toward the grip: got %s, expected %s" % [result.origin, ray_attach.origin])
+	if ray._grip_latched:
+		failures.append("FIXED within reel_to_grip_distance must never latch")
+	ray.free()
+	stub.free()
+	grip.free()
+
+## Companion to the test above: the gate must narrow FIXED only. ATTRACT's
+## captured distance is always the floor (min_grab_distance), which for any
+## reel_to_grip_distance > min_grab_distance forces
+## t = inverse_lerp(reel_to_grip_distance, floor, floor) == 1.0 -- ATTRACT
+## latches immediately by construction, which is the composition Task 1
+## relies on ("the object tweens in and latches as a real hold").
+func _test_attract_still_latches_within_reel_to_grip_distance(failures: Array[String]) -> void:
+	var ray := _make_ray()
+	ray._hover_distance = CLOSE_HIT_DISTANCE
+	var stub := ModeStub.new()
+	stub.far_grab_mode = XRGrabInteractable.FarGrabMode.ATTRACT
+	ray._notify_select_granted(stub)
+	var grip := GripStub.new()
+	ray._suppress_interactor = grip
+	var ray_attach := Transform3D(Basis.IDENTITY, Vector3(0, 1, -0.35))
+	var result := ray._resolve_grab_pose(ray_attach)
+	if not result.origin.is_equal_approx(grip.pose.origin):
+		failures.append("ATTRACT within reel_to_grip_distance must still blend/latch toward the grip: got %s, expected %s" % [result.origin, grip.pose.origin])
+	if not ray._grip_latched:
+		failures.append("ATTRACT within reel_to_grip_distance must still latch -- the gate must only narrow FIXED")
+	ray.free()
+	stub.free()
+	grip.free()
