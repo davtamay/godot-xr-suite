@@ -342,8 +342,16 @@ copied; the constants we ship are ours and are named below.
 - **Span, not full range**: the offset covers a bounded `twist_span_metres`
   around the engagement distance rather than the whole 0.25-6 m. That keeps the
   gain sane, which was the real content of the original objection.
-- **Full deflection at `twist_full_angle`**, with a start threshold before it
-  engages and a deadband on the reported angle.
+- **Full deflection at `twist_full_angle_degrees`** (90°, a quarter turn), with
+  a distinct, larger `twist_start_threshold_degrees` (5°) before the mapping
+  engages at all — so a grab does not immediately move the object from
+  incidental at-rest roll — and a smaller `twist_deadband_degrees` (1°,
+  Meta's own order-of-magnitude reference) subtracted from the roll once
+  engaged, so rolling exactly back to neutral retraces to exactly zero offset.
 - Still driven through the ray's existing `adjust_grab_distance()`, so
-  `min_grab_distance`, `max_distance` and `max_distance_change_per_second`
-  continue to apply — the last of which usefully smooths the approach.
+  `min_grab_distance` and `max_distance` continue to apply. The driver itself
+  additionally rate-limits its own per-frame step by the ray's
+  `max_distance_change_per_second` — `adjust_grab_distance()` only
+  range-clamps, it does not rate-limit — which is what keeps a target that
+  jumps (crossing the start threshold, or a noisy tracking sample) from
+  snapping instead of smoothing in.

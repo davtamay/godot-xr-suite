@@ -139,12 +139,15 @@ func _init() -> void:
 	# which re-scans XRServer's live trackers on every call.
 	var _twist_was_conditioned := XRHandTrackerResolver.is_conditioned()
 	XRHandTrackerResolver.set_conditioned(false)
-	_test_twist_distance_rate_respects_deadzone_and_gain(_failures)
+	_test_twist_offset_engages_scales_and_clamps(_failures)
 	_test_twist_angle_extracts_roll_independent_of_swing(_failures)
-	_test_twist_roll_beyond_deadzone_changes_distance_and_reverses(_failures)
-	_test_twist_roll_inside_deadzone_produces_no_change(_failures)
-	_test_twist_rate_is_sustained_across_frames(_failures)
-	_test_twist_neutral_captured_at_select_not_absolute(_failures)
+	_test_twist_full_deflection_settles_at_span_and_clamps_beyond(_failures)
+	_test_twist_rolling_back_to_neutral_returns_to_engagement_distance(_failures)
+	_test_twist_opposite_rolls_move_opposite_ways_from_engagement(_failures)
+	_test_twist_inside_deadband_nothing_moves(_failures)
+	_test_twist_below_start_threshold_mapping_not_engaged(_failures)
+	_test_twist_engagement_distance_captured_per_grab(_failures)
+	_test_twist_second_grab_does_not_inherit_previous_neutral_rotation(_failures)
 	_test_twist_fixed_and_reel_unaffected_by_twist(_failures)
 	_test_twist_controller_with_no_wrist_joint_is_inert(_failures)
 	XRHandTrackerResolver.set_conditioned(_twist_was_conditioned)
@@ -804,26 +807,70 @@ func _set_wrist_roll(tracker: XRHandTracker, wrist_basis: Basis) -> void:
 	tracker.set_hand_joint_transform(XRHandTracker.HAND_JOINT_WRIST, Transform3D(wrist_basis, Vector3(0, 1, -0.3)))
 	tracker.set_hand_joint_flags(XRHandTracker.HAND_JOINT_WRIST, valid)
 
-## Pure math, no tracker/interactor at all: distance_rate is zero inside the
-## deadzone (both directions -- aiming, which does not hold the wrist still,
-## must not drift the distance) and linear in the EXCESS beyond it. Mutation
-## "remove the deadzone" (use roll_radians directly) fails the first two
-## assertions: distance_rate(0.05, ...) would return a small nonzero value.
-func _test_twist_distance_rate_respects_deadzone_and_gain(failures: Array[String]) -> void:
-	if not is_equal_approx(XRPinchTwistDistanceDriver.distance_rate(0.05, 0.12, 1.5), 0.0):
-		failures.append("distance_rate must be zero for roll (0.05) inside the deadzone (0.12)")
-	if not is_equal_approx(XRPinchTwistDistanceDriver.distance_rate(-0.05, 0.12, 1.5), 0.0):
-		failures.append("distance_rate must be zero for roll (-0.05) inside the deadzone, either direction")
-	var positive := XRPinchTwistDistanceDriver.distance_rate(0.32, 0.12, 1.5)
-	var expected_positive := (0.32 - 0.12) * 1.5
-	if not is_equal_approx(positive, expected_positive):
-		failures.append("distance_rate(0.32, 0.12, 1.5) must be gain * excess-beyond-deadzone (%f), got %f" % [expected_positive, positive])
-	var negative := XRPinchTwistDistanceDriver.distance_rate(-0.32, 0.12, 1.5)
-	var expected_negative := (-0.32 + 0.12) * 1.5
-	if not is_equal_approx(negative, expected_negative):
-		failures.append("distance_rate(-0.32, 0.12, 1.5) must be gain * excess-beyond-deadzone (%f), got %f" % [expected_negative, negative])
-	if sign(positive) == sign(negative):
-		failures.append("opposite roll must produce opposite-signed rates: got %f and %f" % [positive, negative])
+## Drives one hand's frames until its held distance stops changing (bounded,
+## so a broken fixture fails loudly instead of hanging). The absolute mapping
+## APPROACHES its target through the ray's max_distance_change_per_second
+## rather than snapping to it in one frame (see the driver's own comment on
+## why), so any test that cares about the SETTLED distance must let it
+## converge rather than reading a single frame.
+func _drive_twist_until_settled(driver: XRPinchTwistDistanceDriver, ray: XRRayInteractor, hand: int, max_frames := 200) -> void:
+	var previous := ray.get_grab_distance()
+	for _frame in range(max_frames):
+		driver._drive_hand(hand, 1.0 / 60.0)
+		var now := ray.get_grab_distance()
+		if is_equal_approx(now, previous):
+			return
+		previous = now
+
+## Pure math, no tracker/interactor at all: twist_offset (the absolute
+## roll-to-distance-offset mapping that replaced the rate/throttle) is exactly
+## zero below the start threshold -- the mapping has not ENGAGED at all -- and
+## exactly +/- twist_span_metres at +/- the full angle, clamped beyond it.
+## Also checks a MID-span value against the closed-form expected result
+## (deadband subtracted before scaling), which is what makes Mutation "remove
+## the deadband" fail here specifically rather than only being caught
+## incidentally by the start-threshold gate.
+func _test_twist_offset_engages_scales_and_clamps(failures: Array[String]) -> void:
+	var start := deg_to_rad(5.0)
+	var deadband := deg_to_rad(1.0)
+	var full := deg_to_rad(90.0)
+	var span := 2.0
+
+	# Below the start threshold: the mapping has not engaged, regardless of
+	# being above or below the (smaller) deadband.
+	if not is_equal_approx(XRPinchTwistDistanceDriver.twist_offset(deg_to_rad(2.0), start, deadband, full, span), 0.0):
+		failures.append("twist_offset must be zero below the start threshold (2 deg < 5 deg start)")
+	if not is_equal_approx(XRPinchTwistDistanceDriver.twist_offset(deg_to_rad(0.5), start, deadband, full, span), 0.0):
+		failures.append("twist_offset must be zero inside the deadband (0.5 deg), which is also below the start threshold")
+
+	# At full deflection: exactly +/- span, both directions.
+	var positive_full := XRPinchTwistDistanceDriver.twist_offset(full, start, deadband, full, span)
+	if not is_equal_approx(positive_full, span):
+		failures.append("twist_offset at +full_angle must be +twist_span_metres (%f), got %f" % [span, positive_full])
+	var negative_full := XRPinchTwistDistanceDriver.twist_offset(-full, start, deadband, full, span)
+	if not is_equal_approx(negative_full, -span):
+		failures.append("twist_offset at -full_angle must be -twist_span_metres (%f), got %f" % [-span, negative_full])
+
+	# Twisting further than full_angle must CLAMP, not keep growing -- the
+	# assertion Mutation "drop the span clamp" breaks.
+	var beyond_full := XRPinchTwistDistanceDriver.twist_offset(full * 1.5, start, deadband, full, span)
+	if not is_equal_approx(beyond_full, span):
+		failures.append("twist_offset beyond full_angle must clamp at twist_span_metres (%f), got %f" % [span, beyond_full])
+
+	# A mid-span value must match the closed form EXACTLY, including the
+	# deadband subtraction -- the assertion Mutation "remove the deadband"
+	# breaks (it would compute a larger fraction than expected here).
+	var mid := deg_to_rad(45.0)
+	var expected_mid := ((mid - deadband) / (full - deadband)) * span
+	var actual_mid := XRPinchTwistDistanceDriver.twist_offset(mid, start, deadband, full, span)
+	if not is_equal_approx(actual_mid, expected_mid):
+		failures.append("twist_offset(45 deg) must equal the deadband-subtracted closed form (%f), got %f" % [expected_mid, actual_mid])
+
+	# Opposite roll must give the exact negation -- the assertion Mutation
+	# "make the mapping unsigned" breaks.
+	var negative_mid := XRPinchTwistDistanceDriver.twist_offset(-mid, start, deadband, full, span)
+	if not is_equal_approx(negative_mid, -expected_mid):
+		failures.append("twist_offset(-45 deg) must be the negation of twist_offset(45 deg): expected %f, got %f" % [-expected_mid, negative_mid])
 
 ## The swing-twist extraction (XRPinchTwistDistanceDriver.twist_angle) must
 ## recover the TWIST angle around `axis` regardless of whatever SWING
@@ -852,12 +899,13 @@ func _test_twist_angle_extracts_roll_independent_of_swing(failures: Array[String
 	if not is_equal_approx(reverse_extracted, -0.4):
 		failures.append("twist_angle must extract -0.4 rad for the reversed twist (same swing), got %f" % reverse_extracted)
 
-## Full wiring, through _drive_hand: roll well beyond the deadzone changes
-## get_grab_distance() in the matching direction, and rolling the other way
-## (relative to the SAME captured neutral) reverses it. Mutation "flip the
-## roll sign" fails this directly -- the direction assertions, not just "some
-## change occurred", are the point.
-func _test_twist_roll_beyond_deadzone_changes_distance_and_reverses(failures: Array[String]) -> void:
+## Twisting to full deflection settles at engagement_distance +/- twist_span_metres,
+## and twisting FURTHER than the full angle clamps rather than continuing --
+## the integration-level companion to the pure-math span-clamp assertions
+## above, and the one that exercises the real per-frame settle path (rate-
+## limited by max_distance_change_per_second) rather than the closed form
+## directly. Mutation "drop the span clamp" fails the second half.
+func _test_twist_full_deflection_settles_at_span_and_clamps_beyond(failures: Array[String]) -> void:
 	var stub := TwistInteractableStub.new()
 	var ray := _make_twist_ray(XRInputAdapter.Hand.LEFT, Vector3(0, 0, -1), 3.0)
 	stub._notify_select_entered(ray)
@@ -868,38 +916,40 @@ func _test_twist_roll_beyond_deadzone_changes_distance_and_reverses(failures: Ar
 	var axis := Vector3(0, 0, -1)  # matches _make_twist_ray's forward above
 	var tracker := _register_wrist_tracker(XRInputAdapter.Hand.LEFT, Basis.IDENTITY)
 
-	# Frame 1: neutral capture only -- nothing should move yet.
+	# Frame 1: neutral + engagement-distance capture only -- nothing should
+	# move yet.
 	driver._drive_hand(XRInputAdapter.Hand.LEFT, 1.0 / 60.0)
-	var after_capture := ray.get_grab_distance()
-	if not is_equal_approx(after_capture, 3.0):
-		failures.append("the neutral-capture frame must not itself change distance, got %f" % after_capture)
+	var engagement_distance := ray.get_grab_distance()
+	if not is_equal_approx(engagement_distance, 3.0):
+		failures.append("the engagement frame must not itself change distance, got %f" % engagement_distance)
 
-	# Roll +0.4 rad around the frozen axis (well beyond the 0.12 default
-	# deadzone) and hold it for a frame.
-	_set_wrist_roll(tracker, Basis(axis, 0.4))
-	driver._drive_hand(XRInputAdapter.Hand.LEFT, 1.0 / 60.0)
-	var after_positive := ray.get_grab_distance()
-	if not (after_positive > after_capture):
-		failures.append("a +0.4 rad roll must increase distance, went from %f to %f" % [after_capture, after_positive])
+	# Roll to exactly the default full angle (90 deg) and let it settle.
+	_set_wrist_roll(tracker, Basis(axis, deg_to_rad(driver.twist_full_angle_degrees)))
+	_drive_twist_until_settled(driver, ray, XRInputAdapter.Hand.LEFT)
+	var expected_full := engagement_distance + driver.twist_span_metres
+	if not is_equal_approx(ray.get_grab_distance(), expected_full):
+		failures.append("full deflection must settle at engagement_distance + twist_span_metres (%f), got %f" % [expected_full, ray.get_grab_distance()])
 
-	# Roll to -0.4 rad (relative to the SAME captured neutral, still Basis.IDENTITY)
-	# -- the opposite roll must reverse the direction of change.
-	_set_wrist_roll(tracker, Basis(axis, -0.4))
-	driver._drive_hand(XRInputAdapter.Hand.LEFT, 1.0 / 60.0)
-	var after_negative := ray.get_grab_distance()
-	if not (after_negative < after_positive):
-		failures.append("a -0.4 rad roll must decrease distance from the +0.4 rad reading, went from %f to %f" % [after_positive, after_negative])
+	# Roll well PAST the full angle -- the offset must clamp at the span, not
+	# keep growing.
+	_set_wrist_roll(tracker, Basis(axis, deg_to_rad(driver.twist_full_angle_degrees) * 1.6))
+	_drive_twist_until_settled(driver, ray, XRInputAdapter.Hand.LEFT)
+	if not is_equal_approx(ray.get_grab_distance(), expected_full):
+		failures.append("twisting past the full angle must clamp at engagement_distance + twist_span_metres (%f), got %f -- it must not keep growing" % [expected_full, ray.get_grab_distance()])
 
 	_unregister_wrist_tracker(tracker)
 	ray.free()
 	stub.free()
 	driver.free()
 
-## Roll inside the deadzone (well under the 0.12 rad default) must produce NO
-## change -- this is the guard that lets you aim without the distance
-## drifting, since aiming does not hold the wrist perfectly still. Mutation
-## "remove the deadzone" fails this directly.
-func _test_twist_roll_inside_deadzone_produces_no_change(failures: Array[String]) -> void:
+## THE headline test for the absolute-mapping correction: after twisting out
+## to full deflection, rolling back to EXACTLY the captured neutral must
+## settle back at EXACTLY the engagement distance -- retracing, not requiring
+## further travel the wrist does not have. This is the assertion the original
+## rate/throttle design could not honestly pass (device report: "seems like
+## it only goes further") and the one a regression to that mechanic would
+## fail immediately.
+func _test_twist_rolling_back_to_neutral_returns_to_engagement_distance(failures: Array[String]) -> void:
 	var stub := TwistInteractableStub.new()
 	var ray := _make_twist_ray(XRInputAdapter.Hand.LEFT, Vector3(0, 0, -1), 3.0)
 	stub._notify_select_entered(ray)
@@ -909,26 +959,31 @@ func _test_twist_roll_inside_deadzone_produces_no_change(failures: Array[String]
 
 	var axis := Vector3(0, 0, -1)
 	var tracker := _register_wrist_tracker(XRInputAdapter.Hand.LEFT, Basis.IDENTITY)
-	driver._drive_hand(XRInputAdapter.Hand.LEFT, 1.0 / 60.0)  # capture neutral
-	var before := ray.get_grab_distance()
+	driver._drive_hand(XRInputAdapter.Hand.LEFT, 1.0 / 60.0)  # capture neutral + engagement distance
+	var engagement_distance := ray.get_grab_distance()
 
-	_set_wrist_roll(tracker, Basis(axis, 0.05))  # well inside the 0.12 rad default deadzone
-	driver._drive_hand(XRInputAdapter.Hand.LEFT, 1.0 / 60.0)
-	var after := ray.get_grab_distance()
-	if not is_equal_approx(after, before):
-		failures.append("a 0.05 rad roll (inside the 0.12 rad default deadzone) must not change distance: was %f, now %f" % [before, after])
+	_set_wrist_roll(tracker, Basis(axis, deg_to_rad(driver.twist_full_angle_degrees)))
+	_drive_twist_until_settled(driver, ray, XRInputAdapter.Hand.LEFT)
+	if is_equal_approx(ray.get_grab_distance(), engagement_distance):
+		failures.append("fixture broken: full deflection must actually move the distance away from engagement -- got %f" % ray.get_grab_distance())
+
+	# Roll all the way back to the captured neutral (Basis.IDENTITY) -- no
+	# further travel than what was already used to get out here.
+	_set_wrist_roll(tracker, Basis.IDENTITY)
+	_drive_twist_until_settled(driver, ray, XRInputAdapter.Hand.LEFT)
+	if not is_equal_approx(ray.get_grab_distance(), engagement_distance):
+		failures.append("rolling back to the captured neutral must retrace to the engagement distance (%f), got %f" % [engagement_distance, ray.get_grab_distance()])
 
 	_unregister_wrist_tracker(tracker)
 	ray.free()
 	stub.free()
 	driver.free()
 
-## A constant roll held across several frames must keep producing change EVERY
-## frame -- a THROTTLE, not a dial. A test that only checks one frame cannot
-## tell a rate control apart from a one-shot absolute jump; this holds the
-## SAME roll for 5 consecutive frames and asserts each one moves the distance
-## by a comparable amount, not just the first.
-func _test_twist_rate_is_sustained_across_frames(failures: Array[String]) -> void:
+## Opposite roll directions move to opposite sides of the engagement distance
+## -- roll one way pulls in, the other pushes out. Mutation "make the mapping
+## unsigned" fails this directly: an unsigned mapping would move BOTH rolls
+## the same way.
+func _test_twist_opposite_rolls_move_opposite_ways_from_engagement(failures: Array[String]) -> void:
 	var stub := TwistInteractableStub.new()
 	var ray := _make_twist_ray(XRInputAdapter.Hand.LEFT, Vector3(0, 0, -1), 3.0)
 	stub._notify_select_entered(ray)
@@ -938,42 +993,31 @@ func _test_twist_rate_is_sustained_across_frames(failures: Array[String]) -> voi
 
 	var axis := Vector3(0, 0, -1)
 	var tracker := _register_wrist_tracker(XRInputAdapter.Hand.LEFT, Basis.IDENTITY)
-	driver._drive_hand(XRInputAdapter.Hand.LEFT, 1.0 / 60.0)  # capture neutral
+	driver._drive_hand(XRInputAdapter.Hand.LEFT, 1.0 / 60.0)  # capture neutral + engagement distance
+	var engagement_distance := ray.get_grab_distance()
 
-	_set_wrist_roll(tracker, Basis(axis, 0.4))  # held constant for every frame below
-	var deltas: Array[float] = []
-	var previous := ray.get_grab_distance()
-	for frame in range(5):
-		driver._drive_hand(XRInputAdapter.Hand.LEFT, 1.0 / 60.0)
-		var now := ray.get_grab_distance()
-		deltas.append(now - previous)
-		previous = now
+	var half_angle := deg_to_rad(driver.twist_full_angle_degrees) * 0.5
+	_set_wrist_roll(tracker, Basis(axis, half_angle))
+	_drive_twist_until_settled(driver, ray, XRInputAdapter.Hand.LEFT)
+	var positive_distance := ray.get_grab_distance()
+	if not (positive_distance > engagement_distance):
+		failures.append("a positive roll must settle ABOVE the engagement distance (%f), got %f" % [engagement_distance, positive_distance])
 
-	for i in deltas.size():
-		if deltas[i] <= 0.0:
-			failures.append("frame %d: a held +0.4 rad roll must keep increasing distance, delta was %f" % [i, deltas[i]])
-	# Sustained, not just non-zero: consecutive per-frame deltas at a fixed
-	# roll and fixed delta-time must be close to each other (a throttle at a
-	# steady rate), not decaying toward zero (which is what a one-shot "jump
-	# then stop" implementation would look like beyond its first frame).
-	for i in range(1, deltas.size()):
-		if not is_equal_approx(deltas[i], deltas[0]):
-			failures.append("frame %d: held-roll delta (%f) must match frame 0's delta (%f) -- rate is not steady" % [i, deltas[i], deltas[0]])
+	_set_wrist_roll(tracker, Basis(axis, -half_angle))
+	_drive_twist_until_settled(driver, ray, XRInputAdapter.Hand.LEFT)
+	var negative_distance := ray.get_grab_distance()
+	if not (negative_distance < engagement_distance):
+		failures.append("a negative roll must settle BELOW the engagement distance (%f), got %f" % [engagement_distance, negative_distance])
 
 	_unregister_wrist_tracker(tracker)
 	ray.free()
 	stub.free()
 	driver.free()
 
-## Neutral is captured AT SELECT, not absolute: a wrist held at the SAME
-## nonzero absolute orientation from before the grab through the whole hold
-## must produce NO motion, because that orientation IS neutral for this grab.
-## Mutation "use absolute roll instead of roll-relative-to-captured-neutral"
-## (e.g. measuring against Quaternion.IDENTITY / Vector3.FORWARD instead of
-## the captured neutral) fails this: the wrist here never returns to world
-## identity, so an absolute-roll implementation would read a constant ~0.7
-## rad roll the entire time and never stop driving.
-func _test_twist_neutral_captured_at_select_not_absolute(failures: Array[String]) -> void:
+## Inside the deadband (well under the default 1 degree), nothing moves --
+## the guard that lets a comfortable, not-perfectly-still wrist hold a
+## position without drifting the distance.
+func _test_twist_inside_deadband_nothing_moves(failures: Array[String]) -> void:
 	var stub := TwistInteractableStub.new()
 	var ray := _make_twist_ray(XRInputAdapter.Hand.LEFT, Vector3(0, 0, -1), 3.0)
 	stub._notify_select_entered(ray)
@@ -982,23 +1026,138 @@ func _test_twist_neutral_captured_at_select_not_absolute(failures: Array[String]
 	driver._interactable = stub
 
 	var axis := Vector3(0, 0, -1)
-	# The wrist is already rolled 0.7 rad in world space at the moment of
-	# grab -- an ordinary "grabbed with the wrist turned" pose, not the world
-	# rest orientation.
-	var held_roll := Basis(axis, 0.7)
-	var tracker := _register_wrist_tracker(XRInputAdapter.Hand.LEFT, held_roll)
-	driver._drive_hand(XRInputAdapter.Hand.LEFT, 1.0 / 60.0)  # captures 0.7 rad as neutral
-	var before := ray.get_grab_distance()
+	var tracker := _register_wrist_tracker(XRInputAdapter.Hand.LEFT, Basis.IDENTITY)
+	driver._drive_hand(XRInputAdapter.Hand.LEFT, 1.0 / 60.0)  # capture neutral + engagement distance
+	var engagement_distance := ray.get_grab_distance()
 
-	# Wrist stays at the EXACT same absolute orientation for several frames.
-	for _frame in range(5):
-		driver._drive_hand(XRInputAdapter.Hand.LEFT, 1.0 / 60.0)
-	var after := ray.get_grab_distance()
-	if not is_equal_approx(after, before):
-		failures.append("a wrist held at a CONSTANT absolute roll (never returning to world identity) must not drive distance once neutral is captured there: was %f, now %f" % [before, after])
+	_set_wrist_roll(tracker, Basis(axis, deg_to_rad(0.3)))  # well inside the 1 deg default deadband
+	_drive_twist_until_settled(driver, ray, XRInputAdapter.Hand.LEFT)
+	if not is_equal_approx(ray.get_grab_distance(), engagement_distance):
+		failures.append("a 0.3 deg roll (inside the 1 deg default deadband) must not change distance: engagement %f, now %f" % [engagement_distance, ray.get_grab_distance()])
 
 	_unregister_wrist_tracker(tracker)
 	ray.free()
+	stub.free()
+	driver.free()
+
+## Below the start threshold (but ABOVE the deadband, so this is genuinely
+## testing the start-threshold gate and not just a tinier deadband case),
+## the mapping has not engaged at all: distance holds exactly at the
+## engagement distance. 3 deg sits between the 1 deg default deadband and the
+## 5 deg default start threshold.
+func _test_twist_below_start_threshold_mapping_not_engaged(failures: Array[String]) -> void:
+	var stub := TwistInteractableStub.new()
+	var ray := _make_twist_ray(XRInputAdapter.Hand.LEFT, Vector3(0, 0, -1), 3.0)
+	stub._notify_select_entered(ray)
+
+	var driver := XRPinchTwistDistanceDriver.new()
+	driver._interactable = stub
+
+	var axis := Vector3(0, 0, -1)
+	var tracker := _register_wrist_tracker(XRInputAdapter.Hand.LEFT, Basis.IDENTITY)
+	driver._drive_hand(XRInputAdapter.Hand.LEFT, 1.0 / 60.0)  # capture neutral + engagement distance
+	var engagement_distance := ray.get_grab_distance()
+
+	if not (deg_to_rad(3.0) > deg_to_rad(driver.twist_deadband_degrees) and deg_to_rad(3.0) < deg_to_rad(driver.twist_start_threshold_degrees)):
+		failures.append("fixture assumption broken: 3 deg must sit strictly between the deadband and the start threshold for this test to mean anything")
+
+	_set_wrist_roll(tracker, Basis(axis, deg_to_rad(3.0)))
+	_drive_twist_until_settled(driver, ray, XRInputAdapter.Hand.LEFT)
+	if not is_equal_approx(ray.get_grab_distance(), engagement_distance):
+		failures.append("a 3 deg roll (above the deadband but below the 5 deg start threshold) must not engage the mapping: engagement %f, now %f" % [engagement_distance, ray.get_grab_distance()])
+
+	_unregister_wrist_tracker(tracker)
+	ray.free()
+	stub.free()
+	driver.free()
+
+## The engagement distance is captured PER GRAB, not once: grab at 2 m, twist,
+## release, grab (a different object) at 4 m -- the new zero is 4 m, not 2 m.
+## Mutation "use a fixed zero instead of the captured engagement distance"
+## fails this directly (a fixed zero could match at most one of the two
+## grabs' expectations, never both). Also exercises the release-time forget
+## (_forget_neutral_on_release): without it, a release immediately followed
+## by a new grab -- no intervening _drive_hand poll -- would silently reuse
+## the FIRST grab's neutral/engagement against the second.
+func _test_twist_engagement_distance_captured_per_grab(failures: Array[String]) -> void:
+	var stub := TwistInteractableStub.new()
+	var driver := XRPinchTwistDistanceDriver.new()
+	driver._interactable = stub
+	stub.select_exited.connect(driver._forget_neutral_on_release)
+
+	var axis := Vector3(0, 0, -1)
+	var tracker := _register_wrist_tracker(XRInputAdapter.Hand.LEFT, Basis.IDENTITY)
+
+	# Grab 1: engage at 2 m, twist out, then release -- WITHOUT an
+	# intervening _drive_hand call, so the only thing that can forget grab
+	# 1's state before grab 2 begins is the release signal itself.
+	var ray_one := _make_twist_ray(XRInputAdapter.Hand.LEFT, Vector3(0, 0, -1), 2.0)
+	stub._notify_select_entered(ray_one)
+	driver._drive_hand(XRInputAdapter.Hand.LEFT, 1.0 / 60.0)  # capture neutral + 2 m engagement
+	_set_wrist_roll(tracker, Basis(axis, deg_to_rad(driver.twist_full_angle_degrees)))
+	_drive_twist_until_settled(driver, ray_one, XRInputAdapter.Hand.LEFT)
+	if is_equal_approx(ray_one.get_grab_distance(), 2.0):
+		failures.append("fixture broken: grab 1 must actually move away from its 2 m engagement distance")
+	stub._notify_select_exited(ray_one)
+
+	# Grab 2: a DIFFERENT ray/object, engaged at 4 m. The wrist is left at
+	# grab 1's fully-twisted absolute orientation -- if grab 2 inherited grab
+	# 1's neutral, this would already read as a large roll on the very first
+	# frame instead of the neutral rotation for grab 2.
+	var ray_two := _make_twist_ray(XRInputAdapter.Hand.LEFT, Vector3(0, 0, -1), 4.0)
+	stub._notify_select_entered(ray_two)
+	driver._drive_hand(XRInputAdapter.Hand.LEFT, 1.0 / 60.0)  # must capture a FRESH neutral + 4 m engagement
+	if not is_equal_approx(ray_two.get_grab_distance(), 4.0):
+		failures.append("grab 2's engagement-capture frame must not itself move the distance away from its own 4 m engagement, got %f" % ray_two.get_grab_distance())
+
+	# Roll back to grab 2's own neutral (the SAME absolute orientation grab 1
+	# ended at) and settle -- must land on grab 2's 4 m engagement, not grab
+	# 1's 2 m.
+	_drive_twist_until_settled(driver, ray_two, XRInputAdapter.Hand.LEFT)
+	if not is_equal_approx(ray_two.get_grab_distance(), 4.0):
+		failures.append("grab 2's engagement distance must be its OWN 4 m, not grab 1's 2 m: got %f" % ray_two.get_grab_distance())
+
+	_unregister_wrist_tracker(tracker)
+	ray_one.free()
+	ray_two.free()
+	stub.free()
+	driver.free()
+
+## Companion to the test above, isolating the ROTATION half specifically: a
+## second grab must not inherit the first grab's captured neutral ROLL either
+## (not only its engagement distance). Grab 1 ends with the wrist twisted to
+## full deflection; grab 2 begins with the wrist AT THAT SAME absolute
+## orientation, which must read as grab 2's own zero, not as an
+## already-twisted roll carried over from grab 1.
+func _test_twist_second_grab_does_not_inherit_previous_neutral_rotation(failures: Array[String]) -> void:
+	var stub := TwistInteractableStub.new()
+	var driver := XRPinchTwistDistanceDriver.new()
+	driver._interactable = stub
+	stub.select_exited.connect(driver._forget_neutral_on_release)
+
+	var axis := Vector3(0, 0, -1)
+	var twisted_basis := Basis(axis, deg_to_rad(60.0))
+	var tracker := _register_wrist_tracker(XRInputAdapter.Hand.LEFT, Basis.IDENTITY)
+
+	var ray_one := _make_twist_ray(XRInputAdapter.Hand.LEFT, Vector3(0, 0, -1), 3.0)
+	stub._notify_select_entered(ray_one)
+	driver._drive_hand(XRInputAdapter.Hand.LEFT, 1.0 / 60.0)  # grab 1 neutral = Basis.IDENTITY
+	_set_wrist_roll(tracker, twisted_basis)
+	_drive_twist_until_settled(driver, ray_one, XRInputAdapter.Hand.LEFT)
+	stub._notify_select_exited(ray_one)
+
+	# Grab 2 begins with the wrist ALREADY at twisted_basis -- if that reads
+	# as anything other than grab 2's own zero, this settles away from 3 m.
+	var ray_two := _make_twist_ray(XRInputAdapter.Hand.LEFT, Vector3(0, 0, -1), 3.0)
+	stub._notify_select_entered(ray_two)
+	driver._drive_hand(XRInputAdapter.Hand.LEFT, 1.0 / 60.0)  # must capture twisted_basis as grab 2's OWN neutral
+	_drive_twist_until_settled(driver, ray_two, XRInputAdapter.Hand.LEFT)
+	if not is_equal_approx(ray_two.get_grab_distance(), 3.0):
+		failures.append("grab 2's neutral rotation must be captured fresh (the wrist's CURRENT orientation), not inherited from grab 1: expected 3.0, got %f" % ray_two.get_grab_distance())
+
+	_unregister_wrist_tracker(tracker)
+	ray_one.free()
+	ray_two.free()
 	stub.free()
 	driver.free()
 
