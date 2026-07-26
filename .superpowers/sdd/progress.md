@@ -170,3 +170,13 @@ require_entry_through_face = false, max_approach_angle = 90.
     hovered from dragged.
   - Pre-existing warnings (no XRInteractionManager, ObjectDB leaked) confirmed
     against a stashed baseline as predating this branch, not introduced here.
+  - Re-review found finding 1's fix was a SUPERSET, not an exact restoration.
+    Pre-conversion the bounds test lived in the adapter and gated the
+    _last_pointer_position assignment; moving bounds into the evaluator left
+    the adapter with a z-only gate, so out-of-bounds-but-in-z-range points now
+    stored a clamped edge pixel. Fix pass 3 gates on `inside` explicitly.
+    Rejected alternative: gating on pinned_point != INF. The evaluator's band
+    starts at -release_depth (-0.04) but this adapter's reach gate allows down
+    to -0.06, so a point 4-6cm behind the panel would have been skipped where
+    the pre-conversion code assigned. Duplicating one cheap rectangle test is
+    correct here - cursor position is presentation, not press decision.
