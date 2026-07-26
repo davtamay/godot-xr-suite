@@ -461,3 +461,52 @@ entirely — the angle test is then never reached.
 Append the outcome of every row above to this document, with the date and
 device. Report honestly if a row fails. Do not mark item 6 done in
 `Godot_WebXR_gh/docs/INNOVATION_BACKLOG.md` until every row passes.
+
+### Earn-in result — 2026-07-25, Quest 3 over Link (PASS)
+
+David's verdict after four sessions: **"works well"**. Recorded with the
+distinction between what was reported and what was inferred, because only the
+first kind is evidence.
+
+**Confirmed by report:**
+
+- The three `XRPokeButton` caps and the `TouchPanel` feel unchanged (A1, A2).
+  This was the primary regression check and the reason the threshold mapping
+  was derived algebraically rather than re-tuned.
+- Sweeping across the dense row presses nothing, including stopping and
+  resting on a key (B1, B2).
+- The cancel target responds to touch and returns to rest (B6, after a fix).
+- The drag handle engages without needing a perfect hover (B4, after a fix).
+
+**Confirmed by measurement, not by feel:**
+
+- Eye height: 0 corrections applied, measurements 1.20-1.31 m across a
+  session. Previously a 0.01 m reading raised the origin 1.19 m and latched.
+- Log volume: 91,814 stdout lines -> 272. The eye-height line alone fell from
+  91,530 to 2 (one per scene's rig).
+
+**NOT individually confirmed. Do not read this section as covering them:**
+
+- B3, a single straight-on poke lighting one key. Asked three times, never
+  answered directly. The sweep rejection (B1/B2) is only meaningful if a
+  deliberate poke works, so this remains the weakest link in the chain.
+- B7, the marker dot stopping on the surface.
+- A9, skim along a surface within ~12 mm then jab. This was rejected by BOTH
+  gates until the final review, and the code enabling it is the newest on the
+  branch.
+- A3-A6, the UI-panel gestures the gate could newly reject.
+
+**Three defects the earn-in found that no test had:**
+
+1. The cancel target latched its outcome colour with no path back to rest, and
+   had no pressed feedback at all. It read as unresponsive.
+2. Dense-row keys never handled `cancelled`, so a slide-off left one stuck lit.
+3. A drag aborted when the finger drifted 1 cm off a 2 cm bar - the missing
+   "separate enter/exit tolerance" from item 6, now implemented as
+   `bounds_retain_scale`.
+
+All three were invisible headless. They are the argument for the earn-in rule.
+
+**Benign engine noise seen in session logs, not ours:** an
+`OpenXRSpatialEntityExtension` disconnect and an `InteractionProfile` RID leak,
+both at teardown.
