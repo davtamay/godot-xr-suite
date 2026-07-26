@@ -1566,8 +1566,11 @@ Baseline recorded by the controller before this task: all eight suites give
 - [ ] **Step 1: Run every suite through the error-checking runner**
 
 ```bash
-pwsh tools/run_tests.ps1 -Suite godot_xr_interaction_toolkit/tests/test_poke_fidelity,godot_xr_interaction_toolkit/tests/test_ui_canvas_pointer,godot_xr_interaction_toolkit/tests/test_grab_feel,godot_xr_interaction_toolkit/tests/test_hand_conditioning,godot_xr_interaction_toolkit/tests/test_interaction_arbiter,godot_xr_hands/tests/test_gesture_foundation,godot_xr_hands/tests/test_adaptive_contact,godot_webxr_kit/tests/test_eye_height_calibrator
+powershell -ExecutionPolicy Bypass -File tools/run_tests.ps1 -Suite godot_xr_interaction_toolkit/tests/test_poke_fidelity,godot_xr_interaction_toolkit/tests/test_ui_canvas_pointer,godot_xr_interaction_toolkit/tests/test_grab_feel,godot_xr_interaction_toolkit/tests/test_hand_conditioning,godot_xr_interaction_toolkit/tests/test_interaction_arbiter,godot_xr_hands/tests/test_gesture_foundation,godot_xr_hands/tests/test_adaptive_contact,godot_webxr_kit/tests/test_eye_height_calibrator
 ```
+
+Note `powershell`, not `pwsh` — PowerShell 7 is not installed on this
+machine, and `pwsh` fails with a CommandNotFoundException.
 
 Expected: eight lines, every one `exit=0 scripterrors=0` with a PASS verdict,
 and the script itself exiting 0. **`scripterrors` must be 0 on every line** —
