@@ -134,22 +134,33 @@ passes.
    previously observed **in-bounds and in front of the press plane**. A finger
    that slid in laterally at depth was never in front of the face.
 
-2. **Approach angle (directional).** At the moment of crossing the press
-   plane, require the travel vector over a short sample window — not a single
-   frame — to point inward within `max_approach_angle`.
+2. **Approach angle (directional).** Require the travel vector to point
+   inward within `max_approach_angle`, checked against EITHER of two spans:
+   the short sample window as a whole, or just the most recent step. The
+   whole-window check is what a normal approach satisfies. The recent-step
+   check exists because a source that skims laterally within `press_depth` of
+   the surface (so entry-through-face never arms) and then sharply changes
+   direction inward has that direction change diluted below the limit when
+   measured over the whole window - the lateral skim baked into the rest of
+   the window outweighs a clean, steep final step. Checking the last step
+   alone catches it without weakening the window check's rejection of an
+   ordinary sweep (revised after I5 found the single-window version rejected
+   this case).
 
 | Case | Entry-through-face | Approach angle |
 |---|---|---|
 | Lateral sweep across a button row | blocks | blocks |
 | Slide from one target to the next at depth | blocks | blocks |
 | Approach from behind the surface | blocks | blocks |
+| Sweep in from outside the bounds rectangle, then hold still | blocks | blocks (see abstain rule below) |
 | Steep but deliberate poke (~50 deg off normal) | arms | FALSELY REJECTS |
 | Fast diagonal poke: previous sample laterally out of bounds, next sample already past depth | FALSELY REJECTS | arms |
+| Skim below `press_depth` along the surface, then a sharp jab inward | blocks (never in front) | arms (recent-step check) |
 
 Every rejection case is blocked by both, so `OR` does not weaken the sweep
-rejection that motivated the gate. The two false-negative rows are each
-rescued by the other test. `AND` would ship both false negatives; either test
-alone ships one.
+rejection that motivated the gate. The three false-negative rows are each
+rescued by the other test. `AND` would ship all three false negatives; either
+test alone ships some of them.
 
 **Neither test needs a square root.** The angle comparison squares instead of
 normalizing:
@@ -163,12 +174,26 @@ So cost is not a reason to prefer one — a handful of multiplies on values the
 adapter has already computed. Coverage is the only reason, and it points to
 both.
 
-**Abstain rule** on the angle test: if window displacement is under
-`min_approach_travel` (~3 mm), it passes unconditionally. Without it a slow
-deliberate creep-in has a noise-dominated direction vector and is rejected —
-the worst available failure. (Entry-through-face would usually rescue that
-case through the `OR`, but the abstain is kept so the angle test is correct
-standing alone, since it is independently switchable.)
+**Abstain rule** on the angle test: if the displacement being checked (window
+or recent-step, see above) is under `min_approach_travel` (~3 mm), the
+direction is noise. This was originally specified — and first shipped — as an
+unconditional pass, and that was wrong: in the `OR` gate an unconditional pass
+arms the press **by itself**, which `require_entry_through_face` cannot veto.
+Verified empirically: a source that sweeps in from outside the bounds
+rectangle at press depth and then holds still presses after about 3 frames —
+the time it takes the fast sweep samples to age out of the four-entry history
+window and leave the angle test comparing the held point against itself. The
+real failure mode was not "a sweep presses nothing", it was "a sweep presses
+whichever key you stop on", with no sample ever in front of that key's face.
+
+The rule actually implemented: abstaining returns `not
+require_entry_through_face` — it DEFERS to the entry test rather than passing
+outright. With entry-through-face required (the default), an abstention no
+longer arms the gate on its own; a genuine slow creep-in is still armed, but
+by the entry test, because it WAS seen in front of the face first. Only with
+`require_entry_through_face` turned off does the abstain pass outright, since
+then the angle test is the only gate left and a slow deliberate motion should
+not be rejected purely for lacking speed.
 
 Entry-through-face also fixes `XRPokeButton`'s dropped fast poke: a source
 that WAS in front and is now below the base is clamped to full travel instead
@@ -196,9 +221,15 @@ without emitting. That is the standard `Control` contract, not a workaround.
 
 Opt-in, off by default: `interpret_drag := false`. When enabled, in-plane
 travel past `drag_threshold` while pressed emits `DRAG` carrying the planar
-delta, and suppresses the terminal `RELEASED` activation — so a target
-authored as a drag handle cannot also fire as a button on let-go. The canvas
-does not use this; it already gets drag free from mouse motion while pressed.
+delta, and suppresses the terminal `RELEASED` *activation* — so a target
+authored as a drag handle cannot also fire as a button on let-go. Retracting
+past `release_depth` while dragging emits a distinct `DRAG_ENDED` rather than
+`NONE`: suppressing the activation must not also suppress the only
+notification a consumer gets that the drag is over at all, or a target driven
+purely by `pressed`/`released`/`cancelled` (a colour that resets on a
+terminal signal, say) is stuck in its held state after the first completed
+drag. `XRPokeable` exposes this as `drag_ended(hand)`. The canvas does not use
+any of this; it already gets drag free from mouse motion while pressed.
 
 ### Pinning
 
@@ -247,19 +278,27 @@ driving the evaluator directly with synthetic point sequences:
 |---|---|
 | Normal approach through the face | `PRESSED` once |
 | Lateral sweep at press depth across bounds | no press, ever |
-| Slow creep-in under the abstain threshold | `PRESSED` (gate abstains) |
+| Sweep in from outside bounds, then hold still (history ages out) | no press, ever |
+| Slow creep-in from in front of the face | `PRESSED` (rescued by entry-through-face) |
+| Slow creep-in with entry-through-face off | `PRESSED` (the angle test's abstain carries it) |
 | Slide off while pressed | `CANCELLED`, never `RELEASED` |
 | Jitter at the press plane | no chatter |
 | Fast pass-through in one sample | `PRESSED` once, depth clamped |
 | Pinned point | z clamped to 0 |
 | Drag past `drag_threshold` with `interpret_drag` on | `DRAG` deltas, no terminal `RELEASED` |
+| Drag retracting past `release_depth` | `DRAG_ENDED`, never `RELEASED` |
 | Same motion with `interpret_drag` off | no `DRAG`, normal `RELEASED` |
 | Steep deliberate poke, ~50 deg off normal | `PRESSED` (entry test rescues it) |
 | Fast diagonal, previous sample out of bounds | `PRESSED` (angle test rescues it) |
+| Skim below `press_depth`, then a sharp jab inward | `PRESSED` (recent-step check rescues it) |
 
-The last two rows are the whole argument for `OR` and must be written so each
-FAILS when its rescuing test is disabled alone. A suite that passes both with
-either test switched off is not testing the composition.
+The sweep-then-dwell row is the one the abstain rule got wrong until I1: the
+old unconditional-pass abstain pressed once the sweep's early samples aged
+out of the history window, with no sample ever in front of the face. The
+steep-poke, fast-diagonal, and skim-then-jab rows are the whole argument for
+`OR` and the recent-step check, and must be written so each FAILS when its
+rescuing test is disabled alone. A suite that passes them with the rescuing
+mechanism switched off is not testing the composition.
 
 Plus adapter-level signal-mapping tests with a fake target, confirming each
 adapter translates evaluator events to its own contract.
