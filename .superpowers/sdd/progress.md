@@ -359,3 +359,19 @@ Both fixed; both invocation forms now verified, and a crashing probe is still
 correctly flagged.
 
 ## STATUS: all eight tasks complete. ON-DEVICE EARN-IN REMAINS OPEN.
+
+## EARN-IN PASSED 2026-07-25 (Quest 3 over Link) - "works well"
+Four sessions. Full result and its limits in docs/poke-fidelity-design.md.
+Three defects found on device that no test had: the cancel target latched with
+no path back to rest and gave no touch feedback; dense-row keys never handled
+cancelled so a slide-off left one stuck lit; a drag aborted on 1cm of drift off
+a 2cm bar (the missing enter/exit tolerance, now bounds_retain_scale).
+Also found and fixed OUTSIDE this plan's scope, both pre-existing:
+- The eye-height calibrator "corrected" a 0.01 m reading - absent tracking, not
+  a broken floor - by raising the origin 1.19 m, latched for the whole app run.
+  Every session today ran a metre high, including the poke judging.
+- It logged its healthy state every 10 frames: 91,530 lines, 99.7% of stdout.
+NOT confirmed on device: B3 (a single straight-on key poke lighting one key),
+B7 (marker pin), A9 (skim-then-jab), A3-A6 (UI panel gestures).
+B3 is the weak link - B1/B2's sweep rejection only means something if a
+deliberate poke works.
