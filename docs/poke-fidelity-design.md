@@ -485,11 +485,13 @@ first kind is evidence.
 - Log volume: 91,814 stdout lines -> 272. The eye-height line alone fell from
   91,530 to 2 (one per scene's rig).
 
+**B3 CONFIRMED (David, after the session): a single straight-on poke lights
+one key.** This was the load-bearing one - the sweep rejection in B1/B2 only
+means something if a deliberate poke works, since an inert row would produce
+the same "nothing lit" result. The gate is doing what it claims.
+
 **NOT individually confirmed. Do not read this section as covering them:**
 
-- B3, a single straight-on poke lighting one key. Asked three times, never
-  answered directly. The sweep rejection (B1/B2) is only meaningful if a
-  deliberate poke works, so this remains the weakest link in the chain.
 - B7, the marker dot stopping on the surface.
 - A9, skim along a surface within ~12 mm then jab. This was rejected by BOTH
   gates until the final review, and the code enabling it is the newest on the
