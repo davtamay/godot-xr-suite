@@ -137,6 +137,10 @@ func _get_configuration_warnings() -> PackedStringArray:
 
 func _physics_process(delta: float) -> void:
 	if not enabled or _origin == null or _camera == null:
+		if _intent_aim:
+			# Disabled mid-aim: end the aim rather than suspend it, or the
+			# arc pops back on re-enable pointing at a stale target.
+			cancel_teleport()
 		_hide_visuals()
 		return
 	# Externally driven aim (microgestures, custom gestures, UI): the SAME
@@ -181,6 +185,14 @@ func _physics_process(delta: float) -> void:
 func begin_teleport_aim(hand: int) -> void:
 	if not teleport_enabled or hand < 0 or hand > 1:
 		return
+	if _intent_aim and _teleport_hand >= 0 and _teleport_hand != hand:
+		# Hand handoff: close the first hand's aim OBSERVABLY and kill its
+		# target. Silently reassigning left the old arc's consumers (ray
+		# suppression, UI) latched forever, and a commit racing the handoff
+		# could land on the FIRST hand's target.
+		teleport_cancelled.emit(_teleport_hand)
+		_target_valid = false
+		_target_anchor = null
 	_teleport_hand = hand
 	_intent_aim = true
 	_intent_time = 0.0
@@ -214,8 +226,14 @@ func is_aiming(hand: int = -1) -> bool:
 
 ## Snap turn; direction > 0 turns left (counter-clockwise).
 func do_snap_turn(direction: float) -> void:
-	if snap_turn_enabled:
-		_apply_snap_turn(snap_turn_degrees * signf(direction))
+	if not snap_turn_enabled:
+		return
+	if _intent_aim:
+		# A turn is a statement the user is not mid-teleport. The hands-addon
+		# locomotion binding already cancels here; without the same rule this
+		# path rotated the rig under a live arc and left it drawn.
+		cancel_teleport()
+	_apply_snap_turn(snap_turn_degrees * signf(direction))
 
 
 ## ---- teleport ---------------------------------------------------------------
@@ -283,6 +301,12 @@ func _project_intent_arc(hand: int) -> void:
 	var tracker := XRHandTrackerResolver.get_tracker(hand)
 	var local_ray := XRHandGestureProvider.get_hand_ray_pose(tracker)
 	if local_ray.is_empty():
+		# No pose to aim with: the target dies WITH the visuals. Hiding the
+		# arc while keeping _target_valid let a commit arriving in this
+		# window teleport to wherever the arc last pointed -- on device,
+		# "teleport comes out of nowhere".
+		_target_valid = false
+		_target_anchor = null
 		_hide_visuals()
 		return
 	var origin_xf := _origin.global_transform

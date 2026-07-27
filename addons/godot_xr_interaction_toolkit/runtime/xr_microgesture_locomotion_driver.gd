@@ -21,8 +21,30 @@ extends Node
 ## and replaces this only when it matches this reliability on-device.
 const _RUNTIME_SCRIPT := "res://addons/godot_xr_hands/runtime/recognition/xr_gesture_runtime.gd"
 const _RECOGNIZER_SCRIPT := "res://addons/godot_xr_hands/runtime/recognition/xr_thumb_microgesture_recognizer.gd"
+const _NATIVE_SOURCE_SCRIPT := "res://addons/godot_xr_hands/runtime/recognition/xr_native_microgesture_source.gd"
 
 @export var enabled := true
+
+## PLATFORM mode: consume the RUNTIME's microgesture detector, per hand,
+## once it has proven live (first native event seen for that hand) -- on
+## runtimes advertising XR_META_hand_tracking_microgestures (standalone
+## Quest, measured) that is the same detector Meta's own apps use, and it
+## also emits FORWARD/BACKWARD, which the joint recognizer does not.
+## PORTABLE mode (false, the DEFAULT): the platform source is ignored
+## entirely and the joint recognizer drives -- the exact code path WebXR,
+## Galaxy XR / Android XR, Link, and every non-Meta runtime run. It
+## defaults OFF deliberately: this suite's target is the portable path,
+## and testing on a Quest with the extension active measures Meta's
+## recognizer, not ours -- a false read on what every other device ships
+## (David's call, 2026-07-26). Flip it per driver here, or session-wide in
+## the headset via feel_check / session_platform_override.
+@export var use_platform_microgestures := false
+
+## Session-wide A/B override for in-headset comparison (feel_check pokes
+## this): -1 respects each driver's use_platform_microgestures; 0 forces
+## PORTABLE; 1 forces PLATFORM. Static so the choice survives scene
+## streaming within a session.
+static var session_platform_override := -1
 
 ## Optional; empty resolves to the scene's XRLocomotion by group.
 @export var locomotion_path: NodePath
@@ -45,6 +67,11 @@ const _FORWARDED := ["contact_threshold", "release_threshold", "minimum_finger_c
 	"minimum_tracking_quality", "cooldown"]
 
 var _locomotion: Node
+## Hands the runtime detector has proven live for (first native event seen).
+## Once true, joint-recognizer events for that hand are dropped -- both
+## sources see the same physical gesture, and acting on both would
+## double-fire every swipe.
+var _platform_hands := {}
 
 
 func _ready() -> void:
@@ -63,7 +90,36 @@ func _ready() -> void:
 		recognizer.set(prop, get(prop))
 	add_child(recognizer)
 	if recognizer.has_signal("gesture_performed"):
-		recognizer.connect("gesture_performed", _on_gesture)
+		recognizer.connect("gesture_performed", _on_recognizer_gesture)
+	if ResourceLoader.exists(_NATIVE_SOURCE_SCRIPT):
+		var native: Node = (load(_NATIVE_SOURCE_SCRIPT) as GDScript).new()
+		native.name = "NativeMicrogestures"
+		add_child(native)
+		if native.has_signal("gesture_performed"):
+			native.connect("gesture_performed", _on_native_gesture)
+
+
+## True when platform mode is in effect for this driver, override included.
+func platform_mode_active() -> bool:
+	if session_platform_override >= 0:
+		return session_platform_override == 1
+	return use_platform_microgestures
+
+
+func _on_native_gesture(gesture: int, hand: int, confidence: float) -> void:
+	if not platform_mode_active():
+		# PORTABLE mode ignores the platform source outright -- letting both
+		# through would double-fire every physical gesture on a runtime that
+		# detects them too.
+		return
+	_platform_hands[hand] = true
+	_on_gesture(gesture, hand, confidence)
+
+
+func _on_recognizer_gesture(gesture: int, hand: int, confidence: float) -> void:
+	if platform_mode_active() and _platform_hands.get(hand, false):
+		return
+	_on_gesture(gesture, hand, confidence)
 
 
 func _on_gesture(gesture: int, hand: int, _confidence: float) -> void:

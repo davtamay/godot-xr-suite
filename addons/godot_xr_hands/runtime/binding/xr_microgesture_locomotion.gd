@@ -15,7 +15,13 @@ signal teleport_targeting_changed(active: bool, target: Vector3)
 @export var camera_path: NodePath
 @export_range(15.0, 90.0, 1.0) var snap_turn_degrees := 45.0
 @export_range(1.0, 12.0, 0.5) var targeting_timeout := 8.0
-@export_range(0.0, 1.0, 0.01) var pose_release_grace := 0.20
+## How long the aim survives after thumb-UP ends, waiting for the DOWN
+## commit. The worst-case commit chain is the recognizer's post-UP cooldown
+## (0.20) + the smoothed transit through the +-direction dead band (~0.1) +
+## activation_time (0.06) ~= 0.36 s; the old 0.20 lost that race routinely,
+## measured on device as "thumb down doesn't work 100%". Cost of the larger
+## value: an aborted aim lingers ~a quarter second longer before clearing.
+@export_range(0.0, 1.0, 0.01) var pose_release_grace := 0.45
 @export var use_hand_aim := true
 @export_range(0.01, 1.0, 0.01) var hand_aim_smoothing := 0.22
 @export_range(1.0, 20.0, 0.25) var projectile_speed := 10.5
