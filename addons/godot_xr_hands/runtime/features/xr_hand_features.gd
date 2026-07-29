@@ -19,6 +19,14 @@ var hand: int = -1
 var timestamp_usec: int = 0
 var valid := false
 var tracking_quality := 0.0
+## True on exactly the frame the pose source reports a tracking discontinuity
+## (first acquisition, or recovery from a dropout / FOV freeze). The pose on
+## such a frame is real but NOT continuous with the previous frame's, so any
+## recognizer accumulating motion across frames must treat it as a restart,
+## never as movement -- a reacquisition jump read as motion is a phantom
+## gesture. Stamped by XRGestureRuntime from the pose source's one-shot;
+## sources with no notion of continuity leave it false forever.
+var discontinuity := false
 var palm_transform := Transform3D.IDENTITY
 var palm_width := 0.0
 var pinch_distance := 1.0
@@ -38,6 +46,7 @@ func _init() -> void:
 func reset() -> void:
     valid = false
     tracking_quality = 0.0
+    discontinuity = false
     palm_transform = Transform3D.IDENTITY
     palm_width = 0.0
     pinch_distance = 1.0

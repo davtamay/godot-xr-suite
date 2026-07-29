@@ -17,9 +17,29 @@ const XRHandTrackerResolver := preload("res://addons/godot_xr_interaction_toolki
 var conditioned := false
 
 var _sequence := 0
+## Per-instance high-water mark against the resolver's discontinuity sequence.
+## Per INSTANCE is the point: each consumer holding its own source observes
+## every discontinuity exactly once, with no consumer racing another for a
+## shared one-shot flag. -1 so the first query reports the discontinuity that
+## first acquisition is, matching the base-class contract.
+var _seen_discontinuity_seq := [-1, -1]
 
 func _init(use_conditioned := false) -> void:
     conditioned = use_conditioned
+
+## Only the CONDITIONED source has a notion of continuity to report: the
+## sequence is produced by the conditioning chain, and the raw source IS that
+## chain's input -- reporting the chain's own events back into it would make
+## the gate consume its own output. Raw sources keep the base contract's
+## forever-false.
+func consume_discontinuity(hand: int) -> bool:
+    if not conditioned or hand < 0 or hand >= _seen_discontinuity_seq.size():
+        return false
+    var seq := XRHandTrackerResolver.discontinuity_sequence(hand)
+    if seq == _seen_discontinuity_seq[hand]:
+        return false
+    _seen_discontinuity_seq[hand] = seq
+    return true
 
 func capture(hand: int, timestamp_usec: int, target: XRHandFrame) -> bool:
     _sequence += 1

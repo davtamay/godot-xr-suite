@@ -119,9 +119,14 @@ static func publish(hand: int) -> XRHandTracker:
 
 	# One call drives the whole chain: the filter pulls from the gate, which
 	# pulls from the raw tracker source. The filter consumes the gate's
-	# discontinuity internally, so the reset lands before the frame is
-	# conditioned rather than after.
+	# discontinuity internally (so its reset lands before the frame is
+	# conditioned) and RE-RAISES it; latch that into the resolver's monotonic
+	# sequence so every consumer of the conditioned tracker -- gesture
+	# recognition first among them -- can observe the event without racing
+	# each other for a one-shot flag.
 	var tracked := _filter.capture(hand, Time.get_ticks_usec(), frame)
+	if _filter.consume_discontinuity(hand):
+		XRHandTrackerResolver.note_discontinuity(hand)
 	if not tracked:
 		# A failed capture returns without writing the frame, and the frame is
 		# reused across publishes -- so it still holds the last tracked pose,

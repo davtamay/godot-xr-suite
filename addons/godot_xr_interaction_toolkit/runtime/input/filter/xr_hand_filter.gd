@@ -44,6 +44,10 @@ var _local_rotation: Array[XROneEuroRotationFilter] = []
 var _local_offset: Array[XROneEuroFilter] = []
 var _is_controller := [false, false]
 var _last_timestamp := [-1, -1]
+## Re-raised copy of the inner source's discontinuity, one-shot per hand --
+## set when this filter consumes the inner flag for its own reset, cleared by
+## consume_discontinuity below. Without it this filter is a signal sink.
+var _discontinuity := [false, false]
 # Duplicate-sample suppression (see capture).
 var _output: Array[XRHandFrame] = []
 var _last_raw_wrist: Array[Transform3D] = [Transform3D.IDENTITY, Transform3D.IDENTITY]
@@ -82,6 +86,16 @@ func reset(hand: int) -> void:
 	_last_timestamp[hand] = -1
 	_has_output[hand] = false
 
+## One-shot, same contract as the base class and the gate: true exactly once
+## after this filter observed (and re-raised) an inner discontinuity. Deliberate
+## decorator behaviour -- the filter both uses the signal (to reset itself) and
+## passes it up, so being wrapped by another decorator costs nothing.
+func consume_discontinuity(hand: int) -> bool:
+	if hand < 0 or hand >= _HANDS or not _discontinuity[hand]:
+		return false
+	_discontinuity[hand] = false
+	return true
+
 ## The input modality manager is the authority on whether a hand is
 ## controller-driven -- tracker.hand_tracking_source is NOT reliable across
 ## runtimes. Callers resolve the manager by group and push the answer here.
@@ -117,8 +131,17 @@ func capture(hand: int, timestamp_usec: int, target: XRHandFrame) -> bool:
 
 	# Reset before conditioning this frame, never after: on reacquisition the
 	# filter must snap to the recovered pose, not slew from the held stale one.
+	#
+	# Consuming is destructive, and this consumer used to be the LAST one: the
+	# discontinuity died here, invisible to everything downstream of the
+	# conditioned tracker -- which is how a reacquisition jump could satisfy
+	# the microgesture recognizer's early-commit travel and fire a phantom
+	# swipe at high confidence. Re-raise it so decorators and consumers above
+	# this filter get the same one-shot signal the filter itself just used.
 	if _inner.consume_discontinuity(hand):
 		reset(hand)
+		if hand >= 0 and hand < _HANDS:
+			_discontinuity[hand] = true
 
 	if not enabled or hand < 0 or hand >= _HANDS:
 		_raw.copy_into(target)

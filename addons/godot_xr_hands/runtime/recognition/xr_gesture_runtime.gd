@@ -82,6 +82,12 @@ func _update_hand(hand: int, timestamp_usec: int, delta: float) -> void:
     _frame_indices[hand] = current_index
 
     var features := _extractor.extract(current, previous, _features[hand])
+    # Stamped AFTER extract (which resets the features object) and every frame
+    # unconditionally, so a stale true can never survive into the next frame.
+    # The one-shot is consumed here, once, on behalf of every recognizer this
+    # runtime feeds -- recognizers read the stamp, they do not race for the
+    # source's flag.
+    features.discontinuity = _pose_source.consume_discontinuity(hand)
     hand_features_updated.emit(hand, features)
     for definition in definitions:
         if definition == null or (definition.hand >= 0 and definition.hand != hand):

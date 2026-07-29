@@ -37,6 +37,26 @@ static var _cache_frame := -1
 ## Conditioning is on by default. Flip at runtime for A/B comparison.
 static var _conditioned := true
 
+## Monotonic per-hand discontinuity counters, bumped by the publisher whenever
+## the conditioning chain reports a tracking discontinuity (first acquisition,
+## or recovery from a dropout / FOV freeze). A COUNTER rather than a one-shot
+## flag on purpose: consume_discontinuity is destructive, so a one-shot here
+## would hand the event to whichever consumer happened to ask first and starve
+## every other. With a sequence, each consumer keeps its own high-water mark
+## and all of them observe every event exactly once. Lives HERE, not on the
+## publisher, because the publisher already references this resolver while the
+## pose sources preload it too -- a neutral meeting point with no import cycle.
+static var _discontinuity_seq := [0, 0]
+
+
+static func note_discontinuity(hand_id: int) -> void:
+    if _valid_hand(hand_id):
+        _discontinuity_seq[hand_id] += 1
+
+
+static func discontinuity_sequence(hand_id: int) -> int:
+    return _discontinuity_seq[hand_id] if _valid_hand(hand_id) else 0
+
 
 static func set_conditioned(value: bool) -> void:
     if _conditioned == value:

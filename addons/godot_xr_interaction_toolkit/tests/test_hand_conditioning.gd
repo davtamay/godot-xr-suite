@@ -32,6 +32,7 @@ func _init() -> void:
 	_test_fov_gate_head_rotation_moves_the_cone(failures)
 	_test_fov_gate_off_switch_keeps_out_of_cone_wrist_live(failures)
 	_test_fov_gate_ships_enabled(failures)
+	_test_discontinuity_survives_the_chain_and_fans_out(failures)
 	_test_fov_gate_inert_without_head_pose(failures)
 	_test_head_transform_in_origin_space_cancels_the_origins_world_pose(failures)
 	_test_publisher(failures)
@@ -1235,6 +1236,45 @@ func _test_head_transform_in_origin_space_cancels_the_origins_world_pose(failure
 	var wrong_frame := XRHandFrame.new()
 	if wrong_gate.capture(1, 0, wrong_frame):
 		failures.append("comparing the camera's WORLD transform against an origin-space wrist agreed with the correctly-converted result -- this fixture's origin offset must produce a disagreement, or it is not exercising the space mismatch the brief warns about")
+
+## The discontinuity used to DIE inside the chain: the filter consumed the
+## gate's one-shot for its own reset and never re-raised it, so no consumer of
+## the conditioned tracker could ever learn a reacquisition happened -- which
+## is how a reacquisition jump could read as thumb motion and fire a phantom
+## microgesture. This pins the whole relay: filter re-raises one-shot,
+## resolver sequence fans out, each conditioned consumer observes each event
+## exactly once, raw sources stay forever-false.
+func _test_discontinuity_survives_the_chain_and_fans_out(failures: Array[String]) -> void:
+	var source := _single_wrist_source(Vector3(0, 1, -0.4))
+	var gate := XRHandConfidenceGate.new(source)
+	var filter := XRHandFilter.new(gate)
+	var frame := XRHandFrame.new()
+	filter.capture(1, 0, frame)
+	if not filter.consume_discontinuity(1):
+		failures.append("the filter must RE-RAISE the discontinuity it consumed for its own reset -- a filter that only consumes is a signal sink and everything downstream of the conditioned tracker goes blind")
+	if filter.consume_discontinuity(1):
+		failures.append("the filter's re-raised discontinuity must be one-shot")
+
+	var seq_before := XRHandTrackerResolver.discontinuity_sequence(1)
+	XRHandTrackerResolver.note_discontinuity(1)
+	if XRHandTrackerResolver.discontinuity_sequence(1) != seq_before + 1:
+		failures.append("note_discontinuity must advance the resolver's sequence")
+
+	# Two independent consumers: a sequence (not a shared one-shot) is what
+	# lets both observe the same event without racing each other for it.
+	var consumer_a := XRTrackerHandPoseSource.new(true)
+	var consumer_b := XRTrackerHandPoseSource.new(true)
+	if not consumer_a.consume_discontinuity(1) or not consumer_b.consume_discontinuity(1):
+		failures.append("each conditioned consumer must observe the discontinuity independently of the others")
+	if consumer_a.consume_discontinuity(1) or consumer_b.consume_discontinuity(1):
+		failures.append("per-consumer observation must be one-shot until the next event")
+	XRHandTrackerResolver.note_discontinuity(1)
+	if not consumer_a.consume_discontinuity(1):
+		failures.append("a later discontinuity must be observed again by a consumer that already caught up")
+
+	var raw := XRTrackerHandPoseSource.new(false)
+	if raw.consume_discontinuity(1):
+		failures.append("the RAW source must keep the base contract's forever-false: it FEEDS the chain, and reporting the chain's own events back into it would make the gate consume its own output")
 
 func _test_publisher(failures: Array[String]) -> void:
 	var frame := XRHandFrame.new()

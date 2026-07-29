@@ -11,6 +11,12 @@ extends XRMicrogestureSource
 enum Direction { LEFT, RIGHT, UP, DOWN, TAP }
 enum Phase { READY, TRACKING, WAITING_FOR_RELEASE }
 
+## The frame time contact_position_smoothing is expressed against: 72 Hz, the
+## rate every current value was earned in at on Quest over Link. At this dt the
+## exact-dt alpha equals contact_position_smoothing verbatim, so on-device
+## behaviour at 72 Hz is bit-compatible with the per-frame code this replaced.
+const REFERENCE_DT := 1.0 / 72.0
+
 signal microgesture_candidate(direction: Direction, hand: int, progress: float)
 signal microgesture_performed(direction: Direction, hand: int, confidence: float)
 
@@ -164,7 +170,17 @@ func effective_release_threshold(p_hand: int) -> float:
 @export_range(0.0, 2.0, 0.01) var cooldown := 0.18
 @export_range(0.0, 1.0, 0.01) var minimum_tracking_quality := 0.36
 @export_range(0.0, 1.0, 0.01) var tracking_gate_release := 0.42
+## Per-REFERENCE_DT smoothing ratio for the contact position. The value keeps
+## its on-device-tuned meaning at 72 Hz exactly (alpha(1/72) == this), and the
+## exact closed form below reproduces that same behaviour per unit TIME at any
+## other rate -- previously this was applied per FRAME, so 90/120 Hz smoothed
+## the same physical swipe less per unit time than the 72 Hz it was tuned at,
+## and the travel thresholds silently depended on the device's refresh rate.
 @export_range(0.0, 1.0, 0.01) var contact_position_smoothing := 0.48
+## Consecutive below-quality frames tolerated INSIDE a gesture before the
+## gesture aborts (no emit). Mirrors the confidence gate's reacquire_frames
+## debounce: a tracking flicker is a few frames, a real loss is not.
+@export_range(0, 30, 1) var quality_grace_frames := 3
 
 var _runtime: XRGestureRuntime
 var _hands := {}
@@ -181,8 +197,21 @@ func process_features(p_hand: int, features: XRHandFeatures) -> void:
         _hands[p_hand] = _new_state()  # lazy: .get()'s default arg allocated every call
     var state: Dictionary = _hands[p_hand]
     if features == null or not features.valid or features.tracking_quality < minimum_tracking_quality:
-        _reset_state(state)
+        # SUSPEND, do not reset. The old _reset_state here meant one bad frame
+        # zeroed the cooldown (the double-fire guard died the instant it was
+        # needed most), zeroed last_timestamp (so the next delta was 0 and the
+        # cooldown could never tick across the gap), and re-armed mid-gesture.
+        # A 40ms tracking flicker forgot the swipe in flight AND that one just
+        # fired. Instead: tolerate a short burst inside a gesture, abort the
+        # gesture (no emit) only when the burst outlasts the grace, and leave
+        # the cooldown and timestamp alone -- last_timestamp surviving is what
+        # makes the next good frame's delta span the gap, so cooldown time
+        # keeps passing at wall rate through the dropout.
+        state["bad_frames"] = int(state.get("bad_frames", 0)) + 1
+        if int(state["phase"]) == Phase.TRACKING and int(state["bad_frames"]) > quality_grace_frames:
+            state["phase"] = Phase.WAITING_FOR_RELEASE
         return
+    state["bad_frames"] = 0
 
     var timestamp := features.timestamp_usec
     var delta := 0.0
@@ -190,6 +219,19 @@ func process_features(p_hand: int, features: XRHandFeatures) -> void:
         delta = maxf(float(timestamp - int(state["last_timestamp"])) / 1000000.0, 0.0)
     state["last_timestamp"] = timestamp
     state["cooldown_left"] = maxf(float(state["cooldown_left"]) - delta, 0.0)
+
+    # A discontinuity frame carries a real pose that is NOT continuous with the
+    # last one -- reacquisition after an FOV freeze being the measured case.
+    # Any travel already accumulated is unattributable to the thumb, and the
+    # jump itself must not be read as motion: it can exceed
+    # confident_commit_travel in a single frame and early-commit a phantom
+    # swipe at confidence 0.86. Abort silently (rejection feedback is tier 2,
+    # deliberately not smuggled in here) and skip arming this frame too, so a
+    # jumped pose cannot start a gesture either.
+    if features.discontinuity:
+        if int(state["phase"]) == Phase.TRACKING:
+            state["phase"] = Phase.WAITING_FOR_RELEASE
+        return
 
     var posture_score := gate_score(features)
     # Learn the envelope only in gesture POSTURE. An open, relaxed hand spends
@@ -206,7 +248,7 @@ func process_features(p_hand: int, features: XRHandFeatures) -> void:
             if posture_score < tracking_gate_release or float(state["elapsed"]) > maximum_duration:
                 state["phase"] = Phase.WAITING_FOR_RELEASE
                 return
-            _update_tracking(state, features, p_hand)
+            _update_tracking(state, features, p_hand, delta)
             if int(state["phase"]) != Phase.TRACKING:
                 return
             if features.thumb_index_side_distance >= effective_release_threshold(p_hand):
@@ -249,11 +291,18 @@ func _start_tracking(state: Dictionary, features: XRHandFeatures) -> void:
     state["smoothed_contact_position"] = features.thumb_index_contact_position
     state["peak_semantic_delta"] = 0.0
 
-func _update_tracking(state: Dictionary, features: XRHandFeatures, p_hand: int) -> void:
+func _update_tracking(state: Dictionary, features: XRHandFeatures, p_hand: int, delta: float) -> void:
+    # Exact frame-rate compensation, same closed form as XRAimStabilizer: a
+    # per-reference-frame ratio r composed over delta/REFERENCE_DT frames
+    # leaves (1-r)^n, so alpha = 1 - (1-r)^(delta/ref). Identical smoothing
+    # per unit TIME at 72, 90, 120 Hz or a browser's variable rate, instead of
+    # per frame -- delta = 0 (a duplicate timestamp) holds, delta = ref is
+    # verbatim r.
+    var alpha := 1.0 - pow(1.0 - contact_position_smoothing, delta / REFERENCE_DT)
     var smoothed := lerpf(
         float(state["smoothed_contact_position"]),
         features.thumb_index_contact_position,
-        contact_position_smoothing
+        alpha
     )
     state["smoothed_contact_position"] = smoothed
     var surface_delta := smoothed - float(state["start_contact_position"])
@@ -309,8 +358,13 @@ func _new_state() -> Dictionary:
         "start_contact_position": 0.5,
         "smoothed_contact_position": 0.5,
         "peak_semantic_delta": 0.0,
+        "bad_frames": 0,
     }
 
+## Full reset -- the public reset() API and nothing else. Deliberately NOT
+## called on bad frames any more (see process_features): zeroing cooldown_left
+## and last_timestamp on a quality flicker is precisely the bug that made one
+## bad frame both forget an in-flight swipe and disarm the double-fire guard.
 func _reset_state(state: Dictionary) -> void:
     state["phase"] = Phase.READY
     state["elapsed"] = 0.0
@@ -319,3 +373,4 @@ func _reset_state(state: Dictionary) -> void:
     state["start_contact_position"] = 0.5
     state["smoothed_contact_position"] = 0.5
     state["peak_semantic_delta"] = 0.0
+    state["bad_frames"] = 0
