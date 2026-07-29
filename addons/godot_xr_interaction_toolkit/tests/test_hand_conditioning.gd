@@ -1191,7 +1191,14 @@ func _test_head_transform_in_origin_space_cancels_the_origins_world_pose(failure
 	# Arbitrary, non-trivial world placement -- offset AND rotated -- so a
 	# conversion bug has something real to get wrong instead of accidentally
 	# cancelling out at identity.
-	var origin_world := Transform3D(Basis(Vector3.UP, deg_to_rad(47.0)), Vector3(3.0, 1.0, -2.0))
+	# The translation is deliberately LARGE. An earlier version used (3, 1, -2),
+	# which put the wrongly-converted head only 87.9 degrees off the wrist --
+	# outside the 80 degree cone this test was written against, but comfortably
+	# INSIDE the 120 degree cone measured later, at which point the second check
+	# below silently stopped exercising anything and the test failed. Distance is
+	# what makes the space mismatch unmissable regardless of cone width, so keep
+	# it well clear of any plausible half-angle.
+	var origin_world := Transform3D(Basis(Vector3.UP, deg_to_rad(47.0)), Vector3(3.0, 1.0, -8.0))
 	var camera_local := Transform3D(Basis(Vector3.UP, deg_to_rad(-15.0)), Vector3(0.05, 1.6, 0.02))
 	var camera_world := origin_world * camera_local
 
@@ -1211,6 +1218,20 @@ func _test_head_transform_in_origin_space_cancels_the_origins_world_pose(failure
 
 	var wrong_gate := _fov_gate(_single_wrist_source(wrist_origin_space))
 	wrong_gate.set_head_pose(true, camera_world)  # WRONG: world, not origin-space
+
+	# Assert on the ANGLE first, not just on the verdict. The verdict depends on
+	# fov_half_angle_deg, so a verdict-only check goes quietly vacuous whenever
+	# that value moves -- which is exactly how this test rotted once already.
+	# The angle is a property of the geometry alone and cannot.
+	var correct_angle := correct_gate.head_to_wrist_angle_deg(wrist_origin_space)
+	var wrong_angle := wrong_gate.head_to_wrist_angle_deg(wrist_origin_space)
+	if correct_angle > 1.0:
+		failures.append("fixture broken: the wrist was placed dead ahead of the converted head pose, so its angle must be ~0, got %.1f deg" % correct_angle)
+	if wrong_angle <= correct_angle + 90.0:
+		failures.append("the two spaces must disagree by a wide margin or this fixture is not exercising the mismatch: correct %.1f deg vs world-space %.1f deg" % [correct_angle, wrong_angle])
+	if wrong_angle <= wrong_gate.fov_half_angle_deg:
+		failures.append("fixture stale: the world-space angle (%.1f deg) no longer exceeds the shipped cone (%.1f deg), so the verdict check below proves nothing. Move the fixture's origin further out." % [wrong_angle, wrong_gate.fov_half_angle_deg])
+
 	var wrong_frame := XRHandFrame.new()
 	if wrong_gate.capture(1, 0, wrong_frame):
 		failures.append("comparing the camera's WORLD transform against an origin-space wrist agreed with the correctly-converted result -- this fixture's origin offset must produce a disagreement, or it is not exercising the space mismatch the brief warns about")

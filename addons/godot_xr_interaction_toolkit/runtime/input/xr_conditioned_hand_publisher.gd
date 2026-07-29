@@ -143,16 +143,21 @@ static func publish(hand: int) -> XRHandTracker:
 ## so it runs in every scene with no node or setup, unlike a probe placed in
 ## one sample scene, which is how the first attempt at this measured nothing.
 ##
-## The open question: does this runtime CLEAR
-## HAND_JOINT_FLAG_POSITION_TRACKED when a hand leaves view, or keep reporting
-## tracked-and-valid while extrapolating? Every tracking-loss gate in the suite
-## assumes the former and none of it has been measured. Three fixes for a
-## drifting out-of-view ray were reasoned from source and all three were wrong
-## on device.
+## ANSWERED, which is why this now ships OFF. The question was whether the
+## runtime CLEARS HAND_JOINT_FLAG_POSITION_TRACKED when a hand leaves view, or
+## keeps reporting tracked-and-valid while extrapolating. Measured on Quest over
+## Link: it does the latter. POSITION_VALID reads 26 permanently and carries no
+## information at all; only POSITION_TRACKED varies, swinging 26 <-> 2, while
+## the wrist travelled 34cm/24cm across six frames with every flag healthy.
+## Those numbers are what the FOV cone and min_tracked_joints were built from.
+##
+## Kept rather than deleted because the same measurement is still owed on
+## Android XR / Galaxy XR, where the skeleton and the flag behaviour may differ
+## again. Switch it on for that pass and read the per-hand lines.
 ##
 ## Change-gated: an unconditional per-frame print produced 91,530 lines in one
 ## Link session on this project.
-static var debug_tracking := true
+static var debug_tracking := false
 static var _probe_last := [{}, {}]
 
 static func _probe(hand: int, gate_says_tracked: bool) -> void:
