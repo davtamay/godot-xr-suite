@@ -31,6 +31,7 @@ func _init() -> void:
     _test_hover_sweep_reports_contact_too_light(failures)
     _test_approach_hover_does_not_haunt_a_successful_gesture(failures)
     _test_bad_posture_contact_reports_posture_not_ready(failures)
+    _test_light_press_swipe_commits(failures)
 
     if failures.is_empty():
         print("XR microgesture hardening: PASS")
@@ -99,7 +100,8 @@ func _test_smoothing_composes_exactly_across_frame_times(failures: Array[String]
 ## At exactly the reference rate the exact-dt alpha equals
 ## contact_position_smoothing verbatim, so the value keeps the meaning it was
 ## tuned with on device: one 72 Hz step toward a 0.08 contact move must cover
-## 48% of it, making candidate progress 0.48 * 0.08 / 0.12 = 0.32.
+## 48% of it, making candidate progress 0.48 * 0.08 / 0.10 = 0.384 (the
+## divisor is minimum_index_travel, so this doubles as a pin on that value).
 func _test_reference_rate_behaviour_is_unchanged(failures: Array[String]) -> void:
     var performed: Array = []
     var progress: Array = []
@@ -108,8 +110,8 @@ func _test_reference_rate_behaviour_is_unchanged(failures: Array[String]) -> voi
     recognizer.process_features(1, _features(1_000_000 + DT72_USEC, 0.2, 0.42))
     if progress.is_empty():
         failures.append("reference-rate fixture emitted no candidate")
-    elif absf(float(progress[-1]) - 0.32) > 0.005:
-        failures.append("one 72 Hz step must keep its tuned meaning (expected progress ~0.32, got %.4f) -- the reference-rate behaviour is the on-device baseline and must not shift" % progress[-1])
+    elif absf(float(progress[-1]) - 0.384) > 0.005:
+        failures.append("one 72 Hz step must keep its tuned meaning (expected progress ~0.384, got %.4f) -- the reference-rate behaviour is the on-device baseline and must not shift" % progress[-1])
     recognizer.free()
 
 
@@ -287,12 +289,12 @@ func _test_dead_band_rejects_instead_of_vanishing(failures: Array[String]) -> vo
     )
     var t := 1_000_000
     recognizer.process_features(1, _features(t, 0.2, 0.50))
-    # One 72 Hz step toward a 0.21 contact move covers 48%: peak 0.1008 --
-    # inside (0.09, 0.12), the measured dead band. The RELEASE frame runs the
+    # One 72 Hz step toward a 0.20 contact move covers 48%: peak 0.096 --
+    # inside (0.09, 0.10), the dead band as narrowed 2026-07-30. The RELEASE frame runs the
     # smoothing update before the release check, so its contact value must
     # hold the smoothed position steady (0.60 ~ the current smoothed value)
     # or that final update itself would push the travel out of the band.
-    recognizer.process_features(1, _features(t + DT72_USEC, 0.2, 0.71))
+    recognizer.process_features(1, _features(t + DT72_USEC, 0.2, 0.70))
     recognizer.process_features(1, _features(t + 2 * DT72_USEC, 0.8, 0.60))
     if not performed.is_empty():
         failures.append("dead-band travel must not resolve to a gesture, got %s" % [performed])
@@ -533,11 +535,11 @@ func _test_hover_sweep_reports_contact_too_light(failures: Array[String]) -> voi
     var rejections: Array = []
     var recognizer := _recognizer_with_rejections(performed, rejections)
     var t := 1_000_000
-    # Sweep at side 0.43 -- above contact (0.40), below release (0.46) --
+    # Sweep at side 0.47 -- above contact (0.44), below release (0.50) --
     # with a full swipe's worth of position travel, then lift.
-    recognizer.process_features(1, _features(t, 0.43, 0.70))
-    recognizer.process_features(1, _features(t + DT72_USEC, 0.43, 0.50))
-    recognizer.process_features(1, _features(t + 2 * DT72_USEC, 0.43, 0.30))
+    recognizer.process_features(1, _features(t, 0.47, 0.70))
+    recognizer.process_features(1, _features(t + DT72_USEC, 0.47, 0.50))
+    recognizer.process_features(1, _features(t + 2 * DT72_USEC, 0.47, 0.30))
     recognizer.process_features(1, _features(t + 3 * DT72_USEC, 0.8, 0.30))
     if rejections != [XRMicrogestureSource.RejectReason.CONTACT_TOO_LIGHT]:
         failures.append("a hover sweep that never pressed in must report exactly one CONTACT_TOO_LIGHT at lift, got %s" % [rejections])
@@ -551,7 +553,7 @@ func _test_hover_sweep_reports_contact_too_light(failures: Array[String]) -> voi
     var still_rej: Array = []
     var still := _recognizer_with_rejections(still_perf, still_rej)
     for i in range(5):
-        still.process_features(1, _features(t + i * DT72_USEC, 0.43, 0.60))
+        still.process_features(1, _features(t + i * DT72_USEC, 0.47, 0.60))
     still.process_features(1, _features(t + 5 * DT72_USEC, 0.8, 0.60))
     if not still_rej.is_empty():
         failures.append("a motionless hover must stay silent, got %s" % [still_rej])
@@ -568,10 +570,10 @@ func _test_approach_hover_does_not_haunt_a_successful_gesture(failures: Array[St
     var rejections: Array = []
     var recognizer := _recognizer_with_rejections(performed, rejections)
     var t := 1_000_000
-    # Approach: sweep THROUGH the hover band (side 0.43) with a swipe's worth
+    # Approach: sweep THROUGH the hover band (side 0.47) with a swipe's worth
     # of travel...
-    recognizer.process_features(1, _features(t, 0.43, 0.80))
-    recognizer.process_features(1, _features(t + DT72_USEC, 0.43, 0.50))
+    recognizer.process_features(1, _features(t, 0.47, 0.80))
+    recognizer.process_features(1, _features(t + DT72_USEC, 0.47, 0.50))
     # ...then press in, swipe, and release: a clean successful gesture.
     recognizer.process_features(1, _features(t + 2 * DT72_USEC, 0.2, 0.50))
     recognizer.process_features(1, _features(t + 3 * DT72_USEC, 0.2, 0.80))
@@ -601,6 +603,27 @@ func _test_bad_posture_contact_reports_posture_not_ready(failures: Array[String]
         failures.append("an in-contact hand below arming posture must report POSTURE_NOT_READY exactly once, got %s" % [rejections])
     if not performed.is_empty():
         failures.append("a below-posture contact must not arm, got %s" % [performed])
+    recognizer.free()
+
+
+## The measured light-press fix (2026-07-30): leftward-extension sweeps ride
+## side 0.42-0.55 and 9 of them died as CONTACT_TOO_LIGHT against the old
+## 0.40 gate in one stationary session. A press at 0.43 -- inside the raised
+## 0.44 gate, formerly hover -- must arm and its swipe must commit. Pins the
+## contact_threshold raise: reverting to 0.40 turns this press back into a
+## hover and the commit disappears.
+func _test_light_press_swipe_commits(failures: Array[String]) -> void:
+    var performed: Array = []
+    var rejections: Array = []
+    var recognizer := _recognizer_with_rejections(performed, rejections)
+    var t := 1_000_000
+    recognizer.process_features(1, _features(t, 0.43, 0.50))
+    recognizer.process_features(1, _features(t + DT72_USEC, 0.43, 0.80))
+    recognizer.process_features(1, _features(t + 2 * DT72_USEC, 0.8, 0.80))
+    if performed != [XRMicrogestureSource.Gesture.LEFT]:
+        failures.append("a light press at 0.43 must arm under the raised gate and its swipe must commit, got %s" % [performed])
+    if not rejections.is_empty():
+        failures.append("a light press that commits must not also be reported as too light, got %s" % [rejections])
     recognizer.free()
 
 

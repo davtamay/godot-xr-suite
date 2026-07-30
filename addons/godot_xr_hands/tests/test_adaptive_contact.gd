@@ -104,7 +104,14 @@ func _test_meta_range_still_detects(failures: Array[String]) -> void:
 func _test_android_xr_range_detects_where_fixed_gate_fails(failures: Array[String]) -> void:
     # THE BUG. With the fixed 0.40 gate, a genuine Android XR pinch at 0.42
     # reads as "not touching", which on device was "snap does not work at all".
+    # The gate is pinned to the HISTORICAL 0.40/0.46 this scenario was
+    # measured against: the shipped defaults have since moved (0.44 as of
+    # 2026-07-30, which incidentally puts the 0.42 Android pinch inside the
+    # fixed gate), and this test is about the MECHANISM rescuing a range the
+    # fixed gate misses, not about tracking whatever the defaults become.
     var rec = _adaptive_recognizer()
+    rec.contact_threshold = 0.40
+    rec.release_threshold = 0.46
     if ANDROID_XR_CLOSED <= rec.contact_threshold:
         failures.append("fixture: android closed %s must exceed the fixed gate %s, else this test proves nothing" % [
             ANDROID_XR_CLOSED, rec.contact_threshold])

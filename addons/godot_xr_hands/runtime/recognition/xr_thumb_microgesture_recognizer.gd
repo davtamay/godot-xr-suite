@@ -22,8 +22,16 @@ signal microgesture_performed(direction: Direction, hand: int, confidence: float
 
 @export var gesture_runtime_path: NodePath
 @export_enum("Any:-1", "Left:0", "Right:1") var hand := -1
-@export_range(0.05, 1.5, 0.01) var contact_threshold := 0.40
-@export_range(0.05, 2.0, 0.01) var release_threshold := 0.46
+## 0.44/0.50, raised from 0.40/0.46 against the measured press distribution
+## (2026-07-30): the right thumb's near-contact side distance had median
+## 0.46 with light (leftward-extension) sweeps riding 0.42-0.55, and 9
+## CONTACT_TOO_LIGHT in one stationary-gate session were sweeps the 0.40
+## gate never saw. A modest raise, deliberately NOT to the hover median:
+## arming at 0.46+ would put ordinary hovering inside the gate and
+## manufacture phantom taps. Watch the TAP count on device after this
+## change -- it is the canary for having gone too far.
+@export_range(0.05, 1.5, 0.01) var contact_threshold := 0.44
+@export_range(0.05, 2.0, 0.01) var release_threshold := 0.50
 ## ---- adaptive contact calibration -------------------------------------------
 ##
 ## thumb_index_side_distance is normalized by palm width, so it already survives
@@ -181,7 +189,13 @@ func effective_release_threshold(p_hand: int) -> float:
 ## 1.0 means the closest point is a CORNER and the geometry is unbounded --
 ## the same reason _is_calibration_sample excludes pins).
 @export_range(0.0, 1.0, 0.01) var start_zone_maximum := 0.98
-@export_range(0.02, 0.8, 0.01) var minimum_index_travel := 0.12
+## 0.10, narrowed from 0.12 against session counts (2026-07-30, stationary
+## gate): 10 swipe attempts died in the (0.09, 0.12) dead band in one
+## session, the largest single rejection bucket, and the user asked for
+## exactly this ("too sensitive on getting those red letters and not
+## invoking the snap"). The band that emits SWIPE_TOO_SHORT instead of a
+## gesture is now (0.09, 0.10).
+@export_range(0.02, 0.8, 0.01) var minimum_index_travel := 0.10
 @export_range(0.02, 0.8, 0.01) var confident_commit_travel := 0.22
 @export_range(0.0, 0.3, 0.01) var minimum_swipe_duration := 0.03
 @export_range(0.05, 1.5, 0.01) var maximum_duration := 0.85
