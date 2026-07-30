@@ -251,10 +251,12 @@ func process_features(p_hand: int, features: XRHandFeatures) -> void:
         observe_contact_distance(p_hand, features.thumb_index_side_distance, delta)
     match int(state["phase"]):
         Phase.READY:
+            var side := features.thumb_index_side_distance
+            var in_contact := side <= effective_contact_threshold(p_hand)
             if float(state["cooldown_left"]) <= 0.0 and posture_score >= 0.999 and _can_start(features, p_hand):
                 _start_tracking(state, features)
-            elif float(state["cooldown_left"]) <= 0.0 and posture_score >= 0.999 \
-                    and features.thumb_index_side_distance <= effective_contact_threshold(p_hand) \
+                return
+            if float(state["cooldown_left"]) <= 0.0 and in_contact and posture_score >= 0.999 \
                     and not bool(state.get("zone_blocked", false)):
                 # Contact made, posture good, cooldown clear -- the ONE gate
                 # refusing to arm is the start zone. Before this emission the
@@ -266,9 +268,31 @@ func process_features(p_hand: int, features: XRHandFeatures) -> void:
                 # per frame would fire dozens of times per touch.
                 state["zone_blocked"] = true
                 gesture_rejected.emit(p_hand, RejectReason.OUT_OF_START_ZONE, -1)
-            if bool(state.get("zone_blocked", false)) \
-                    and features.thumb_index_side_distance >= effective_release_threshold(p_hand):
+            elif float(state["cooldown_left"]) <= 0.0 and in_contact and posture_score < 0.999 \
+                    and not bool(state.get("posture_blocked", false)):
+                # Contact made but the posture score flunks the (near-exact)
+                # arming bar. The other formerly-silent arming gate.
+                state["posture_blocked"] = true
+                gesture_rejected.emit(p_hand, RejectReason.POSTURE_NOT_READY, -1)
+            elif not in_contact and side <= effective_release_threshold(p_hand) and posture_score >= 0.999:
+                # HOVERING just above the contact gate, in posture. Accumulate
+                # the lateral travel of the hover: a sweep's worth of motion
+                # that never pressed in is an attempt the contact gate ate --
+                # MEASURED as the left-swipe killer on the right hand, where
+                # extension lightens the press and the whole swipe rides
+                # 0.42-0.55 against a 0.40 gate. Reported once, at episode end
+                # below, so a resting hover that never sweeps stays silent.
+                state["hover_low"] = minf(float(state.get("hover_low", INF)), features.thumb_index_contact_position)
+                state["hover_high"] = maxf(float(state.get("hover_high", -INF)), features.thumb_index_contact_position)
+            if side >= effective_release_threshold(p_hand):
+                # Episode over: the thumb left the surface region entirely.
                 state["zone_blocked"] = false
+                state["posture_blocked"] = false
+                var hover_range := float(state.get("hover_high", -INF)) - float(state.get("hover_low", INF))
+                state["hover_low"] = INF
+                state["hover_high"] = -INF
+                if hover_range >= minimum_index_travel and float(state["cooldown_left"]) <= 0.0:
+                    gesture_rejected.emit(p_hand, RejectReason.CONTACT_TOO_LIGHT, -1)
         Phase.TRACKING:
             state["elapsed"] = float(state["elapsed"]) + delta
             # Split so the rejection can carry the SPECIFIC cause -- "hand
@@ -451,6 +475,9 @@ func _new_state() -> Dictionary:
         "bad_frames": 0,
         "reanchored": false,
         "zone_blocked": false,
+        "posture_blocked": false,
+        "hover_low": INF,
+        "hover_high": -INF,
     }
 
 ## The Gesture this attempt's travel was heading toward when it died, for
@@ -479,3 +506,6 @@ func _reset_state(state: Dictionary) -> void:
     state["bad_frames"] = 0
     state["reanchored"] = false
     state["zone_blocked"] = false
+    state["posture_blocked"] = false
+    state["hover_low"] = INF
+    state["hover_high"] = -INF

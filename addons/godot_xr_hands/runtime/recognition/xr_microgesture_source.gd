@@ -26,7 +26,16 @@ enum Gesture { LEFT, RIGHT, FORWARD, BACKWARD, TAP }
 ## is not very reliable" while the counters showed 19 LEFT successes and 2
 ## rejections was exactly this, invisible. Emitted once per contact episode,
 ## not per frame.
-enum RejectReason { SWIPE_TOO_SHORT, TAP_TOO_QUICK, TOO_SLOW, POSTURE_LOST, LOW_QUALITY, DISCONTINUITY, OUT_OF_START_ZONE }
+## CONTACT_TOO_LIGHT and POSTURE_NOT_READY close the last silent arming
+## gates, found the same way OUT_OF_START_ZONE was: on-device feel
+## contradicting clean counters. Measured: the right thumb's near-contact
+## side distance had median 0.46 against a 0.40 contact gate -- a leftward
+## swipe (thumb extending, pressure lightening) rode the surface above the
+## gate and died in silence, while rightward (pressing inward) dipped under
+## it. CONTACT_TOO_LIGHT = a sweep's worth of lateral travel while hovering
+## just above the contact gate, never pressing in. POSTURE_NOT_READY =
+## contact made but the posture score below arming. Both once per episode.
+enum RejectReason { SWIPE_TOO_SHORT, TAP_TOO_QUICK, TOO_SLOW, POSTURE_LOST, LOW_QUALITY, DISCONTINUITY, OUT_OF_START_ZONE, CONTACT_TOO_LIGHT, POSTURE_NOT_READY }
 
 signal gesture_candidate(gesture: Gesture, hand: int, progress: float)
 signal gesture_performed(gesture: Gesture, hand: int, confidence: float)

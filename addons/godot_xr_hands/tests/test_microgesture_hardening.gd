@@ -28,6 +28,8 @@ func _init() -> void:
     _test_lifting_a_rested_thumb_is_neither_tap_nor_rejection(failures)
     _test_out_of_zone_contact_is_reported_once_per_episode(failures)
     _test_high_rest_start_arms_and_commits(failures)
+    _test_hover_sweep_reports_contact_too_light(failures)
+    _test_bad_posture_contact_reports_posture_not_ready(failures)
 
     if failures.is_empty():
         print("XR microgesture hardening: PASS")
@@ -516,6 +518,58 @@ func _test_high_rest_start_arms_and_commits(failures: Array[String]) -> void:
         failures.append("a swipe starting at the measured rest position (0.95) must arm and commit LEFT, got %s" % [performed])
     if XRMicrogestureSource.RejectReason.OUT_OF_START_ZONE in rejections:
         failures.append("0.95 is a real measured rest, not an out-of-zone position -- it must not be reported as one")
+    recognizer.free()
+
+
+## The measured left-swipe killer on the right hand: the thumb EXTENDS
+## leftward, the press lightens, and the whole sweep rides just above the
+## contact gate (median 0.46 vs gate 0.40) -- a swipe's worth of lateral
+## travel that never armed and never reported. It must report
+## CONTACT_TOO_LIGHT exactly once, at episode end (the lift), and a hover
+## that never sweeps must stay silent (resting NEAR the surface is normal).
+func _test_hover_sweep_reports_contact_too_light(failures: Array[String]) -> void:
+    var performed: Array = []
+    var rejections: Array = []
+    var recognizer := _recognizer_with_rejections(performed, rejections)
+    var t := 1_000_000
+    # Sweep at side 0.43 -- above contact (0.40), below release (0.46) --
+    # with a full swipe's worth of position travel, then lift.
+    recognizer.process_features(1, _features(t, 0.43, 0.70))
+    recognizer.process_features(1, _features(t + DT72_USEC, 0.43, 0.50))
+    recognizer.process_features(1, _features(t + 2 * DT72_USEC, 0.43, 0.30))
+    recognizer.process_features(1, _features(t + 3 * DT72_USEC, 0.8, 0.30))
+    if rejections != [XRMicrogestureSource.RejectReason.CONTACT_TOO_LIGHT]:
+        failures.append("a hover sweep that never pressed in must report exactly one CONTACT_TOO_LIGHT at lift, got %s" % [rejections])
+    if not performed.is_empty():
+        failures.append("a hover sweep must not commit anything, got %s" % [performed])
+    recognizer.free()
+
+    # A motionless hover, then lift: near-surface resting is normal, silence
+    # is correct.
+    var still_perf: Array = []
+    var still_rej: Array = []
+    var still := _recognizer_with_rejections(still_perf, still_rej)
+    for i in range(5):
+        still.process_features(1, _features(t + i * DT72_USEC, 0.43, 0.60))
+    still.process_features(1, _features(t + 5 * DT72_USEC, 0.8, 0.60))
+    if not still_rej.is_empty():
+        failures.append("a motionless hover must stay silent, got %s" % [still_rej])
+    still.free()
+
+
+## The other formerly-silent arming gate: contact made but posture below the
+## near-exact arming bar. Once per episode, like the zone report.
+func _test_bad_posture_contact_reports_posture_not_ready(failures: Array[String]) -> void:
+    var performed: Array = []
+    var rejections: Array = []
+    var recognizer := _recognizer_with_rejections(performed, rejections)
+    var t := 1_000_000
+    for i in range(5):
+        recognizer.process_features(1, _features_with_curl(t + i * DT72_USEC, 0.2, 0.50, 0.10))
+    if rejections != [XRMicrogestureSource.RejectReason.POSTURE_NOT_READY]:
+        failures.append("an in-contact hand below arming posture must report POSTURE_NOT_READY exactly once, got %s" % [rejections])
+    if not performed.is_empty():
+        failures.append("a below-posture contact must not arm, got %s" % [performed])
     recognizer.free()
 
 
