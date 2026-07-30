@@ -82,6 +82,16 @@ static var session_platform_override := -1
 ## hands-addon binding's pose_release_grace, tuned on device for the same
 ## race.
 @export_range(0.0, 3.0, 0.05) var aim_posture_release_grace := 0.45
+## Score at or below which the hand counts as POSITIVELY open. Deliberately
+## far below the recognizer's release gate (0.42): a fist TILTED UP points
+## its knuckles at the cameras and its curl readings collapse toward open --
+## measured on device 2026-07-30 as "we lose the arc when we tilt our hand
+## up" while the fist was clearly held. Scores between this bar and the
+## release gate are AMBIGUOUS (tilted fist and relaxed hand overlap there):
+## they neither cancel nor keep alive, and the locomotion intent timeout
+## bounds them. Interim value pending the feel_check posture-score
+## telemetry; tighten it only against measured tilted-fist floors.
+@export_range(0.0, 0.42, 0.01) var aim_open_exit_score := 0.10
 
 const _FORWARDED := ["contact_threshold", "release_threshold", "minimum_finger_curl",
 	"minimum_tracking_quality", "cooldown"]
@@ -280,6 +290,13 @@ func _process(delta: float) -> void:
 			# 3 seconds exactly as if it were abandoned.
 			if _locomotion.has_method("refresh_teleport_aim"):
 				_locomotion.refresh_teleport_aim(hand)
+			continue
+		if score > aim_open_exit_score:
+			# AMBIGUOUS: a tilted fist and a relaxing hand overlap in this
+			# band, so it neither keeps alive nor cancels -- the intent
+			# timeout bounds it. This band existing at all is why the exit
+			# bar is separate from the release gate: treating "below release"
+			# as "open" cancelled under a held, tilted fist.
 			continue
 		_posture_gone[hand] = float(_posture_gone.get(hand, 0.0)) + delta
 		if float(_posture_gone[hand]) >= aim_posture_release_grace:

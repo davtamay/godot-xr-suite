@@ -71,6 +71,7 @@ func _run_all() -> void:
 	_test_posture_watchdog_never_touches_foreign_aim(failures)
 	_test_unknown_posture_holds_the_aim(failures)
 	_test_held_posture_outlives_the_intent_timeout(failures)
+	_test_ambiguous_posture_neither_cancels_nor_extends(failures)
 
 	if failures.is_empty():
 		print("XR microgesture locomotion: PASS")
@@ -248,6 +249,48 @@ func _test_held_posture_outlives_the_intent_timeout(failures: Array[String]) -> 
 	driver._process(0.1)
 	if "refresh:1" in stub.calls:
 		failures.append("an UNKNOWN posture must not refresh the clock -- the timeout is what bounds an unobservable aim")
+	driver.free()
+	stub.free()
+	runtime.free()
+	recognizer.free()
+
+
+## The tilted-fist fix: a fist tilted UP points its knuckles at the cameras
+## and its curl readings collapse into the band between the exit bar and the
+## release gate -- the same band a relaxing hand passes through. AMBIGUOUS
+## must do NOTHING: no cancel (that was "we lose the arc when we tilt our
+## hand up") and no keep-alive either (the intent timeout must stay able to
+## bound it).
+func _test_ambiguous_posture_neither_cancels_nor_extends(failures: Array[String]) -> void:
+	DriverScript.session_platform_override = -1
+	var driver = DriverScript.new()
+	var stub := _LocomotionStub.new()
+	driver._locomotion = stub
+	var runtime := _FeaturesStubRuntime.new()
+	driver._gesture_runtime = runtime
+	var recognizer: Node = (load("res://addons/godot_xr_hands/runtime/recognition/xr_thumb_microgesture_recognizer.gd") as GDScript).new()
+	driver._recognizer = recognizer
+
+	driver._on_gesture(4, 1, 1.0)
+	stub.calls.clear()
+	# Curls 0.08: score ~0.29 -- between the exit bar (0.10) and the release
+	# gate (0.42). A tilted fist reads here.
+	runtime.features[1] = _posture_features(0.08)
+	driver._process(5.0)
+	if not stub.aiming:
+		failures.append("an ambiguous posture must NOT cancel -- this is the tilted-fist bug")
+	if "refresh:1" in stub.calls:
+		failures.append("an ambiguous posture must NOT keep the aim alive either -- the intent timeout must be able to bound it")
+	# A clearly open hand (curls near zero) must still cancel.
+	runtime.features[1] = _posture_features(0.01)
+	driver._process(1.0)
+	if stub.aiming:
+		pass  # cancelled as expected
+	else:
+		if not ("cancel:1" in stub.calls):
+			failures.append("fixture: the open-hand cancel must go through the locomotion API")
+	if stub.aiming:
+		failures.append("a clearly open hand must still cancel after the grace")
 	driver.free()
 	stub.free()
 	runtime.free()
