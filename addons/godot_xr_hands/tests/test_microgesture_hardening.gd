@@ -612,22 +612,22 @@ func _test_bad_posture_contact_reports_posture_not_ready(failures: Array[String]
     recognizer.free()
 
 
-## The measured light-press fix (2026-07-30): leftward-extension sweeps ride
-## side 0.42-0.55 and 9 of them died as CONTACT_TOO_LIGHT against the old
-## 0.40 gate in one stationary session. A press at 0.43 -- inside the raised
-## 0.44 gate, formerly hover -- must arm and its swipe must commit. Pins the
-## contact_threshold raise: reverting to 0.40 turns this press back into a
-## hover and the commit disappears.
+## The measured light-press fix (2026-07-30, raised in steps 0.40 -> 0.44 ->
+## 0.46 as gentler swiping exposed lighter presses -- CONTACT_TOO_LIGHT went
+## 9, then 3, then 16 as the travel dead band closed and pressure dropped).
+## A press at 0.45 -- inside the 0.46 gate, hover under both earlier gates --
+## must arm and its swipe must commit. Pins the raise: reverting to 0.44
+## turns this press back into a hover and the commit disappears.
 func _test_light_press_swipe_commits(failures: Array[String]) -> void:
     var performed: Array = []
     var rejections: Array = []
     var recognizer := _recognizer_with_rejections(performed, rejections)
     var t := 1_000_000
-    recognizer.process_features(1, _features(t, 0.43, 0.50))
-    recognizer.process_features(1, _features(t + DT72_USEC, 0.43, 0.80))
+    recognizer.process_features(1, _features(t, 0.45, 0.50))
+    recognizer.process_features(1, _features(t + DT72_USEC, 0.45, 0.80))
     recognizer.process_features(1, _features(t + 2 * DT72_USEC, 0.8, 0.80))
     if performed != [XRMicrogestureSource.Gesture.LEFT]:
-        failures.append("a light press at 0.43 must arm under the raised gate and its swipe must commit, got %s" % [performed])
+        failures.append("a light press at 0.45 must arm under the median gate and its swipe must commit, got %s" % [performed])
     if not rejections.is_empty():
         failures.append("a light press that commits must not also be reported as too light, got %s" % [rejections])
     recognizer.free()

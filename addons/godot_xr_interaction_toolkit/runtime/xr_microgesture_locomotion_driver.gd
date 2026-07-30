@@ -54,12 +54,12 @@ static var session_platform_override := -1
 ## knobs so you can adjust feel without reaching an internal node. Contact =
 ## how close the thumb must come to arm a swipe (lower = easier); release above
 ## the second value.
-## Kept in lockstep with XRThumbMicrogestureRecognizer's defaults (0.44/0.50
-## as of 2026-07-30, raised against the measured press distribution) --
-## these FORWARD to the recognizer on _ready, so a change to the recognizer
+## Kept in lockstep with XRThumbMicrogestureRecognizer's defaults (0.46/0.52
+## as of 2026-07-30, raised in measured steps to the hover median) -- these
+## FORWARD to the recognizer on _ready, so a change to the recognizer
 ## default alone is inert wherever this driver builds it.
-@export_range(0.05, 1.5, 0.01) var contact_threshold := 0.44
-@export_range(0.05, 2.0, 0.01) var release_threshold := 0.50
+@export_range(0.05, 1.5, 0.01) var contact_threshold := 0.46
+@export_range(0.05, 2.0, 0.01) var release_threshold := 0.52
 ## Fingers must be at least this curled (fist gate) to count as a microgesture.
 @export_range(0.0, 1.0, 0.01) var minimum_finger_curl := 0.28
 ## Hand-tracking confidence floor; raise if false swipes fire on poor tracking.

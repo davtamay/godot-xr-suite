@@ -30,8 +30,16 @@ signal microgesture_performed(direction: Direction, hand: int, confidence: float
 ## arming at 0.46+ would put ordinary hovering inside the gate and
 ## manufacture phantom taps. Watch the TAP count on device after this
 ## change -- it is the canary for having gone too far.
-@export_range(0.05, 1.5, 0.01) var contact_threshold := 0.44
-@export_range(0.05, 2.0, 0.01) var release_threshold := 0.50
+## Third measured step (2026-07-30): 0.40 -> 0.44 -> 0.46, now AT the
+## measured hover median. Closing the travel dead band invited gentler
+## swipes, and gentler swipes press lighter: CONTACT_TOO_LIGHT jumped 3 ->
+## 16 in the first closed-band session, concentrated on rightward pulls.
+## This is the LAST flat-gate step that makes sense -- at the median, half
+## of near-contact time is inside the gate, and any further raise trades
+## light-press catches for phantom taps one-for-one. Past this the fix is
+## the press-mode envelope redesign (tier 3), not this dial.
+@export_range(0.05, 1.5, 0.01) var contact_threshold := 0.46
+@export_range(0.05, 2.0, 0.01) var release_threshold := 0.52
 ## ---- adaptive contact calibration -------------------------------------------
 ##
 ## thumb_index_side_distance is normalized by palm width, so it already survives
