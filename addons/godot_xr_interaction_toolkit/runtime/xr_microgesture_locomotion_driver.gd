@@ -68,15 +68,26 @@ static var session_platform_override := -1
 @export_range(0.0, 2.0, 0.01) var cooldown := 0.18
 
 @export_group("Aim Lifecycle")
-## The aim a GESTURE started ends when the gesture posture breaks -- Meta's
-## session-gate model (technique from the ISDK sweep): locomotion gestures
-## exist inside an explicitly held mode, and leaving the posture leaves the
-## mode. Without this, tapping the arc on and then opening the hand left the
-## arc drawn indefinitely (reported on device 2026-07-30: "switch away from
-## doing teleportation raw hand fist gesture, the teleportation arc still
-## stays showing"). Applies ONLY to aims this driver began: stick-driven
-## controller aim has no hand posture and is never touched.
-@export var cancel_aim_on_posture_exit := true
+## OFF by default, and the reason is a measured verdict, not a preference.
+## This watchdog tried to implement Meta's session-gate exit (leaving the
+## posture leaves the mode) by monitoring gate_score, and a full evening of
+## on-device rounds proved the signal cannot carry it: gate_score is an
+## arming MINIMUM ("is the hand at least this curled"), it saturates at 1.0
+## for a relaxed hand, a grab, and most gestures a user switches to
+## (measured: no score below 0.46 ever logged in a full session), and a
+## tilted fist reads as open. Every calibration of the watchdog produced a
+## failure: exit-on-low-score cancelled under a held tilted fist; keep-alive
+## on high score fed on non-fist hands and made the arc UNREMOVABLE ("i cant
+## remove the teleportation arc when i switch gestures"). With this off, the
+## arc is predictable: tap toggles it, snap turn and commit end it, and
+## XRLocomotion's 3-second intent timeout clears anything abandoned.
+##
+## The session-gate exit remains the right DESIGN -- it needs a signal that
+## actually separates the states: a deliberate counter-gesture (Meta's
+## index-straighten), or the interaction arbiter cancelling aim when the
+## hand starts a select. Both are recorded in the handoff; neither is a
+## threshold on gate_score.
+@export var cancel_aim_on_posture_exit := false
 ## How long the posture may break before the aim cancels. Absorbs tracking
 ## flickers and the posture wobble of a commit gesture in flight; matches the
 ## hands-addon binding's pose_release_grace, tuned on device for the same

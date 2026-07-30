@@ -72,6 +72,7 @@ func _run_all() -> void:
 	_test_unknown_posture_holds_the_aim(failures)
 	_test_held_posture_outlives_the_intent_timeout(failures)
 	_test_ambiguous_posture_neither_cancels_nor_extends(failures)
+	_test_posture_watchdog_ships_disabled(failures)
 
 	if failures.is_empty():
 		print("XR microgesture locomotion: PASS")
@@ -113,6 +114,7 @@ func _test_leaving_posture_cancels_gesture_aim(failures: Array[String]) -> void:
 	driver._gesture_runtime = runtime
 	var recognizer: Node = (load("res://addons/godot_xr_hands/runtime/recognition/xr_thumb_microgesture_recognizer.gd") as GDScript).new()
 	driver._recognizer = recognizer
+	driver.cancel_aim_on_posture_exit = true  # mechanism opt-in: the watchdog ships OFF
 
 	driver._on_gesture(4, 1, 1.0)  # TAP while not aiming: begins the aim
 	if not stub.aiming:
@@ -154,6 +156,7 @@ func _test_posture_watchdog_never_touches_foreign_aim(failures: Array[String]) -
 	driver._gesture_runtime = runtime
 	var recognizer: Node = (load("res://addons/godot_xr_hands/runtime/recognition/xr_thumb_microgesture_recognizer.gd") as GDScript).new()
 	driver._recognizer = recognizer
+	driver.cancel_aim_on_posture_exit = true  # mechanism opt-in: the watchdog ships OFF
 
 	# Aim begun by something else (the stick): stub says aiming, but the
 	# driver never began it. No features at all -- score would be 0.
@@ -182,6 +185,7 @@ func _test_unknown_posture_holds_the_aim(failures: Array[String]) -> void:
 	driver._gesture_runtime = runtime
 	var recognizer: Node = (load("res://addons/godot_xr_hands/runtime/recognition/xr_thumb_microgesture_recognizer.gd") as GDScript).new()
 	driver._recognizer = recognizer
+	driver.cancel_aim_on_posture_exit = true  # mechanism opt-in: the watchdog ships OFF
 
 	driver._on_gesture(4, 1, 1.0)  # begin the aim
 
@@ -238,6 +242,7 @@ func _test_held_posture_outlives_the_intent_timeout(failures: Array[String]) -> 
 	driver._gesture_runtime = runtime
 	var recognizer: Node = (load("res://addons/godot_xr_hands/runtime/recognition/xr_thumb_microgesture_recognizer.gd") as GDScript).new()
 	driver._recognizer = recognizer
+	driver.cancel_aim_on_posture_exit = true  # mechanism opt-in: the watchdog ships OFF
 	driver._on_gesture(4, 1, 1.0)
 	runtime.features[1] = _posture_features(0.8)
 	driver._process(0.1)
@@ -270,6 +275,7 @@ func _test_ambiguous_posture_neither_cancels_nor_extends(failures: Array[String]
 	driver._gesture_runtime = runtime
 	var recognizer: Node = (load("res://addons/godot_xr_hands/runtime/recognition/xr_thumb_microgesture_recognizer.gd") as GDScript).new()
 	driver._recognizer = recognizer
+	driver.cancel_aim_on_posture_exit = true  # mechanism opt-in: the watchdog ships OFF
 
 	driver._on_gesture(4, 1, 1.0)
 	stub.calls.clear()
@@ -295,6 +301,19 @@ func _test_ambiguous_posture_neither_cancels_nor_extends(failures: Array[String]
 	stub.free()
 	runtime.free()
 	recognizer.free()
+
+
+## The watchdog SHIPS OFF: a full evening of on-device rounds proved
+## gate_score cannot separate a held fist from a relaxed hand, a grab, or a
+## tilted fist (no score below 0.46 in a whole session), so every
+## calibration either cancelled under a held fist or made the arc
+## unremovable. Turning it back on requires a signal that separates the
+## states, not a new threshold.
+func _test_posture_watchdog_ships_disabled(failures: Array[String]) -> void:
+	var driver = DriverScript.new()
+	if driver.cancel_aim_on_posture_exit:
+		failures.append("the posture watchdog must ship DISABLED -- gate_score saturates for non-fist hands, and the keep-alive made the arc unremovable on device")
+	driver.free()
 
 
 ## The stale-target commit: the arc hides because the hand ray is gone, but
@@ -481,6 +500,7 @@ func _test_supports_gesture_reflects_the_active_source(failures: Array[String]) 
 	var recognizer: Node = (load("res://addons/godot_xr_hands/runtime/recognition/xr_thumb_microgesture_recognizer.gd") as GDScript).new()
 	var native: Node = (load("res://addons/godot_xr_hands/runtime/recognition/xr_native_microgesture_source.gd") as GDScript).new()
 	driver._recognizer = recognizer
+	driver.cancel_aim_on_posture_exit = true  # mechanism opt-in: the watchdog ships OFF
 	driver._native = native
 	if driver.supports_gesture(2, 0):
 		failures.append("portable mode must report FORWARD unsupported -- the joint recognizer cannot derive it")
