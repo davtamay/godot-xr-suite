@@ -32,6 +32,7 @@ func _init() -> void:
     _test_approach_hover_does_not_haunt_a_successful_gesture(failures)
     _test_bad_posture_contact_reports_posture_not_ready(failures)
     _test_light_press_swipe_commits(failures)
+    _test_gentle_swipe_commits_under_default_thresholds(failures)
 
     if failures.is_empty():
         print("XR microgesture hardening: PASS")
@@ -100,7 +101,7 @@ func _test_smoothing_composes_exactly_across_frame_times(failures: Array[String]
 ## At exactly the reference rate the exact-dt alpha equals
 ## contact_position_smoothing verbatim, so the value keeps the meaning it was
 ## tuned with on device: one 72 Hz step toward a 0.08 contact move must cover
-## 48% of it, making candidate progress 0.48 * 0.08 / 0.10 = 0.384 (the
+## 48% of it, making candidate progress 0.48 * 0.08 / 0.09 = 0.4267 (the
 ## divisor is minimum_index_travel, so this doubles as a pin on that value).
 func _test_reference_rate_behaviour_is_unchanged(failures: Array[String]) -> void:
     var performed: Array = []
@@ -110,8 +111,8 @@ func _test_reference_rate_behaviour_is_unchanged(failures: Array[String]) -> voi
     recognizer.process_features(1, _features(1_000_000 + DT72_USEC, 0.2, 0.42))
     if progress.is_empty():
         failures.append("reference-rate fixture emitted no candidate")
-    elif absf(float(progress[-1]) - 0.384) > 0.005:
-        failures.append("one 72 Hz step must keep its tuned meaning (expected progress ~0.384, got %.4f) -- the reference-rate behaviour is the on-device baseline and must not shift" % progress[-1])
+    elif absf(float(progress[-1]) - 0.4267) > 0.005:
+        failures.append("one 72 Hz step must keep its tuned meaning (expected progress ~0.4267, got %.4f) -- the reference-rate behaviour is the on-device baseline and must not shift" % progress[-1])
     recognizer.free()
 
 
@@ -284,6 +285,11 @@ func _test_dead_band_rejects_instead_of_vanishing(failures: Array[String]) -> vo
     var rejections: Array = []
     var attempted: Array = []
     var recognizer := _recognizer_with_rejections(performed, rejections)
+    # MECHANISM test with an explicitly widened band: at the shipped defaults
+    # the dead band is CLOSED (swipe floor == tap ceiling, 2026-07-30) and
+    # this path is unreachable. The reporting must keep working for any
+    # project that re-widens the band.
+    recognizer.minimum_index_travel = 0.12
     recognizer.gesture_rejected.connect(func(_hand: int, _reason: int, direction: int) -> void:
         attempted.append(direction)
     )
@@ -624,6 +630,27 @@ func _test_light_press_swipe_commits(failures: Array[String]) -> void:
         failures.append("a light press at 0.43 must arm under the raised gate and its swipe must commit, got %s" % [performed])
     if not rejections.is_empty():
         failures.append("a light press that commits must not also be reported as too light, got %s" % [rejections])
+    recognizer.free()
+
+
+## The dead band is CLOSED at the shipped defaults (swipe floor == tap
+## ceiling, second measured step of 2026-07-30): a gentle swipe whose
+## smoothed travel lands at ~0.096 -- ten of which died per session in each
+## of the two bands this value has retreated through -- must now commit.
+## Pins minimum_index_travel at 0.09: reverting to 0.10 re-opens the band
+## and this travel dies again.
+func _test_gentle_swipe_commits_under_default_thresholds(failures: Array[String]) -> void:
+    var performed: Array = []
+    var rejections: Array = []
+    var recognizer := _recognizer_with_rejections(performed, rejections)
+    var t := 1_000_000
+    recognizer.process_features(1, _features(t, 0.2, 0.50))
+    recognizer.process_features(1, _features(t + DT72_USEC, 0.2, 0.70))
+    recognizer.process_features(1, _features(t + 2 * DT72_USEC, 0.8, 0.60))
+    if performed != [XRMicrogestureSource.Gesture.LEFT]:
+        failures.append("a gentle swipe (smoothed travel ~0.096) must commit under the closed-band defaults, got %s" % [performed])
+    if not rejections.is_empty():
+        failures.append("the closed band must leave nothing between tap and swipe to reject into, got %s" % [rejections])
     recognizer.free()
 
 
