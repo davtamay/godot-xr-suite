@@ -66,6 +66,7 @@ func _run_all() -> void:
 	_test_supports_gesture_reflects_the_active_source(failures)
 	_test_leaving_posture_cancels_gesture_aim(failures)
 	_test_posture_watchdog_never_touches_foreign_aim(failures)
+	_test_unknown_posture_holds_the_aim(failures)
 
 	if failures.is_empty():
 		print("XR microgesture locomotion: PASS")
@@ -155,6 +156,48 @@ func _test_posture_watchdog_never_touches_foreign_aim(failures: Array[String]) -
 	driver._process(5.0)
 	if not stub.aiming:
 		failures.append("the watchdog cancelled an aim it did not begin -- stick teleport would be broken for every controller user")
+	driver.free()
+	stub.free()
+	runtime.free()
+	recognizer.free()
+
+
+## The first watchdog's regression, reported within one session: an aiming
+## fist points away from the cameras, its curled fingers self-occlude, and
+## features flicker invalid or low-quality while the pose is held perfectly.
+## UNKNOWN posture must HOLD the aim -- unobservable is not gone -- and only
+## positive evidence of an open hand may cancel. A truly abandoned aim is
+## bounded by XRLocomotion's own intent timeout, not by this watchdog.
+func _test_unknown_posture_holds_the_aim(failures: Array[String]) -> void:
+	DriverScript.session_platform_override = -1
+	var driver = DriverScript.new()
+	var stub := _LocomotionStub.new()
+	driver._locomotion = stub
+	var runtime := _FeaturesStubRuntime.new()
+	driver._gesture_runtime = runtime
+	var recognizer: Node = (load("res://addons/godot_xr_hands/runtime/recognition/xr_thumb_microgesture_recognizer.gd") as GDScript).new()
+	driver._recognizer = recognizer
+
+	driver._on_gesture(4, 1, 1.0)  # begin the aim
+
+	# No features at all.
+	driver._process(5.0)
+	if not stub.aiming:
+		failures.append("missing features must hold the aim, not cancel it")
+	# Features present but INVALID (tracking loss on the occluded fist).
+	var invalid := _posture_features(0.8)
+	invalid.valid = false
+	runtime.features[1] = invalid
+	driver._process(5.0)
+	if not stub.aiming:
+		failures.append("invalid features must hold the aim -- this is the occluded-fist case reported on device")
+	# Valid but LOW QUALITY: still not evidence of an open hand.
+	var poor := _posture_features(0.8)
+	poor.tracking_quality = 0.1
+	runtime.features[1] = poor
+	driver._process(5.0)
+	if not stub.aiming:
+		failures.append("low-quality features must hold the aim -- quality loss is not posture exit")
 	driver.free()
 	stub.free()
 	runtime.free()

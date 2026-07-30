@@ -249,18 +249,33 @@ func _process(delta: float) -> void:
 			# timeout): stop watching, nothing to cancel.
 			_intent_hands[hand] = false
 			continue
-		var score := 0.0
-		if _gesture_runtime != null and _gesture_runtime.has_method("get_features") \
-				and _recognizer != null and _recognizer.has_method("gate_score"):
-			score = _recognizer.gate_score(_gesture_runtime.get_features(hand))
+		var features = null
+		if _gesture_runtime != null and _gesture_runtime.has_method("get_features"):
+			features = _gesture_runtime.get_features(hand)
+		var quality_floor := 0.36
+		if _recognizer != null:
+			quality_floor = float(_recognizer.get("minimum_tracking_quality"))
+		var posture_known: bool = features != null and bool(features.valid) \
+				and float(features.tracking_quality) >= quality_floor \
+				and _recognizer != null and _recognizer.has_method("gate_score")
+		if not posture_known:
+			# UNKNOWN is not exit. An aiming fist points AWAY from the
+			# cameras and its curled fingers occlude themselves, so features
+			# flicker invalid or low-quality exactly while the user holds the
+			# pose correctly -- the first watchdog cancelled on that, reported
+			# on device as "teleportation cancels even though we still have
+			# the closed fist pose". Unobservable is not gone (the same
+			# principle the FOV gate earned); only POSITIVE evidence of an
+			# open hand counts as exit, and XRLocomotion's own intent timeout
+			# still bounds a truly abandoned aim.
+			continue
+		var score: float = _recognizer.gate_score(features)
 		var release := 0.42
 		if _recognizer != null:
 			release = float(_recognizer.get("tracking_gate_release"))
 		if score >= release:
 			_posture_gone[hand] = 0.0
 			continue
-		# A vanished hand scores 0 too, and that is correct: the fist is gone
-		# either way, and the grace absorbs tracking flickers.
 		_posture_gone[hand] = float(_posture_gone.get(hand, 0.0)) + delta
 		if float(_posture_gone[hand]) >= aim_posture_release_grace:
 			_locomotion.cancel_teleport(hand)
