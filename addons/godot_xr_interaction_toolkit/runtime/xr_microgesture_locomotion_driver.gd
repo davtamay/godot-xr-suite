@@ -67,6 +67,22 @@ static var session_platform_override := -1
 ## Seconds between recognized gestures.
 @export_range(0.0, 2.0, 0.01) var cooldown := 0.18
 
+@export_group("Aim Lifecycle")
+## The aim a GESTURE started ends when the gesture posture breaks -- Meta's
+## session-gate model (technique from the ISDK sweep): locomotion gestures
+## exist inside an explicitly held mode, and leaving the posture leaves the
+## mode. Without this, tapping the arc on and then opening the hand left the
+## arc drawn indefinitely (reported on device 2026-07-30: "switch away from
+## doing teleportation raw hand fist gesture, the teleportation arc still
+## stays showing"). Applies ONLY to aims this driver began: stick-driven
+## controller aim has no hand posture and is never touched.
+@export var cancel_aim_on_posture_exit := true
+## How long the posture may break before the aim cancels. Absorbs tracking
+## flickers and the posture wobble of a commit gesture in flight; matches the
+## hands-addon binding's pose_release_grace, tuned on device for the same
+## race.
+@export_range(0.0, 3.0, 0.05) var aim_posture_release_grace := 0.45
+
 const _FORWARDED := ["contact_threshold", "release_threshold", "minimum_finger_curl",
 	"minimum_tracking_quality", "cooldown"]
 
@@ -91,6 +107,12 @@ signal source_gesture_performed(gesture: int, hand: int)
 var _locomotion: Node
 var _recognizer: Node
 var _native: Node
+var _gesture_runtime: Node
+## Hands whose CURRENT aim this driver began with a gesture -- the posture
+## watchdog only ever cancels these. Cleared when the aim ends by any path.
+var _intent_hands := {}
+## Seconds the aiming hand has been out of gesture posture, per hand.
+var _posture_gone := {}
 ## Hands the runtime detector has proven live for (first native event seen).
 ## Once true, joint-recognizer events for that hand are dropped -- both
 ## sources see the same physical gesture, and acting on both would
@@ -103,9 +125,9 @@ func _ready() -> void:
 		return
 	if not ResourceLoader.exists(_RECOGNIZER_SCRIPT) or not ResourceLoader.exists(_RUNTIME_SCRIPT):
 		return  # Hands addon not installed; microgesture locomotion stays off.
-	var runtime: Node = (load(_RUNTIME_SCRIPT) as GDScript).new()
-	runtime.name = "GestureRuntime"
-	add_child(runtime)
+	_gesture_runtime = (load(_RUNTIME_SCRIPT) as GDScript).new()
+	_gesture_runtime.name = "GestureRuntime"
+	add_child(_gesture_runtime)
 	_recognizer = (load(_RECOGNIZER_SCRIPT) as GDScript).new()
 	_recognizer.name = "ThumbRecognizer"
 	_recognizer.set("hand", -1)
@@ -195,6 +217,7 @@ func _on_gesture(gesture: int, hand: int, _confidence: float) -> void:
 				_locomotion.cancel_teleport(hand)
 			else:
 				_locomotion.begin_teleport_aim(hand)
+				_watch_intent_aim(hand)
 		3:
 			_locomotion.commit_teleport(hand)
 		4:
@@ -202,6 +225,46 @@ func _on_gesture(gesture: int, hand: int, _confidence: float) -> void:
 				_locomotion.commit_teleport(hand)
 			else:
 				_locomotion.begin_teleport_aim(hand)
+				_watch_intent_aim(hand)
+
+
+func _watch_intent_aim(hand: int) -> void:
+	_intent_hands[hand] = true
+	_posture_gone[hand] = 0.0
+
+
+## The posture watchdog. Cheap: two dictionary reads per frame per hand
+## unless a driver-begun aim is live, and gate_score is arithmetic over a
+## handful of floats.
+func _process(delta: float) -> void:
+	if Engine.is_editor_hint() or not cancel_aim_on_posture_exit:
+		return
+	if _locomotion == null or not is_instance_valid(_locomotion):
+		return
+	for hand in [0, 1]:
+		if not _intent_hands.get(hand, false):
+			continue
+		if not _locomotion.is_aiming(hand):
+			# The aim ended by any other path (commit, second tap, snap turn,
+			# timeout): stop watching, nothing to cancel.
+			_intent_hands[hand] = false
+			continue
+		var score := 0.0
+		if _gesture_runtime != null and _gesture_runtime.has_method("get_features") \
+				and _recognizer != null and _recognizer.has_method("gate_score"):
+			score = _recognizer.gate_score(_gesture_runtime.get_features(hand))
+		var release := 0.42
+		if _recognizer != null:
+			release = float(_recognizer.get("tracking_gate_release"))
+		if score >= release:
+			_posture_gone[hand] = 0.0
+			continue
+		# A vanished hand scores 0 too, and that is correct: the fist is gone
+		# either way, and the grace absorbs tracking flickers.
+		_posture_gone[hand] = float(_posture_gone.get(hand, 0.0)) + delta
+		if float(_posture_gone[hand]) >= aim_posture_release_grace:
+			_locomotion.cancel_teleport(hand)
+			_intent_hands[hand] = false
 
 
 func _resolve_locomotion() -> bool:

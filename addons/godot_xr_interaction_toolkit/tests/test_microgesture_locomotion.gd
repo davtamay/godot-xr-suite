@@ -64,6 +64,8 @@ func _run_all() -> void:
 	_test_session_override_forces_platform(failures)
 	_test_rejection_relay_respects_the_mux(failures)
 	_test_supports_gesture_reflects_the_active_source(failures)
+	_test_leaving_posture_cancels_gesture_aim(failures)
+	_test_posture_watchdog_never_touches_foreign_aim(failures)
 
 	if failures.is_empty():
 		print("XR microgesture locomotion: PASS")
@@ -73,6 +75,90 @@ func _run_all() -> void:
 			push_error(f)
 		print("XR microgesture locomotion: FAIL (%d)" % failures.size())
 		quit(1)
+
+
+## Minimal stand-in for the gesture runtime: the watchdog only calls
+## get_features(hand).
+class _FeaturesStubRuntime extends Node:
+	var features := {}
+
+	func get_features(hand: int):
+		return features.get(hand)
+
+
+func _posture_features(curl: float) -> XRHandFeatures:
+	var features := XRHandFeatures.new()
+	features.valid = true
+	features.tracking_quality = 1.0
+	for finger in range(XRHandFeatures.Finger.INDEX, XRHandFeatures.Finger.PINKY + 1):
+		features.finger_curls[finger] = curl
+	return features
+
+
+## The reported bug: tap the arc on, open the hand, arc stays forever. The
+## aim a GESTURE began must end when the posture breaks -- after the grace,
+## not instantly (a commit gesture in flight wobbles the posture).
+func _test_leaving_posture_cancels_gesture_aim(failures: Array[String]) -> void:
+	DriverScript.session_platform_override = -1
+	var driver = DriverScript.new()
+	var stub := _LocomotionStub.new()
+	driver._locomotion = stub
+	var runtime := _FeaturesStubRuntime.new()
+	driver._gesture_runtime = runtime
+	var recognizer: Node = (load("res://addons/godot_xr_hands/runtime/recognition/xr_thumb_microgesture_recognizer.gd") as GDScript).new()
+	driver._recognizer = recognizer
+
+	driver._on_gesture(4, 1, 1.0)  # TAP while not aiming: begins the aim
+	if not stub.aiming:
+		failures.append("fixture broken: the tap must begin the aim")
+
+	# In posture: the watchdog must hold indefinitely.
+	runtime.features[1] = _posture_features(0.8)
+	driver._process(1.0)
+	if not stub.aiming:
+		failures.append("the watchdog must not cancel while the posture holds")
+
+	# Posture breaks (hand opens): survives WITHIN the grace...
+	runtime.features[1] = _posture_features(0.02)
+	driver._process(0.2)
+	if not stub.aiming:
+		failures.append("a posture break shorter than the grace must not cancel -- a commit gesture in flight wobbles the posture")
+	# ...and cancels once the grace is spent.
+	driver._process(0.3)
+	if stub.aiming:
+		failures.append("the aim must cancel once the posture has been gone past the grace -- this is the reported stuck-arc bug")
+	if not ("cancel:1" in stub.calls):
+		failures.append("the cancel must go through the locomotion API for hand 1, got %s" % [stub.calls])
+	driver.free()
+	stub.free()
+	runtime.free()
+	recognizer.free()
+
+
+## Stick-driven controller aim has no hand posture. The watchdog must key on
+## aims THIS DRIVER began, never on is_aiming alone -- a vanished hand scores
+## 0, and cancelling a controller aim because the OTHER modality's posture
+## is absent would break thumbstick teleport wholesale.
+func _test_posture_watchdog_never_touches_foreign_aim(failures: Array[String]) -> void:
+	DriverScript.session_platform_override = -1
+	var driver = DriverScript.new()
+	var stub := _LocomotionStub.new()
+	driver._locomotion = stub
+	var runtime := _FeaturesStubRuntime.new()
+	driver._gesture_runtime = runtime
+	var recognizer: Node = (load("res://addons/godot_xr_hands/runtime/recognition/xr_thumb_microgesture_recognizer.gd") as GDScript).new()
+	driver._recognizer = recognizer
+
+	# Aim begun by something else (the stick): stub says aiming, but the
+	# driver never began it. No features at all -- score would be 0.
+	stub.aiming = true
+	driver._process(5.0)
+	if not stub.aiming:
+		failures.append("the watchdog cancelled an aim it did not begin -- stick teleport would be broken for every controller user")
+	driver.free()
+	stub.free()
+	runtime.free()
+	recognizer.free()
 
 
 ## The stale-target commit: the arc hides because the hand ray is gone, but
