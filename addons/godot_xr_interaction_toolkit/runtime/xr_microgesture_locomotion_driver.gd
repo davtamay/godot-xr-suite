@@ -73,8 +73,16 @@ const _FORWARDED := ["contact_threshold", "release_threshold", "minimum_finger_c
 ## driver's internal children -- the driver owns the per-hand source mux, so
 ## it is the only node that knows which source's chatter is authoritative.
 ## In platform mode a proven hand emits no rejections at all: the runtime
-## detector publishes only successes.
-signal source_gesture_rejected(hand: int, reason: int)
+## detector publishes only successes. `attempted` is the Gesture the motion
+## was heading toward (-1 unattributable), so telemetry can answer
+## per-direction reliability questions.
+signal source_gesture_rejected(hand: int, reason: int, attempted: int)
+
+## Post-mux success relay: one emission per gesture the driver actually acted
+## on, from whichever source was authoritative for that hand. Telemetry pairs
+## this with source_gesture_rejected to compute per-direction reliability --
+## successes without rejections (the native path) still count.
+signal source_gesture_performed(gesture: int, hand: int)
 
 var _locomotion: Node
 var _recognizer: Node
@@ -136,14 +144,14 @@ func _on_recognizer_gesture(gesture: int, hand: int, confidence: float) -> void:
 	_on_gesture(gesture, hand, confidence)
 
 
-func _on_recognizer_rejected(hand: int, reason: int) -> void:
+func _on_recognizer_rejected(hand: int, reason: int, attempted: int) -> void:
 	# Mirrors the performed-path mux exactly: once a hand is platform-proven,
 	# the joint recognizer's rejections are as non-authoritative as its
 	# successes -- relaying them would buzz the user about attempts the active
 	# detector may well have accepted.
 	if platform_mode_active() and _platform_hands.get(hand, false):
 		return
-	source_gesture_rejected.emit(hand, reason)
+	source_gesture_rejected.emit(hand, reason, attempted)
 
 
 ## Whether the source currently authoritative for `hand` can ever emit
@@ -163,6 +171,10 @@ func supports_gesture(gesture: int, hand: int) -> bool:
 
 
 func _on_gesture(gesture: int, hand: int, _confidence: float) -> void:
+	# Relayed before the enabled/locomotion checks: the MUX decided this event
+	# is authoritative, and telemetry counts what the sources produced, not
+	# whether locomotion happened to be wired to consume it.
+	source_gesture_performed.emit(gesture, hand)
 	if not enabled or not _resolve_locomotion():
 		return
 	# Gesture order matches XRMicrogestureSource.Gesture:

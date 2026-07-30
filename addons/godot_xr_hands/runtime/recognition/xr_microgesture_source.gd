@@ -25,9 +25,14 @@ enum RejectReason { SWIPE_TOO_SHORT, TAP_TOO_QUICK, TOO_SLOW, POSTURE_LOST, LOW_
 signal gesture_candidate(gesture: Gesture, hand: int, progress: float)
 signal gesture_performed(gesture: Gesture, hand: int, confidence: float)
 ## One emission per gesture attempt that was seen and discarded, with the most
-## specific reason. Sources that cannot observe their own rejections (the
-## native runtime detector publishes only successes) simply never emit it.
-signal gesture_rejected(hand: int, reason: RejectReason)
+## specific reason. `attempted` is the Gesture the motion was heading toward
+## when it died (-1 when unattributable, e.g. a quality dropout before any
+## meaningful travel) -- ON-DEVICE COUNTS SHOWED WHY THIS EXISTS: "swiping
+## right seems more reliable than swiping left" is unanswerable from reasons
+## alone; per-direction rejection counts answer it in one session. Sources
+## that cannot observe their own rejections (the native runtime detector
+## publishes only successes) simply never emit it.
+signal gesture_rejected(hand: int, reason: RejectReason, attempted: int)
 
 func gesture_name(gesture: int) -> String:
     if gesture < 0 or gesture >= Gesture.size():

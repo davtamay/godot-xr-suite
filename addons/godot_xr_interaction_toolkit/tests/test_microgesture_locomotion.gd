@@ -207,22 +207,38 @@ func _test_rejection_relay_respects_the_mux(failures: Array[String]) -> void:
 	DriverScript.session_platform_override = -1
 	var driver = DriverScript.new()
 	var relayed: Array = []
-	driver.source_gesture_rejected.connect(func(hand: int, reason: int) -> void:
-		relayed.append([hand, reason])
+	driver.source_gesture_rejected.connect(func(hand: int, reason: int, attempted: int) -> void:
+		relayed.append([hand, reason, attempted])
+	)
+	var performed: Array = []
+	driver.source_gesture_performed.connect(func(gesture: int, hand: int) -> void:
+		performed.append([gesture, hand])
 	)
 
-	# Portable mode (default): recognizer rejections relay.
-	driver._on_recognizer_rejected(0, 0)
-	if relayed != [[0, 0]]:
-		failures.append("portable mode must relay recognizer rejections, got %s" % [relayed])
+	# Portable mode (default): recognizer rejections relay, attempted
+	# direction intact.
+	driver._on_recognizer_rejected(0, 0, 1)
+	if relayed != [[0, 0, 1]]:
+		failures.append("portable mode must relay recognizer rejections with the attempted direction, got %s" % [relayed])
+
+	# The success relay is post-mux and pre-consumption: it fires even with
+	# the driver DISABLED -- telemetry counts what the sources produced, not
+	# whether locomotion consumed it. (enabled=false also short-circuits
+	# before _resolve_locomotion, which needs a tree this detached fixture
+	# does not have.)
+	driver.enabled = false
+	driver._on_recognizer_gesture(1, 0, 0.9)
+	driver.enabled = true
+	if performed != [[1, 0]]:
+		failures.append("the post-mux success relay must fire for an authoritative gesture, got %s" % [performed])
 
 	# Platform mode, proven hand: that hand's rejections are dropped, the
 	# other hand's still relay.
 	driver.use_platform_microgestures = true
 	driver._platform_hands[0] = true
-	driver._on_recognizer_rejected(0, 1)
-	driver._on_recognizer_rejected(1, 2)
-	if relayed != [[0, 0], [1, 2]]:
+	driver._on_recognizer_rejected(0, 1, 0)
+	driver._on_recognizer_rejected(1, 2, -1)
+	if relayed != [[0, 0, 1], [1, 2, -1]]:
 		failures.append("a platform-proven hand's rejections must be dropped and the other hand's kept, got %s" % [relayed])
 	driver.free()
 

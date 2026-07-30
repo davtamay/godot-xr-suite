@@ -259,7 +259,7 @@ func _recognizer_with_rejections(performed: Array, rejections: Array) -> XRThumb
     recognizer.gesture_performed.connect(func(gesture: int, _hand: int, _confidence: float) -> void:
         performed.append(gesture)
     )
-    recognizer.gesture_rejected.connect(func(_hand: int, reason: int) -> void:
+    recognizer.gesture_rejected.connect(func(_hand: int, reason: int, _attempted: int) -> void:
         rejections.append(reason)
     )
     return recognizer
@@ -273,7 +273,11 @@ func _recognizer_with_rejections(performed: Array, rejections: Array) -> XRThumb
 func _test_dead_band_rejects_instead_of_vanishing(failures: Array[String]) -> void:
     var performed: Array = []
     var rejections: Array = []
+    var attempted: Array = []
     var recognizer := _recognizer_with_rejections(performed, rejections)
+    recognizer.gesture_rejected.connect(func(_hand: int, _reason: int, direction: int) -> void:
+        attempted.append(direction)
+    )
     var t := 1_000_000
     recognizer.process_features(1, _features(t, 0.2, 0.50))
     # One 72 Hz step toward a 0.21 contact move covers 48%: peak 0.1008 --
@@ -287,6 +291,13 @@ func _test_dead_band_rejects_instead_of_vanishing(failures: Array[String]) -> vo
         failures.append("dead-band travel must not resolve to a gesture, got %s" % [performed])
     if rejections != [XRMicrogestureSource.RejectReason.SWIPE_TOO_SHORT]:
         failures.append("dead-band travel must emit exactly one SWIPE_TOO_SHORT rejection, got %s" % [rejections])
+    # Contact position INCREASING on the right hand is semantically LEFT --
+    # the same mapping a successful commit uses. Per-direction rejection
+    # counts are what answered "swiping right seems more reliable than
+    # swiping left" on device; an unattributed or misattributed direction
+    # makes that question unanswerable again.
+    if attempted != [XRMicrogestureSource.Gesture.LEFT]:
+        failures.append("the rejection must carry the ATTEMPTED direction (LEFT for rising contact on the right hand), got %s" % [attempted])
     recognizer.free()
 
 

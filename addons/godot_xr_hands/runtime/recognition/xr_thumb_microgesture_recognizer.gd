@@ -210,7 +210,7 @@ func process_features(p_hand: int, features: XRHandFeatures) -> void:
         state["bad_frames"] = int(state.get("bad_frames", 0)) + 1
         if int(state["phase"]) == Phase.TRACKING and int(state["bad_frames"]) > quality_grace_frames:
             state["phase"] = Phase.WAITING_FOR_RELEASE
-            gesture_rejected.emit(p_hand, RejectReason.LOW_QUALITY)
+            gesture_rejected.emit(p_hand, RejectReason.LOW_QUALITY, _attempted_direction(state))
         return
     state["bad_frames"] = 0
 
@@ -232,7 +232,7 @@ func process_features(p_hand: int, features: XRHandFeatures) -> void:
     if features.discontinuity:
         if int(state["phase"]) == Phase.TRACKING:
             state["phase"] = Phase.WAITING_FOR_RELEASE
-            gesture_rejected.emit(p_hand, RejectReason.DISCONTINUITY)
+            gesture_rejected.emit(p_hand, RejectReason.DISCONTINUITY, -1)
         return
 
     var posture_score := gate_score(features)
@@ -252,11 +252,11 @@ func process_features(p_hand: int, features: XRHandFeatures) -> void:
             # corrections, and a merged reason would teach neither.
             if posture_score < tracking_gate_release:
                 state["phase"] = Phase.WAITING_FOR_RELEASE
-                gesture_rejected.emit(p_hand, RejectReason.POSTURE_LOST)
+                gesture_rejected.emit(p_hand, RejectReason.POSTURE_LOST, _attempted_direction(state))
                 return
             if float(state["elapsed"]) > maximum_duration:
                 state["phase"] = Phase.WAITING_FOR_RELEASE
-                gesture_rejected.emit(p_hand, RejectReason.TOO_SLOW)
+                gesture_rejected.emit(p_hand, RejectReason.TOO_SLOW, _attempted_direction(state))
                 return
             _update_tracking(state, features, p_hand, delta)
             if int(state["phase"]) != Phase.TRACKING:
@@ -361,9 +361,9 @@ func _finish_contact(state: Dictionary, p_hand: int) -> void:
         # maximum_duration cannot reach here (TRACKING already exits on it),
         # so the only tap failure left is releasing too quickly.
         if travel > maximum_tap_travel:
-            gesture_rejected.emit(p_hand, RejectReason.SWIPE_TOO_SHORT)
+            gesture_rejected.emit(p_hand, RejectReason.SWIPE_TOO_SHORT, _attempted_direction(state))
         else:
-            gesture_rejected.emit(p_hand, RejectReason.TAP_TOO_QUICK)
+            gesture_rejected.emit(p_hand, RejectReason.TAP_TOO_QUICK, Gesture.TAP)
     state["phase"] = Phase.WAITING_FOR_RELEASE
 
 func _perform_swipe(state: Dictionary, p_hand: int, peak: float, early_commit: bool) -> void:
@@ -390,6 +390,17 @@ func _new_state() -> Dictionary:
         "peak_semantic_delta": 0.0,
         "bad_frames": 0,
     }
+
+## The Gesture this attempt's travel was heading toward when it died, for
+## rejection telemetry: LEFT/RIGHT by the sign of the accumulated peak, -1
+## when the travel is too small to attribute. Reads the same
+## peak_semantic_delta the commit paths read, so the attribution can never
+## disagree with what a successful commit would have called the direction.
+func _attempted_direction(state: Dictionary) -> int:
+    var peak := float(state.get("peak_semantic_delta", 0.0))
+    if absf(peak) < 0.01:
+        return -1
+    return Gesture.LEFT if peak > 0.0 else Gesture.RIGHT
 
 ## Full reset -- the public reset() API and nothing else. Deliberately NOT
 ## called on bad frames any more (see process_features): zeroing cooldown_left
