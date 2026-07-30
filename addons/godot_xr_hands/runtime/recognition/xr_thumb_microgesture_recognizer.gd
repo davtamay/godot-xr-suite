@@ -197,18 +197,19 @@ func effective_release_threshold(p_hand: int) -> float:
 ## 1.0 means the closest point is a CORNER and the geometry is unbounded --
 ## the same reason _is_calibration_sample excludes pins).
 @export_range(0.0, 1.0, 0.01) var start_zone_maximum := 0.98
-## 0.09, lowered from 0.12 in two measured steps (2026-07-30). At 0.12,
-## ten swipes died in the (0.09, 0.12) dead band in one session; at 0.10
-## the band was only 0.01 wide and STILL caught ten -- gentle swipes
-## cluster exactly there ("sometimes it still fails, have to be
-## aggressive with the swipe"). Equal to maximum_tap_travel, the dead
-## band is CLOSED: any travel past the tap ceiling commits, and
-## SWIPE_TOO_SHORT is unreachable at these defaults (the mechanism stays
-## for any project that re-widens the band). Gentler still than this
-## reads as a tap; moving the tap ceiling down too is the next dial, and
-## it carries real tap-misclassification risk, so it waits for its own
-## measured case.
-@export_range(0.02, 0.8, 0.01) var minimum_index_travel := 0.09
+## 0.10, the resting point of three measured moves (2026-07-30): 0.12 ate
+## ten gentle swipes a session; 0.09 (floor == tap ceiling, band closed)
+## produced WRONG-DIRECTION snaps -- many swipes begin with a small
+## opposite-direction wind-up, and with the floor at 0.09 a wind-up could
+## become the recorded peak and win the direction when the main stroke
+## lifted early. A wrong action is worse than a missed one (the same
+## principle that made phantom swipes tier 1's target), so the band
+## reopens to (0.09, 0.10): gentle strokes there reject VISIBLY as
+## SWIPE_TOO_SHORT instead of committing a coin-flip. The real resolution
+## -- committing on net displacement that AGREES with the peak, so a
+## wind-up can never win -- is a recognition-logic change that waits for
+## the replay corpus, not another value move.
+@export_range(0.02, 0.8, 0.01) var minimum_index_travel := 0.10
 @export_range(0.02, 0.8, 0.01) var confident_commit_travel := 0.22
 @export_range(0.0, 0.3, 0.01) var minimum_swipe_duration := 0.03
 @export_range(0.05, 1.5, 0.01) var maximum_duration := 0.85
