@@ -68,3 +68,12 @@ func _on_button_pressed(action_name: String, hand: int) -> void:
     # is one recognized gesture. Confidence is 1.0 by definition -- the
     # runtime does not publish gestures it doubts.
     gesture_performed.emit(_ACTION_TO_GESTURE[action_name], hand, 1.0)
+
+
+## The full vocabulary -- the runtime detector emits all five, including the
+## FORWARD/BACKWARD the joint recognizer cannot derive. Explicit rather than
+## inherited so a test pins it. Note gesture_rejected NEVER fires here: the
+## extension publishes only successes, so this source cannot observe its own
+## rejections -- rejection feedback is a portable-recognizer feature.
+func get_supported_gestures() -> Array:
+    return [Gesture.LEFT, Gesture.RIGHT, Gesture.FORWARD, Gesture.BACKWARD, Gesture.TAP]

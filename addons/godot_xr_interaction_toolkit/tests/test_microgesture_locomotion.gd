@@ -62,6 +62,8 @@ func _run_all() -> void:
 	_test_platform_gestures_win_per_hand(failures)
 	_test_portable_mode_ignores_platform_source(failures)
 	_test_session_override_forces_platform(failures)
+	_test_rejection_relay_respects_the_mux(failures)
+	_test_supports_gesture_reflects_the_active_source(failures)
 
 	if failures.is_empty():
 		print("XR microgesture locomotion: PASS")
@@ -195,3 +197,66 @@ func _test_session_override_forces_platform(failures: Array[String]) -> void:
 	DriverScript.session_platform_override = -1
 	driver.free()
 	stub.free()
+
+
+## The rejection relay mirrors the performed-path mux exactly: a
+## platform-proven hand's recognizer chatter is as non-authoritative in
+## rejection as in success -- relaying it would buzz the user about attempts
+## the active detector may well have accepted.
+func _test_rejection_relay_respects_the_mux(failures: Array[String]) -> void:
+	DriverScript.session_platform_override = -1
+	var driver = DriverScript.new()
+	var relayed: Array = []
+	driver.source_gesture_rejected.connect(func(hand: int, reason: int) -> void:
+		relayed.append([hand, reason])
+	)
+
+	# Portable mode (default): recognizer rejections relay.
+	driver._on_recognizer_rejected(0, 0)
+	if relayed != [[0, 0]]:
+		failures.append("portable mode must relay recognizer rejections, got %s" % [relayed])
+
+	# Platform mode, proven hand: that hand's rejections are dropped, the
+	# other hand's still relay.
+	driver.use_platform_microgestures = true
+	driver._platform_hands[0] = true
+	driver._on_recognizer_rejected(0, 1)
+	driver._on_recognizer_rejected(1, 2)
+	if relayed != [[0, 0], [1, 2]]:
+		failures.append("a platform-proven hand's rejections must be dropped and the other hand's kept, got %s" % [relayed])
+	driver.free()
+
+
+## supports_gesture answers for whichever source is AUTHORITATIVE for that
+## hand right now, so a consumer can say "forward swipe not available here"
+## instead of leaving the user swiping into dead air.
+func _test_supports_gesture_reflects_the_active_source(failures: Array[String]) -> void:
+	DriverScript.session_platform_override = -1
+	var driver = DriverScript.new()
+
+	# No sources built (headless driver, hands addon may be absent):
+	# optimistic, because absent evidence the pre-contract claim stands.
+	if not driver.supports_gesture(2, 0):
+		failures.append("with no source built, supports_gesture must stay optimistic")
+
+	# Portable recognizer active: FORWARD (2) unsupported, LEFT (0) supported.
+	var recognizer: Node = (load("res://addons/godot_xr_hands/runtime/recognition/xr_thumb_microgesture_recognizer.gd") as GDScript).new()
+	var native: Node = (load("res://addons/godot_xr_hands/runtime/recognition/xr_native_microgesture_source.gd") as GDScript).new()
+	driver._recognizer = recognizer
+	driver._native = native
+	if driver.supports_gesture(2, 0):
+		failures.append("portable mode must report FORWARD unsupported -- the joint recognizer cannot derive it")
+	if not driver.supports_gesture(0, 0):
+		failures.append("portable mode must report LEFT supported")
+
+	# Platform-proven hand answers from the native source's full vocabulary;
+	# the unproven hand still answers from the recognizer.
+	driver.use_platform_microgestures = true
+	driver._platform_hands[0] = true
+	if not driver.supports_gesture(2, 0):
+		failures.append("a platform-proven hand must report FORWARD supported -- the runtime detector emits it")
+	if driver.supports_gesture(2, 1):
+		failures.append("the unproven hand must still answer from the portable recognizer")
+	driver.free()
+	recognizer.free()
+	native.free()

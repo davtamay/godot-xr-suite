@@ -18,6 +18,12 @@ func _init() -> void:
     _test_bad_frame_does_not_disarm_the_cooldown(failures)
     _test_grace_exceeded_aborts_without_emitting(failures)
     _test_runtime_stamps_discontinuity_from_its_source(failures)
+    _test_dead_band_rejects_instead_of_vanishing(failures)
+    _test_tap_too_quick_rejects(failures)
+    _test_too_slow_and_posture_lost_are_distinct(failures)
+    _test_quality_and_discontinuity_aborts_carry_reasons(failures)
+    _test_success_emits_no_rejection(failures)
+    _test_supported_gestures_are_honest(failures)
 
     if failures.is_empty():
         print("XR microgesture hardening: PASS")
@@ -235,3 +241,178 @@ func _test_grace_exceeded_aborts_without_emitting(failures: Array[String]) -> vo
     if not performed.is_empty():
         failures.append("travel accumulated before a sustained dropout fired on release, got %s -- past the grace the gesture must abort silently" % [performed])
     recognizer.free()
+
+
+## -- Tier 2: never fail silently ------------------------------------------
+
+
+func _features_with_curl(timestamp_usec: int, side_distance: float, contact_position: float,
+        curl: float) -> XRHandFeatures:
+    var features := _features(timestamp_usec, side_distance, contact_position)
+    for finger in range(XRHandFeatures.Finger.INDEX, XRHandFeatures.Finger.PINKY + 1):
+        features.finger_curls[finger] = curl
+    return features
+
+
+func _recognizer_with_rejections(performed: Array, rejections: Array) -> XRThumbMicrogestureRecognizer:
+    var recognizer := XRThumbMicrogestureRecognizer.new()
+    recognizer.gesture_performed.connect(func(gesture: int, _hand: int, _confidence: float) -> void:
+        performed.append(gesture)
+    )
+    recognizer.gesture_rejected.connect(func(_hand: int, reason: int) -> void:
+        rejections.append(reason)
+    )
+    return recognizer
+
+
+## The dead band made a fumbled swipe a SILENT miss: travel past the tap
+## ceiling (0.09) but short of the swipe floor (0.12) emitted nothing at all.
+## It must now emit exactly one rejection naming the problem -- and still no
+## gesture, because resolving the band to a gesture would manufacture the
+## phantom swipes tier 1 just removed.
+func _test_dead_band_rejects_instead_of_vanishing(failures: Array[String]) -> void:
+    var performed: Array = []
+    var rejections: Array = []
+    var recognizer := _recognizer_with_rejections(performed, rejections)
+    var t := 1_000_000
+    recognizer.process_features(1, _features(t, 0.2, 0.50))
+    # One 72 Hz step toward a 0.21 contact move covers 48%: peak 0.1008 --
+    # inside (0.09, 0.12), the measured dead band. The RELEASE frame runs the
+    # smoothing update before the release check, so its contact value must
+    # hold the smoothed position steady (0.60 ~ the current smoothed value)
+    # or that final update itself would push the travel out of the band.
+    recognizer.process_features(1, _features(t + DT72_USEC, 0.2, 0.71))
+    recognizer.process_features(1, _features(t + 2 * DT72_USEC, 0.8, 0.60))
+    if not performed.is_empty():
+        failures.append("dead-band travel must not resolve to a gesture, got %s" % [performed])
+    if rejections != [XRMicrogestureSource.RejectReason.SWIPE_TOO_SHORT]:
+        failures.append("dead-band travel must emit exactly one SWIPE_TOO_SHORT rejection, got %s" % [rejections])
+    recognizer.free()
+
+
+## Releasing a clean contact before a tap's minimum duration used to vanish
+## the same way.
+func _test_tap_too_quick_rejects(failures: Array[String]) -> void:
+    var performed: Array = []
+    var rejections: Array = []
+    var recognizer := _recognizer_with_rejections(performed, rejections)
+    var t := 1_000_000
+    recognizer.process_features(1, _features(t, 0.2, 0.50))
+    # Released after one 13.9ms frame: under minimum_tap_duration (0.04).
+    recognizer.process_features(1, _features(t + DT72_USEC, 0.8, 0.50))
+    if not performed.is_empty():
+        failures.append("a too-quick contact must not emit a gesture, got %s" % [performed])
+    if rejections != [XRMicrogestureSource.RejectReason.TAP_TOO_QUICK]:
+        failures.append("a too-quick release must emit exactly one TAP_TOO_QUICK, got %s" % [rejections])
+    recognizer.free()
+
+
+## The two mid-track aborts need DIFFERENT user corrections ("keep your hand
+## curled" vs "don't linger"), so they must carry distinct reasons.
+func _test_too_slow_and_posture_lost_are_distinct(failures: Array[String]) -> void:
+    var slow_perf: Array = []
+    var slow_rej: Array = []
+    var slow := _recognizer_with_rejections(slow_perf, slow_rej)
+    var t := 1_000_000
+    slow.process_features(1, _features(t, 0.2, 0.50))
+    for i in range(1, 64):  # 63 further frames = ~0.875s > maximum_duration 0.85
+        slow.process_features(1, _features(t + i * DT72_USEC, 0.2, 0.50))
+    if slow_rej != [XRMicrogestureSource.RejectReason.TOO_SLOW]:
+        failures.append("a contact outliving maximum_duration must emit exactly one TOO_SLOW, got %s" % [slow_rej])
+    if not slow_perf.is_empty():
+        failures.append("a lingering contact must not emit a gesture, got %s" % [slow_perf])
+    slow.free()
+
+    var posture_perf: Array = []
+    var posture_rej: Array = []
+    var posture := _recognizer_with_rejections(posture_perf, posture_rej)
+    posture.process_features(1, _features(t, 0.2, 0.50))
+    # Hand opens mid-track: curls collapse below the tracking release gate.
+    posture.process_features(1, _features_with_curl(t + DT72_USEC, 0.2, 0.50, 0.02))
+    if posture_rej != [XRMicrogestureSource.RejectReason.POSTURE_LOST]:
+        failures.append("losing gesture posture mid-track must emit exactly one POSTURE_LOST, got %s" % [posture_rej])
+    posture.free()
+
+
+## The tier-1 aborts stay, and now say why: sustained low quality and a
+## tracking discontinuity each carry their reason, exactly once.
+func _test_quality_and_discontinuity_aborts_carry_reasons(failures: Array[String]) -> void:
+    var quality_perf: Array = []
+    var quality_rej: Array = []
+    var quality := _recognizer_with_rejections(quality_perf, quality_rej)
+    var t := 1_000_000
+    quality.process_features(1, _features(t, 0.2, 0.50))
+    quality.process_features(1, _features(t + DT72_USEC, 0.2, 0.74))
+    for i in range(4):
+        quality.process_features(1, _features(t + (2 + i) * DT72_USEC, 0.2, 0.74, false))
+    if quality_rej != [XRMicrogestureSource.RejectReason.LOW_QUALITY]:
+        failures.append("a grace-exceeded abort must emit exactly one LOW_QUALITY, got %s" % [quality_rej])
+    quality.free()
+
+    var disc_perf: Array = []
+    var disc_rej: Array = []
+    var disc := _recognizer_with_rejections(disc_perf, disc_rej)
+    disc.process_features(1, _features(t, 0.2, 0.50))
+    disc.process_features(1, _features(t + DT72_USEC, 0.2, 0.95, true, true))
+    if disc_rej != [XRMicrogestureSource.RejectReason.DISCONTINUITY]:
+        failures.append("a discontinuity abort must emit exactly one DISCONTINUITY, got %s" % [disc_rej])
+    if not disc_perf.is_empty():
+        failures.append("the discontinuity abort must still not emit a gesture, got %s" % [disc_perf])
+    disc.free()
+
+
+## Success and rejection are mutually exclusive per attempt -- a swipe that
+## fires must not ALSO complain.
+func _test_success_emits_no_rejection(failures: Array[String]) -> void:
+    var performed: Array = []
+    var rejections: Array = []
+    var recognizer := _recognizer_with_rejections(performed, rejections)
+    var t := 1_000_000
+    recognizer.process_features(1, _features(t, 0.2, 0.50))
+    recognizer.process_features(1, _features(t + DT72_USEC, 0.2, 0.80))
+    recognizer.process_features(1, _features(t + 2 * DT72_USEC, 0.8, 0.80))
+    if performed.size() != 1:
+        failures.append("fixture broken: the swipe must commit exactly once, got %s" % [performed])
+    if not rejections.is_empty():
+        failures.append("a successful gesture must not also emit a rejection, got %s" % [rejections])
+    recognizer.free()
+
+    # And the TAP path separately -- it has its own emit site, and a mutation
+    # that complained on tap success slipped past a swipe-only version of
+    # this test.
+    var tap_perf: Array = []
+    var tap_rej: Array = []
+    var tap := _recognizer_with_rejections(tap_perf, tap_rej)
+    var t2 := 2_000_000
+    tap.process_features(1, _features(t2, 0.2, 0.50))
+    tap.process_features(1, _features(t2 + 4 * DT72_USEC, 0.2, 0.50))
+    tap.process_features(1, _features(t2 + 5 * DT72_USEC, 0.8, 0.50))
+    if tap_perf != [XRMicrogestureSource.Gesture.TAP]:
+        failures.append("fixture broken: the tap must commit exactly once, got %s" % [tap_perf])
+    if not tap_rej.is_empty():
+        failures.append("a successful TAP must not also emit a rejection, got %s" % [tap_rej])
+    tap.free()
+
+
+## Capability honesty: the portable recognizer must not claim the
+## FORWARD/BACKWARD it cannot derive; the native source must claim all five;
+## the base default stays the full set (the claim every pre-contract source
+## implicitly made).
+func _test_supported_gestures_are_honest(failures: Array[String]) -> void:
+    var recognizer := XRThumbMicrogestureRecognizer.new()
+    var portable: Array = recognizer.get_supported_gestures()
+    if XRMicrogestureSource.Gesture.FORWARD in portable or XRMicrogestureSource.Gesture.BACKWARD in portable:
+        failures.append("the portable recognizer must not claim FORWARD/BACKWARD -- it has one contact axis and nothing to derive them from")
+    if portable != [XRMicrogestureSource.Gesture.LEFT, XRMicrogestureSource.Gesture.RIGHT, XRMicrogestureSource.Gesture.TAP]:
+        failures.append("the portable recognizer must claim exactly LEFT/RIGHT/TAP, got %s" % [portable])
+    recognizer.free()
+
+    var native: Node = (load("res://addons/godot_xr_hands/runtime/recognition/xr_native_microgesture_source.gd") as GDScript).new()
+    if native.get_supported_gestures().size() != XRMicrogestureSource.Gesture.size():
+        failures.append("the native source must claim the full vocabulary, got %s" % [native.get_supported_gestures()])
+    native.free()
+
+    var base := XRMicrogestureSource.new()
+    if base.get_supported_gestures().size() != XRMicrogestureSource.Gesture.size():
+        failures.append("the base default must stay the full vocabulary -- it is the claim every pre-contract source implicitly made")
+    base.free()

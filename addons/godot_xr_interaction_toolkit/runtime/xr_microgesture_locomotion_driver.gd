@@ -66,7 +66,19 @@ static var session_platform_override := -1
 const _FORWARDED := ["contact_threshold", "release_threshold", "minimum_finger_curl",
 	"minimum_tracking_quality", "cooldown"]
 
+## Relay of the ACTIVE source's rejection feedback (see
+## XRMicrogestureSource.gesture_rejected): one emission per gesture attempt
+## the recognizer saw and discarded, with the reason. Consumers (feedback
+## haptics, the Feel Check bench's counters) connect HERE, not to the
+## driver's internal children -- the driver owns the per-hand source mux, so
+## it is the only node that knows which source's chatter is authoritative.
+## In platform mode a proven hand emits no rejections at all: the runtime
+## detector publishes only successes.
+signal source_gesture_rejected(hand: int, reason: int)
+
 var _locomotion: Node
+var _recognizer: Node
+var _native: Node
 ## Hands the runtime detector has proven live for (first native event seen).
 ## Once true, joint-recognizer events for that hand are dropped -- both
 ## sources see the same physical gesture, and acting on both would
@@ -82,21 +94,23 @@ func _ready() -> void:
 	var runtime: Node = (load(_RUNTIME_SCRIPT) as GDScript).new()
 	runtime.name = "GestureRuntime"
 	add_child(runtime)
-	var recognizer: Node = (load(_RECOGNIZER_SCRIPT) as GDScript).new()
-	recognizer.name = "ThumbRecognizer"
-	recognizer.set("hand", -1)
-	recognizer.set("gesture_runtime_path", NodePath("../GestureRuntime"))
+	_recognizer = (load(_RECOGNIZER_SCRIPT) as GDScript).new()
+	_recognizer.name = "ThumbRecognizer"
+	_recognizer.set("hand", -1)
+	_recognizer.set("gesture_runtime_path", NodePath("../GestureRuntime"))
 	for prop in _FORWARDED:
-		recognizer.set(prop, get(prop))
-	add_child(recognizer)
-	if recognizer.has_signal("gesture_performed"):
-		recognizer.connect("gesture_performed", _on_recognizer_gesture)
+		_recognizer.set(prop, get(prop))
+	add_child(_recognizer)
+	if _recognizer.has_signal("gesture_performed"):
+		_recognizer.connect("gesture_performed", _on_recognizer_gesture)
+	if _recognizer.has_signal("gesture_rejected"):
+		_recognizer.connect("gesture_rejected", _on_recognizer_rejected)
 	if ResourceLoader.exists(_NATIVE_SOURCE_SCRIPT):
-		var native: Node = (load(_NATIVE_SOURCE_SCRIPT) as GDScript).new()
-		native.name = "NativeMicrogestures"
-		add_child(native)
-		if native.has_signal("gesture_performed"):
-			native.connect("gesture_performed", _on_native_gesture)
+		_native = (load(_NATIVE_SOURCE_SCRIPT) as GDScript).new()
+		_native.name = "NativeMicrogestures"
+		add_child(_native)
+		if _native.has_signal("gesture_performed"):
+			_native.connect("gesture_performed", _on_native_gesture)
 
 
 ## True when platform mode is in effect for this driver, override included.
@@ -120,6 +134,32 @@ func _on_recognizer_gesture(gesture: int, hand: int, confidence: float) -> void:
 	if platform_mode_active() and _platform_hands.get(hand, false):
 		return
 	_on_gesture(gesture, hand, confidence)
+
+
+func _on_recognizer_rejected(hand: int, reason: int) -> void:
+	# Mirrors the performed-path mux exactly: once a hand is platform-proven,
+	# the joint recognizer's rejections are as non-authoritative as its
+	# successes -- relaying them would buzz the user about attempts the active
+	# detector may well have accepted.
+	if platform_mode_active() and _platform_hands.get(hand, false):
+		return
+	source_gesture_rejected.emit(hand, reason)
+
+
+## Whether the source currently authoritative for `hand` can ever emit
+## `gesture`. The portable recognizer has no FORWARD/BACKWARD, so in portable
+## mode the aim-toggle/commit swipe mappings above are reachable only through
+## TAP -- consumers use this to say "forward swipe not available here"
+## instead of leaving the user swiping into dead air. Optimistic (true) when
+## no source is built yet or a source predates the contract: absent evidence,
+## claim what was always implicitly claimed.
+func supports_gesture(gesture: int, hand: int) -> bool:
+	var source: Node = _recognizer
+	if platform_mode_active() and _platform_hands.get(hand, false):
+		source = _native
+	if source == null or not source.has_method("get_supported_gestures"):
+		return true
+	return gesture in source.get_supported_gestures()
 
 
 func _on_gesture(gesture: int, hand: int, _confidence: float) -> void:

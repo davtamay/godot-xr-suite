@@ -210,6 +210,7 @@ func process_features(p_hand: int, features: XRHandFeatures) -> void:
         state["bad_frames"] = int(state.get("bad_frames", 0)) + 1
         if int(state["phase"]) == Phase.TRACKING and int(state["bad_frames"]) > quality_grace_frames:
             state["phase"] = Phase.WAITING_FOR_RELEASE
+            gesture_rejected.emit(p_hand, RejectReason.LOW_QUALITY)
         return
     state["bad_frames"] = 0
 
@@ -231,6 +232,7 @@ func process_features(p_hand: int, features: XRHandFeatures) -> void:
     if features.discontinuity:
         if int(state["phase"]) == Phase.TRACKING:
             state["phase"] = Phase.WAITING_FOR_RELEASE
+            gesture_rejected.emit(p_hand, RejectReason.DISCONTINUITY)
         return
 
     var posture_score := gate_score(features)
@@ -245,8 +247,16 @@ func process_features(p_hand: int, features: XRHandFeatures) -> void:
                 _start_tracking(state, features)
         Phase.TRACKING:
             state["elapsed"] = float(state["elapsed"]) + delta
-            if posture_score < tracking_gate_release or float(state["elapsed"]) > maximum_duration:
+            # Split so the rejection can carry the SPECIFIC cause -- "hand
+            # opened up" and "thumb lingered too long" need different user
+            # corrections, and a merged reason would teach neither.
+            if posture_score < tracking_gate_release:
                 state["phase"] = Phase.WAITING_FOR_RELEASE
+                gesture_rejected.emit(p_hand, RejectReason.POSTURE_LOST)
+                return
+            if float(state["elapsed"]) > maximum_duration:
+                state["phase"] = Phase.WAITING_FOR_RELEASE
+                gesture_rejected.emit(p_hand, RejectReason.TOO_SLOW)
                 return
             _update_tracking(state, features, p_hand, delta)
             if int(state["phase"]) != Phase.TRACKING:
@@ -274,6 +284,14 @@ func gate_score(features: XRHandFeatures) -> float:
 
 func direction_name(direction: int) -> String:
     return gesture_name(direction)
+
+## Honest capability set: the contact position is ONE axis (along the index
+## finger), so this recognizer has nothing to derive FORWARD/BACKWARD from.
+## Consumers adapt via this instead of discovering it by dead air; whether a
+## second axis is measurable is an open investigation
+## (docs/microgesture-hardening-design.md, tier 2), not a promise.
+func get_supported_gestures() -> Array:
+    return [Gesture.LEFT, Gesture.RIGHT, Gesture.TAP]
 
 func reset() -> void:
     for state in _hands.values():
@@ -334,6 +352,18 @@ func _finish_contact(state: Dictionary, p_hand: int) -> void:
         gesture_performed.emit(Gesture.TAP, p_hand, confidence)
         microgesture_performed.emit(Direction.TAP, p_hand, confidence)
         state["cooldown_left"] = cooldown
+    else:
+        # A contact that armed, moved, released, and produced NOTHING. This
+        # used to be silence -- and the SWIPE_TOO_SHORT case is the measured
+        # dead band (travel past maximum_tap_travel yet short of
+        # minimum_index_travel), where a fumbled swipe simply vanished. The
+        # user did something; say what was wrong with it. elapsed >
+        # maximum_duration cannot reach here (TRACKING already exits on it),
+        # so the only tap failure left is releasing too quickly.
+        if travel > maximum_tap_travel:
+            gesture_rejected.emit(p_hand, RejectReason.SWIPE_TOO_SHORT)
+        else:
+            gesture_rejected.emit(p_hand, RejectReason.TAP_TOO_QUICK)
     state["phase"] = Phase.WAITING_FOR_RELEASE
 
 func _perform_swipe(state: Dictionary, p_hand: int, peak: float, early_commit: bool) -> void:
