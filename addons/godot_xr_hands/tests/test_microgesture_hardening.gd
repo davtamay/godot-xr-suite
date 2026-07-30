@@ -27,6 +27,7 @@ func _init() -> void:
     _test_swipe_after_a_long_rest_commits(failures)
     _test_lifting_a_rested_thumb_is_neither_tap_nor_rejection(failures)
     _test_out_of_zone_contact_is_reported_once_per_episode(failures)
+    _test_high_rest_start_arms_and_commits(failures)
 
     if failures.is_empty():
         print("XR microgesture hardening: PASS")
@@ -467,13 +468,14 @@ func _test_out_of_zone_contact_is_reported_once_per_episode(failures: Array[Stri
     var rejections: Array = []
     var recognizer := _recognizer_with_rejections(performed, rejections)
     var t := 1_000_000
-    # Contact held for several frames at position 0.95 -- outside the zone.
+    # Contact held for several frames at position 0.99 -- above even the
+    # widened ceiling (0.98), i.e. effectively pinned at the fingertip.
     for i in range(5):
-        recognizer.process_features(1, _features(t + i * DT72_USEC, 0.2, 0.95))
+        recognizer.process_features(1, _features(t + i * DT72_USEC, 0.2, 0.99))
     if rejections != [XRMicrogestureSource.RejectReason.OUT_OF_START_ZONE]:
         failures.append("an out-of-zone contact must report OUT_OF_START_ZONE exactly ONCE per episode, got %s" % [rejections])
     # Release, recontact out of zone: a NEW episode reports again.
-    recognizer.process_features(1, _features(t + 5 * DT72_USEC, 0.8, 0.95))
+    recognizer.process_features(1, _features(t + 5 * DT72_USEC, 0.8, 0.99))
     for i in range(6, 9):
         recognizer.process_features(1, _features(t + i * DT72_USEC, 0.2, 0.05))
     if rejections.size() != 2:
@@ -493,6 +495,28 @@ func _test_out_of_zone_contact_is_reported_once_per_episode(failures: Array[Stri
     if not clean_rej.is_empty():
         failures.append("an in-zone start must not emit OUT_OF_START_ZONE, got %s" % [clean_rej])
     clean.free()
+
+
+## The measured fix for "swiped left 12 times, only 7 successful": the LEFT
+## thumb's natural rest reads 0.84-0.96 along the index, above the old 0.88
+## arming ceiling, and every such attempt died at the gate. A start at 0.95
+## (dead center of the measured rest band) must now arm and the swipe toward
+## the base must commit -- on the LEFT hand, position decreasing is
+## semantically LEFT, exactly the user's failing gesture.
+func _test_high_rest_start_arms_and_commits(failures: Array[String]) -> void:
+    var performed: Array = []
+    var rejections: Array = []
+    var recognizer := _recognizer_with_rejections(performed, rejections)
+    var t := 1_000_000
+    recognizer.process_features(0, _features(t, 0.2, 0.95))
+    recognizer.process_features(0, _features(t + DT72_USEC, 0.2, 0.55))
+    recognizer.process_features(0, _features(t + 2 * DT72_USEC, 0.2, 0.55))
+    recognizer.process_features(0, _features(t + 3 * DT72_USEC, 0.8, 0.55))
+    if performed != [XRMicrogestureSource.Gesture.LEFT]:
+        failures.append("a swipe starting at the measured rest position (0.95) must arm and commit LEFT, got %s" % [performed])
+    if XRMicrogestureSource.RejectReason.OUT_OF_START_ZONE in rejections:
+        failures.append("0.95 is a real measured rest, not an out-of-zone position -- it must not be reported as one")
+    recognizer.free()
 
 
 ## Capability honesty: the portable recognizer must not claim the

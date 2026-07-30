@@ -160,7 +160,15 @@ func effective_release_threshold(p_hand: int) -> float:
 @export_range(0.0, 1.0, 0.01) var minimum_finger_curl := 0.28
 @export_range(0.0, 1.0, 0.01) var minimum_index_curl := 0.16
 @export_range(0.0, 1.0, 0.01) var start_zone_minimum := 0.12
-@export_range(0.0, 1.0, 0.01) var start_zone_maximum := 0.88
+## 0.98, raised from 0.88 against on-device measurement (2026-07-30): the
+## left thumb's natural rest reads 0.74-1.00 along the index, repeatedly at
+## 0.84-0.96, and every rest above the old ceiling died silently at the
+## arming gate -- OUT_OF_START_ZONE counted 5 in the exact session the user
+## reported 5 misses in 12 left swipes. 0.98 clears every measured non-pinned
+## rest while still excluding the truly pinned endpoint (position clamped to
+## 1.0 means the closest point is a CORNER and the geometry is unbounded --
+## the same reason _is_calibration_sample excludes pins).
+@export_range(0.0, 1.0, 0.01) var start_zone_maximum := 0.98
 @export_range(0.02, 0.8, 0.01) var minimum_index_travel := 0.12
 @export_range(0.02, 0.8, 0.01) var confident_commit_travel := 0.22
 @export_range(0.0, 0.3, 0.01) var minimum_swipe_duration := 0.03
