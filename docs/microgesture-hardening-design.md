@@ -102,6 +102,15 @@ restore the old reset → both fail.
 
 ## Tier 2 — never fail silently
 
+**SHIPPED 2026-07-29** at `dd06c02` (contract, recognizer emissions, driver
+relay + capability query; 7 mutations caught) and demo `15b0975` (Feel Check
+counts rejections by reason, flashes per event, mirrors to stdout). One
+correction to this design's sketch: the "soft haptic" is impossible for the
+input being measured -- bare hands have no actuator -- so the feedback channel
+is visual (and later audio, if earned). Earn-in pending: a Feel Check session
+where deliberately fumbled swipes produce visible SWIPE_TOO_SHORT counts, and
+the counts from ordinary use become the dead-band tuning evidence.
+
 ### 2a. `gesture_rejected` on the source contract
 
 The dead band is real: travel in `(maximum_tap_travel, minimum_index_travel)` =
