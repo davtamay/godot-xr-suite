@@ -254,6 +254,23 @@ func process_features(p_hand: int, features: XRHandFeatures) -> void:
                 state["phase"] = Phase.WAITING_FOR_RELEASE
                 gesture_rejected.emit(p_hand, RejectReason.POSTURE_LOST, _attempted_direction(state))
                 return
+            # A RESTING thumb is the canonical microgesture posture -- rest on
+            # the index, then swipe -- but maximum_duration used to run from
+            # CONTACT start, so resting past it armed a trap: the eventual
+            # swipe was eaten until release. Measured on device as exactly the
+            # left-swipe unreliability being chased (session telemetry: every
+            # LEFT miss was TOO_SLOW; nine of the first session's rejections
+            # were this, mostly resting-thumb noise). While no travel beyond
+            # tap-noise has accumulated, slide the window: the ceiling then
+            # bounds the SWIPE, which was always its intent, and a rest of any
+            # length stays silent -- a rest is not an attempt. Checked at half
+            # the window so a swipe begun late in a rest still gets at least
+            # half a window before the re-anchor could clip it, and the
+            # re-anchor is peak-gated so it can never clip a swipe already in
+            # flight (its accumulated travel blocks the re-anchor).
+            if absf(float(state["peak_semantic_delta"])) <= maximum_tap_travel \
+                    and float(state["elapsed"]) > maximum_duration * 0.5:
+                _reanchor_rest(state)
             if float(state["elapsed"]) > maximum_duration:
                 state["phase"] = Phase.WAITING_FOR_RELEASE
                 gesture_rejected.emit(p_hand, RejectReason.TOO_SLOW, _attempted_direction(state))
@@ -308,6 +325,19 @@ func _start_tracking(state: Dictionary, features: XRHandFeatures) -> void:
     state["start_contact_position"] = features.thumb_index_contact_position
     state["smoothed_contact_position"] = features.thumb_index_contact_position
     state["peak_semantic_delta"] = 0.0
+    state["reanchored"] = false
+
+## Slides the gesture window to NOW: the thumb has been resting (no travel
+## beyond tap noise), so the time already spent is rest, not gesture. Start
+## re-seeds to the settled position so slow drift during the rest is not
+## counted as travel either. `reanchored` marks the attempt so a later LIFT
+## is not read as a tap -- a tap is a quick touch, and a touch that rested
+## first is just a thumb leaving its resting place.
+func _reanchor_rest(state: Dictionary) -> void:
+    state["elapsed"] = 0.0
+    state["start_contact_position"] = float(state["smoothed_contact_position"])
+    state["peak_semantic_delta"] = 0.0
+    state["reanchored"] = true
 
 func _update_tracking(state: Dictionary, features: XRHandFeatures, p_hand: int, delta: float) -> void:
     # Exact frame-rate compensation, same closed form as XRAimStabilizer: a
@@ -345,6 +375,12 @@ func _finish_contact(state: Dictionary, p_hand: int) -> void:
     if travel >= minimum_index_travel:
         _perform_swipe(state, p_hand, peak, false)
         return
+    elif bool(state.get("reanchored", false)) and travel <= maximum_tap_travel:
+        # Lifting a thumb that had been RESTING. Not a tap (a tap is a quick
+        # touch; this touch rested first) and not a failed attempt either --
+        # the user was not attempting anything, so this is the one silent
+        # path that is CORRECT to keep silent: rejections are for attempts.
+        pass
     elif elapsed >= minimum_tap_duration and elapsed <= maximum_duration and travel <= maximum_tap_travel:
         var duration_score := 1.0 - clampf(elapsed / maximum_duration, 0.0, 1.0)
         var travel_score := 1.0 - clampf(travel / maximum_tap_travel, 0.0, 1.0)
@@ -389,6 +425,7 @@ func _new_state() -> Dictionary:
         "smoothed_contact_position": 0.5,
         "peak_semantic_delta": 0.0,
         "bad_frames": 0,
+        "reanchored": false,
     }
 
 ## The Gesture this attempt's travel was heading toward when it died, for
@@ -415,3 +452,4 @@ func _reset_state(state: Dictionary) -> void:
     state["smoothed_contact_position"] = 0.5
     state["peak_semantic_delta"] = 0.0
     state["bad_frames"] = 0
+    state["reanchored"] = false

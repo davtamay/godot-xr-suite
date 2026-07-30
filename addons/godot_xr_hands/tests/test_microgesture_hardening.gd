@@ -24,6 +24,8 @@ func _init() -> void:
     _test_quality_and_discontinuity_aborts_carry_reasons(failures)
     _test_success_emits_no_rejection(failures)
     _test_supported_gestures_are_honest(failures)
+    _test_swipe_after_a_long_rest_commits(failures)
+    _test_lifting_a_rested_thumb_is_neither_tap_nor_rejection(failures)
 
     if failures.is_empty():
         print("XR microgesture hardening: PASS")
@@ -321,17 +323,21 @@ func _test_tap_too_quick_rejects(failures: Array[String]) -> void:
 ## The two mid-track aborts need DIFFERENT user corrections ("keep your hand
 ## curled" vs "don't linger"), so they must carry distinct reasons.
 func _test_too_slow_and_posture_lost_are_distinct(failures: Array[String]) -> void:
+    # TOO_SLOW needs travel IN FLIGHT: swipe partway (0.15 -- past the swipe
+    # floor, under the early-commit bar) and then stall without releasing.
+    # A STILL thumb deliberately no longer times out at all -- that is the
+    # rest re-anchor, tested separately below.
     var slow_perf: Array = []
     var slow_rej: Array = []
     var slow := _recognizer_with_rejections(slow_perf, slow_rej)
     var t := 1_000_000
     slow.process_features(1, _features(t, 0.2, 0.50))
     for i in range(1, 64):  # 63 further frames = ~0.875s > maximum_duration 0.85
-        slow.process_features(1, _features(t + i * DT72_USEC, 0.2, 0.50))
+        slow.process_features(1, _features(t + i * DT72_USEC, 0.2, 0.65))
     if slow_rej != [XRMicrogestureSource.RejectReason.TOO_SLOW]:
-        failures.append("a contact outliving maximum_duration must emit exactly one TOO_SLOW, got %s" % [slow_rej])
+        failures.append("a stalled swipe outliving maximum_duration must emit exactly one TOO_SLOW, got %s" % [slow_rej])
     if not slow_perf.is_empty():
-        failures.append("a lingering contact must not emit a gesture, got %s" % [slow_perf])
+        failures.append("a stalled swipe must not emit a gesture, got %s" % [slow_perf])
     slow.free()
 
     var posture_perf: Array = []
@@ -403,6 +409,50 @@ func _test_success_emits_no_rejection(failures: Array[String]) -> void:
     if not tap_rej.is_empty():
         failures.append("a successful TAP must not also emit a rejection, got %s" % [tap_rej])
     tap.free()
+
+
+## THE left-swipe fix, measured from David's session telemetry: every LEFT
+## miss was TOO_SLOW, because maximum_duration ran from CONTACT start and a
+## thumb resting past it armed a trap -- the eventual swipe was eaten until
+## release. Resting is the canonical microgesture posture; the window must
+## bound the SWIPE. Rest ~1.4s (well past the 0.85s ceiling), then swipe:
+## the swipe must commit, and the rest itself must produce no rejection.
+func _test_swipe_after_a_long_rest_commits(failures: Array[String]) -> void:
+    var performed: Array = []
+    var rejections: Array = []
+    var recognizer := _recognizer_with_rejections(performed, rejections)
+    var t := 1_000_000
+    recognizer.process_features(1, _features(t, 0.2, 0.50))
+    for i in range(1, 101):  # ~1.39s of resting contact, no travel
+        recognizer.process_features(1, _features(t + i * DT72_USEC, 0.2, 0.50))
+    recognizer.process_features(1, _features(t + 101 * DT72_USEC, 0.2, 0.80))
+    recognizer.process_features(1, _features(t + 102 * DT72_USEC, 0.2, 0.80))
+    recognizer.process_features(1, _features(t + 103 * DT72_USEC, 0.8, 0.80))
+    if performed != [XRMicrogestureSource.Gesture.LEFT]:
+        failures.append("a swipe after a long rest must commit (the window bounds the SWIPE, not the rest), got %s" % [performed])
+    if not rejections.is_empty():
+        failures.append("resting is not an attempt and must emit no rejection, got %s" % [rejections])
+    recognizer.free()
+
+
+## The guard the re-anchor needs: a lift after a long rest is NOT a quick
+## touch, so it must not fire the TAP that arms/commits teleport -- and it is
+## not a failed attempt either, so it must not emit a rejection. This is the
+## one silence that is correct.
+func _test_lifting_a_rested_thumb_is_neither_tap_nor_rejection(failures: Array[String]) -> void:
+    var performed: Array = []
+    var rejections: Array = []
+    var recognizer := _recognizer_with_rejections(performed, rejections)
+    var t := 1_000_000
+    recognizer.process_features(1, _features(t, 0.2, 0.50))
+    for i in range(1, 101):
+        recognizer.process_features(1, _features(t + i * DT72_USEC, 0.2, 0.50))
+    recognizer.process_features(1, _features(t + 101 * DT72_USEC, 0.8, 0.50))
+    if not performed.is_empty():
+        failures.append("lifting a rested thumb must not be read as a gesture (phantom TAP arms teleport), got %s" % [performed])
+    if not rejections.is_empty():
+        failures.append("lifting a rested thumb is not a failed attempt and must stay silent, got %s" % [rejections])
+    recognizer.free()
 
 
 ## Capability honesty: the portable recognizer must not claim the
