@@ -29,6 +29,7 @@ func _init() -> void:
     _test_out_of_zone_contact_is_reported_once_per_episode(failures)
     _test_high_rest_start_arms_and_commits(failures)
     _test_hover_sweep_reports_contact_too_light(failures)
+    _test_approach_hover_does_not_haunt_a_successful_gesture(failures)
     _test_bad_posture_contact_reports_posture_not_ready(failures)
 
     if failures.is_empty():
@@ -555,6 +556,36 @@ func _test_hover_sweep_reports_contact_too_light(failures: Array[String]) -> voi
     if not still_rej.is_empty():
         failures.append("a motionless hover must stay silent, got %s" % [still_rej])
     still.free()
+
+
+## The approach to a real gesture passes through the hover band on the way
+## in. That travel is SPENT once the gesture arms: without the reset in
+## _start_tracking, it survived the whole gesture and fired a phantom
+## CONTACT_TOO_LIGHT at the release of a SUCCESSFUL swipe -- complaining
+## about the very gesture that just worked.
+func _test_approach_hover_does_not_haunt_a_successful_gesture(failures: Array[String]) -> void:
+    var performed: Array = []
+    var rejections: Array = []
+    var recognizer := _recognizer_with_rejections(performed, rejections)
+    var t := 1_000_000
+    # Approach: sweep THROUGH the hover band (side 0.43) with a swipe's worth
+    # of travel...
+    recognizer.process_features(1, _features(t, 0.43, 0.80))
+    recognizer.process_features(1, _features(t + DT72_USEC, 0.43, 0.50))
+    # ...then press in, swipe, and release: a clean successful gesture.
+    recognizer.process_features(1, _features(t + 2 * DT72_USEC, 0.2, 0.50))
+    recognizer.process_features(1, _features(t + 3 * DT72_USEC, 0.2, 0.80))
+    recognizer.process_features(1, _features(t + 4 * DT72_USEC, 0.8, 0.80))
+    # ...and stay released past the cooldown, back into READY: the phantom
+    # fired there, on the first open-hand frame after the cooldown expired --
+    # a fixture that stops at the commit never reaches it and proves nothing.
+    for i in range(5, 25):
+        recognizer.process_features(1, _features(t + i * DT72_USEC, 0.8, 0.80))
+    if performed != [XRMicrogestureSource.Gesture.LEFT]:
+        failures.append("fixture broken: the pressed swipe must commit, got %s" % [performed])
+    if not rejections.is_empty():
+        failures.append("approach-hover travel must be spent once the gesture arms -- a successful swipe must not be haunted by a CONTACT_TOO_LIGHT after its release, got %s" % [rejections])
+    recognizer.free()
 
 
 ## The other formerly-silent arming gate: contact made but posture below the

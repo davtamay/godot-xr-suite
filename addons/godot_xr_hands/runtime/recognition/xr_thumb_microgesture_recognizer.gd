@@ -44,7 +44,19 @@ signal microgesture_performed(direction: Direction, hand: int, confidence: float
 ## once the observed range is wide enough to be a real open/closed excursion --
 ## so a rig that works today keeps working, and an unknown rig converges instead
 ## of failing.
-@export var adaptive_contact := true
+## OFF as of 2026-07-30, measured live: the envelope floated the contact
+## gate to 0.81 (left hand) and 0.65 (right) MID-SESSION, at which point
+## ordinary hovering armed constantly, taps fired from grazes, and the user
+## reported "way worse, left and right both unreliable". The flaw is in what
+## it samples: posture gates on finger CURLS, so a curled hand with a lifted
+## thumb feeds OPEN-AIR distances into the ring, and the quantiles drift the
+## gate toward hover space as a session progresses -- a NONSTATIONARY gate,
+## which on device reads as "sometimes works, sometimes doesn't". The
+## machinery stays for the tier-3 redesign (it must sample the PRESS mode,
+## not everything in posture); until that exists, a stationary authored gate
+## is the baseline that works. Per the suite's standing rollback rule:
+## working code is not discarded for purity -- and not kept for it either.
+@export var adaptive_contact := false
 ## Where the contact gate sits within the observed open..closed range.
 @export_range(0.05, 0.9, 0.01) var contact_fraction := 0.35
 ## Extra fraction of the range before release, so contact does not chatter.
@@ -374,6 +386,11 @@ func _start_tracking(state: Dictionary, features: XRHandFeatures) -> void:
     state["smoothed_contact_position"] = features.thumb_index_contact_position
     state["peak_semantic_delta"] = 0.0
     state["reanchored"] = false
+    # The approach hover is spent: without this reset, hover travel
+    # accumulated on the way IN to a successful gesture survived the gesture
+    # and fired a phantom CONTACT_TOO_LIGHT at the eventual release.
+    state["hover_low"] = INF
+    state["hover_high"] = -INF
 
 ## Slides the gesture window to NOW: the thumb has been resting (no travel
 ## beyond tap noise), so the time already spent is rest, not gesture. Start

@@ -20,7 +20,20 @@ const ANDROID_XR_CLOSED := 0.42
 
 var _failures: Array[String] = []
 
+## Mechanism tests opt IN to adaptation explicitly. The shipped default is
+## OFF -- measured live 2026-07-30, the envelope floated the contact gate to
+## 0.81/0.65 mid-session because its sampling admits in-posture HOVER, not
+## just press, and the drifting gate read as "sometimes works, sometimes
+## doesn't". These tests exercise the machinery for the tier-3 redesign;
+## _test_adaptive_ships_disabled pins the default so turning it back on is a
+## deliberate act with on-device evidence, not an inheritance accident.
+func _adaptive_recognizer():
+    var rec = Recognizer.new()
+    rec.adaptive_contact = true
+    return rec
+
 func _init() -> void:
+    _test_adaptive_ships_disabled(_failures)
     _test_cold_start_is_unchanged(_failures)
     _test_meta_range_still_detects(_failures)
     _test_android_xr_range_detects_where_fixed_gate_fails(_failures)
@@ -40,6 +53,17 @@ func _init() -> void:
     print("XR adaptive contact: FAIL (%d)" % _failures.size())
     quit(1)
 
+## The envelope SHIPS OFF. It floated the contact gate to 0.81 (left hand)
+## and 0.65 (right) mid-session on device, arming on ordinary hover and
+## firing taps from grazes -- a nonstationary gate that made BOTH directions
+## unreliable. Its sampling must learn the PRESS mode, not everything in
+## posture, before it earns the default back.
+func _test_adaptive_ships_disabled(failures: Array[String]) -> void:
+    var rec = Recognizer.new()
+    if rec.adaptive_contact:
+        failures.append("adaptive_contact must ship DISABLED until its sampling distinguishes press from hover -- it drifted the gate to 0.81 mid-session on device and broke both directions")
+    rec.free()
+
 ## Drives one open/close cycle repeatedly, the way a wearer flexing the thumb
 ## against the index would, so the envelope sees both extremes.
 func _train(rec, hand: int, closed: float, open_value: float, cycles: int) -> void:
@@ -52,7 +76,7 @@ func _train(rec, hand: int, closed: float, open_value: float, cycles: int) -> vo
 func _test_cold_start_is_unchanged(failures: Array[String]) -> void:
     # A rig that works today must not change behaviour before any evidence
     # arrives -- the authored values are on-device-tuned and are the baseline.
-    var rec = Recognizer.new()
+    var rec = _adaptive_recognizer()
     if not is_equal_approx(rec.effective_contact_threshold(0), rec.contact_threshold):
         failures.append("cold_start: contact should be the authored %s, got %s" % [
             rec.contact_threshold, rec.effective_contact_threshold(0)])
@@ -65,7 +89,7 @@ func _test_cold_start_is_unchanged(failures: Array[String]) -> void:
 
 func _test_meta_range_still_detects(failures: Array[String]) -> void:
     # The runtime that already works must keep working after adaptation kicks in.
-    var rec = Recognizer.new()
+    var rec = _adaptive_recognizer()
     _train(rec, 0, META_CLOSED, META_OPEN, 40)
     var contact: float = rec.effective_contact_threshold(0)
     if not (META_CLOSED < contact and contact < META_OPEN):
@@ -80,7 +104,7 @@ func _test_meta_range_still_detects(failures: Array[String]) -> void:
 func _test_android_xr_range_detects_where_fixed_gate_fails(failures: Array[String]) -> void:
     # THE BUG. With the fixed 0.40 gate, a genuine Android XR pinch at 0.42
     # reads as "not touching", which on device was "snap does not work at all".
-    var rec = Recognizer.new()
+    var rec = _adaptive_recognizer()
     if ANDROID_XR_CLOSED <= rec.contact_threshold:
         failures.append("fixture: android closed %s must exceed the fixed gate %s, else this test proves nothing" % [
             ANDROID_XR_CLOSED, rec.contact_threshold])
@@ -98,7 +122,7 @@ func _test_still_hand_does_not_adapt(failures: Array[String]) -> void:
     # The degenerate case that makes naive auto-gain dangerous: a hand held
     # still produces a narrow noise band, and normalizing THAT would place the
     # gate inside the noise and fire the gesture continuously.
-    var rec = Recognizer.new()
+    var rec = _adaptive_recognizer()
     for i in range(400):
         rec.observe_contact_distance(0, 0.55 + (0.01 if i % 2 == 0 else -0.01), FRAME)
     if rec.contact_span(0) >= 0.0:
@@ -114,7 +138,7 @@ func _test_still_hand_does_not_adapt(failures: Array[String]) -> void:
 func _test_release_never_inverts(failures: Array[String]) -> void:
     # Release below contact would latch the recognizer: it would enter contact
     # and never see a release, killing every subsequent gesture.
-    var rec = Recognizer.new()
+    var rec = _adaptive_recognizer()
     for pair in [[META_CLOSED, META_OPEN], [ANDROID_XR_CLOSED, ANDROID_XR_OPEN], [0.30, 0.62]]:
         _train(rec, 1, pair[0], pair[1], 40)
         if rec.effective_release_threshold(1) <= rec.effective_contact_threshold(1):
@@ -125,7 +149,7 @@ func _test_release_never_inverts(failures: Array[String]) -> void:
 func _test_hands_calibrate_independently(failures: Array[String]) -> void:
     # Left and right are tracked separately by the runtime and can differ; one
     # shared envelope would let a well-seen hand mis-calibrate the other.
-    var rec = Recognizer.new()
+    var rec = _adaptive_recognizer()
     _train(rec, 0, META_CLOSED, META_OPEN, 40)
     _train(rec, 1, ANDROID_XR_CLOSED, ANDROID_XR_OPEN, 40)
     var left: float = rec.effective_contact_threshold(0)
@@ -144,7 +168,7 @@ func _test_occlusion_spikes_do_not_corrupt(failures: Array[String]) -> void:
     # reading spikes to 1.4-1.9 palm widths for a few frames. A min/max envelope
     # latched onto those and floated the gate to ~0.84, which fires on a hand
     # that is nowhere near contact. Percentiles must ignore them.
-    var rec = Recognizer.new()
+    var rec = _adaptive_recognizer()
     for i in range(60):
         for _f in range(6):
             rec.observe_contact_distance(0, ANDROID_XR_OPEN, FRAME)
@@ -168,7 +192,7 @@ func _test_endpoint_frames_are_not_calibration(failures: Array[String]) -> void:
     # thumb_index_contact_position pinned at 0 or 1 means the closest point is
     # an ENDPOINT: the thumb is off the end of the finger, so the distance is to
     # a corner and is unbounded. Those frames must not reach the envelope.
-    var rec = Recognizer.new()
+    var rec = _adaptive_recognizer()
     var features := XRHandFeatures.new()
     features.valid = true
     features.thumb_index_contact_position = 1.0
@@ -186,7 +210,7 @@ func _test_too_few_samples_is_not_evidence(failures: Array[String]) -> void:
     # A handful of samples can span a wide range by luck. Acting on that would
     # calibrate the gate off two frames of noise, so the authored value must
     # stay in force until there is enough evidence.
-    var rec = Recognizer.new()
+    var rec = _adaptive_recognizer()
     var few: int = rec.minimum_samples - 10
     for i in range(few):
         rec.observe_contact_distance(0, 0.10 if i % 2 == 0 else 1.90, FRAME)
@@ -201,7 +225,7 @@ func _test_reconverges_when_the_rig_changes(failures: Array[String]) -> void:
     # calibration is frozen forever -- so swapping headsets, or handing the
     # device to someone with different hands, would keep the old gate for the
     # rest of the session.
-    var rec = Recognizer.new()
+    var rec = _adaptive_recognizer()
     _train(rec, 0, META_CLOSED, META_OPEN, 60)
     var before: float = rec.effective_contact_threshold(0)
     # Now feed a thoroughly different rig for well over one ring length.
