@@ -38,6 +38,13 @@ handful of floats. Nothing below adds an allocation or a per-joint loop. The
 
 ## Tier 1 — correctness fixes. No feel change intended; testable headless.
 
+**EARNED IN 2026-07-29, Quest over Link.** The bar was "you can't tell the
+difference" and the verdict was exactly that: *"same as before."* Shipped at
+`80c1daf`. The user's overall read — *"not 100% reliable"* — is the expected
+state after this tier: tier 1 removed ways the recognizer LIES (phantom swipes,
+dead cooldowns, rate-dependent thresholds); the remaining misses live in the
+silent dead band and the fixed posture gate, which are tiers 2 and 3.
+
 ### 1a. Frame-rate-independent smoothing
 
 `_update_tracking` smooths contact position with
