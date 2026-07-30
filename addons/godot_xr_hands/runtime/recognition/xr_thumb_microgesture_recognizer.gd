@@ -245,6 +245,22 @@ func process_features(p_hand: int, features: XRHandFeatures) -> void:
         Phase.READY:
             if float(state["cooldown_left"]) <= 0.0 and posture_score >= 0.999 and _can_start(features, p_hand):
                 _start_tracking(state, features)
+            elif float(state["cooldown_left"]) <= 0.0 and posture_score >= 0.999 \
+                    and features.thumb_index_side_distance <= effective_contact_threshold(p_hand) \
+                    and not bool(state.get("zone_blocked", false)):
+                # Contact made, posture good, cooldown clear -- the ONE gate
+                # refusing to arm is the start zone. Before this emission the
+                # attempt produced nothing at all, which is how "swiping left
+                # is not very reliable" coexisted with clean-looking counters:
+                # a thumb resting near the fingertip starts LEFT swipes above
+                # start_zone_maximum and they died in silence. Latched per
+                # contact episode (cleared on release below), because emitting
+                # per frame would fire dozens of times per touch.
+                state["zone_blocked"] = true
+                gesture_rejected.emit(p_hand, RejectReason.OUT_OF_START_ZONE, -1)
+            if bool(state.get("zone_blocked", false)) \
+                    and features.thumb_index_side_distance >= effective_release_threshold(p_hand):
+                state["zone_blocked"] = false
         Phase.TRACKING:
             state["elapsed"] = float(state["elapsed"]) + delta
             # Split so the rejection can carry the SPECIFIC cause -- "hand
@@ -426,6 +442,7 @@ func _new_state() -> Dictionary:
         "peak_semantic_delta": 0.0,
         "bad_frames": 0,
         "reanchored": false,
+        "zone_blocked": false,
     }
 
 ## The Gesture this attempt's travel was heading toward when it died, for
@@ -453,3 +470,4 @@ func _reset_state(state: Dictionary) -> void:
     state["peak_semantic_delta"] = 0.0
     state["bad_frames"] = 0
     state["reanchored"] = false
+    state["zone_blocked"] = false

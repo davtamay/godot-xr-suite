@@ -20,7 +20,13 @@ enum Gesture { LEFT, RIGHT, FORWARD, BACKWARD, TAP }
 ## quality floor past the grace window. DISCONTINUITY: a tracking
 ## reacquisition landed mid-gesture, so the accumulated motion is
 ## unattributable.
-enum RejectReason { SWIPE_TOO_SHORT, TAP_TOO_QUICK, TOO_SLOW, POSTURE_LOST, LOW_QUALITY, DISCONTINUITY }
+## OUT_OF_START_ZONE closes tier 2's own blind spot, found on device: a
+## contact with good posture whose START position sits outside the arming
+## zone never arms, and produced NO event at all -- the user's "swiping left
+## is not very reliable" while the counters showed 19 LEFT successes and 2
+## rejections was exactly this, invisible. Emitted once per contact episode,
+## not per frame.
+enum RejectReason { SWIPE_TOO_SHORT, TAP_TOO_QUICK, TOO_SLOW, POSTURE_LOST, LOW_QUALITY, DISCONTINUITY, OUT_OF_START_ZONE }
 
 signal gesture_candidate(gesture: Gesture, hand: int, progress: float)
 signal gesture_performed(gesture: Gesture, hand: int, confidence: float)

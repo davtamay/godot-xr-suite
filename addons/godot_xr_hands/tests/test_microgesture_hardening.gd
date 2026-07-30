@@ -26,6 +26,7 @@ func _init() -> void:
     _test_supported_gestures_are_honest(failures)
     _test_swipe_after_a_long_rest_commits(failures)
     _test_lifting_a_rested_thumb_is_neither_tap_nor_rejection(failures)
+    _test_out_of_zone_contact_is_reported_once_per_episode(failures)
 
     if failures.is_empty():
         print("XR microgesture hardening: PASS")
@@ -453,6 +454,45 @@ func _test_lifting_a_rested_thumb_is_neither_tap_nor_rejection(failures: Array[S
     if not rejections.is_empty():
         failures.append("lifting a rested thumb is not a failed attempt and must stay silent, got %s" % [rejections])
     recognizer.free()
+
+
+## The blind spot behind "swiping left is not very reliable" with
+## clean-looking counters: a contact in good posture starting OUTSIDE the
+## arming zone (thumb resting near the fingertip, position > 0.88) never
+## armed and produced NOTHING. It must now emit OUT_OF_START_ZONE -- once per
+## contact episode, not per frame, and a new episode after release reports
+## again. An in-zone start must stay clean.
+func _test_out_of_zone_contact_is_reported_once_per_episode(failures: Array[String]) -> void:
+    var performed: Array = []
+    var rejections: Array = []
+    var recognizer := _recognizer_with_rejections(performed, rejections)
+    var t := 1_000_000
+    # Contact held for several frames at position 0.95 -- outside the zone.
+    for i in range(5):
+        recognizer.process_features(1, _features(t + i * DT72_USEC, 0.2, 0.95))
+    if rejections != [XRMicrogestureSource.RejectReason.OUT_OF_START_ZONE]:
+        failures.append("an out-of-zone contact must report OUT_OF_START_ZONE exactly ONCE per episode, got %s" % [rejections])
+    # Release, recontact out of zone: a NEW episode reports again.
+    recognizer.process_features(1, _features(t + 5 * DT72_USEC, 0.8, 0.95))
+    for i in range(6, 9):
+        recognizer.process_features(1, _features(t + i * DT72_USEC, 0.2, 0.05))
+    if rejections.size() != 2:
+        failures.append("a new out-of-zone contact episode after release must report again, got %s" % [rejections])
+    if not performed.is_empty():
+        failures.append("out-of-zone contacts must not arm anything, got %s" % [performed])
+    recognizer.free()
+
+    # An in-zone contact stays clean: no OUT_OF_START_ZONE noise on the path
+    # that arms normally.
+    var clean_perf: Array = []
+    var clean_rej: Array = []
+    var clean := _recognizer_with_rejections(clean_perf, clean_rej)
+    clean.process_features(1, _features(t, 0.2, 0.50))
+    clean.process_features(1, _features(t + DT72_USEC, 0.2, 0.80))
+    clean.process_features(1, _features(t + 2 * DT72_USEC, 0.8, 0.80))
+    if not clean_rej.is_empty():
+        failures.append("an in-zone start must not emit OUT_OF_START_ZONE, got %s" % [clean_rej])
+    clean.free()
 
 
 ## Capability honesty: the portable recognizer must not claim the
