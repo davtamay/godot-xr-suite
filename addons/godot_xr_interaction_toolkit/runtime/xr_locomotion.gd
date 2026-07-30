@@ -198,6 +198,20 @@ func begin_teleport_aim(hand: int) -> void:
 	_intent_time = 0.0
 
 
+## Keep-alive for an externally driven aim. The intent timeout exists to
+## bound an ABANDONED aim, but it cannot tell abandonment from patience: a
+## user holding the aiming posture for longer than the window lost the arc
+## mid-aim ("we maintain the gesture and we just lose the teleportation
+## arc", on device 2026-07-30). A driver that can POSITIVELY see the aiming
+## posture still held calls this each frame; the timeout then only reaps
+## aims whose posture has been gone or unknowable for the full window.
+## Deliberately requires the hand to match: a keep-alive must not extend an
+## aim that was handed off to the other hand in the meantime.
+func refresh_teleport_aim(hand: int) -> void:
+	if _intent_aim and _teleport_hand == hand:
+		_intent_time = 0.0
+
+
 ## Teleport to the current marker if valid (ends the aim either way).
 func commit_teleport(hand: int = -1) -> void:
 	if not _intent_aim or (hand >= 0 and hand != _teleport_hand):

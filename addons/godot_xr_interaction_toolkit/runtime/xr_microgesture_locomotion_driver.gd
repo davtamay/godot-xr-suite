@@ -275,6 +275,11 @@ func _process(delta: float) -> void:
 			release = float(_recognizer.get("tracking_gate_release"))
 		if score >= release:
 			_posture_gone[hand] = 0.0
+			# Positively held: keep the aim alive past the locomotion intent
+			# timeout, which otherwise reaps a patient, actively-held aim at
+			# 3 seconds exactly as if it were abandoned.
+			if _locomotion.has_method("refresh_teleport_aim"):
+				_locomotion.refresh_teleport_aim(hand)
 			continue
 		_posture_gone[hand] = float(_posture_gone.get(hand, 0.0)) + delta
 		if float(_posture_gone[hand]) >= aim_posture_release_grace:

@@ -42,6 +42,9 @@ class _LocomotionStub extends Node:
 	func is_aiming(_hand: int = -1) -> bool:
 		return aiming
 
+	func refresh_teleport_aim(hand: int) -> void:
+		calls.append("refresh:%d" % hand)
+
 
 ## First-frame runner: the snap-turn test needs in-tree nodes for global
 ## transforms, and root only enters the tree after SceneTree::initialize.
@@ -67,6 +70,7 @@ func _run_all() -> void:
 	_test_leaving_posture_cancels_gesture_aim(failures)
 	_test_posture_watchdog_never_touches_foreign_aim(failures)
 	_test_unknown_posture_holds_the_aim(failures)
+	_test_held_posture_outlives_the_intent_timeout(failures)
 
 	if failures.is_empty():
 		print("XR microgesture locomotion: PASS")
@@ -198,6 +202,52 @@ func _test_unknown_posture_holds_the_aim(failures: Array[String]) -> void:
 	driver._process(5.0)
 	if not stub.aiming:
 		failures.append("low-quality features must hold the aim -- quality loss is not posture exit")
+	driver.free()
+	stub.free()
+	runtime.free()
+	recognizer.free()
+
+
+## The intent timeout bounds ABANDONED aims, but it reaped patient ones: a
+## user holding the aiming fist past 3 seconds lost the arc mid-aim. While
+## the posture is positively held the driver refreshes the clock, so expiry
+## only reaps aims whose posture is gone or unknowable for the full window.
+func _test_held_posture_outlives_the_intent_timeout(failures: Array[String]) -> void:
+	# Locomotion level: refresh resets the clock; without it, the same aim dies.
+	var refreshed = XRLocomotionScript.new()
+	refreshed.begin_teleport_aim(0)
+	for i in range(8):
+		refreshed._intent_time += 0.5
+		refreshed.refresh_teleport_aim(0)
+	if refreshed._intent_time > 0.0 or not refreshed.is_aiming(0):
+		failures.append("refresh_teleport_aim must reset the intent clock for the aiming hand")
+	# The keep-alive must not extend a hand that is not aiming.
+	refreshed._intent_time = 1.0
+	refreshed.refresh_teleport_aim(1)
+	if refreshed._intent_time != 1.0:
+		failures.append("refresh for the WRONG hand must not touch the clock -- a keep-alive must not extend a handed-off aim")
+	refreshed.free()
+
+	# Driver level: a positively held posture emits the keep-alive each frame.
+	DriverScript.session_platform_override = -1
+	var driver = DriverScript.new()
+	var stub := _LocomotionStub.new()
+	driver._locomotion = stub
+	var runtime := _FeaturesStubRuntime.new()
+	driver._gesture_runtime = runtime
+	var recognizer: Node = (load("res://addons/godot_xr_hands/runtime/recognition/xr_thumb_microgesture_recognizer.gd") as GDScript).new()
+	driver._recognizer = recognizer
+	driver._on_gesture(4, 1, 1.0)
+	runtime.features[1] = _posture_features(0.8)
+	driver._process(0.1)
+	if not ("refresh:1" in stub.calls):
+		failures.append("a positively held posture must refresh the locomotion intent clock, got %s" % [stub.calls])
+	# Unknown posture must NOT refresh: the timeout is exactly what bounds it.
+	stub.calls.clear()
+	runtime.features.erase(1)
+	driver._process(0.1)
+	if "refresh:1" in stub.calls:
+		failures.append("an UNKNOWN posture must not refresh the clock -- the timeout is what bounds an unobservable aim")
 	driver.free()
 	stub.free()
 	runtime.free()
