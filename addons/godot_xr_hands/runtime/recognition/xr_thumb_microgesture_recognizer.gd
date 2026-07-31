@@ -229,6 +229,19 @@ func effective_release_threshold(p_hand: int) -> float:
 ## gesture aborts (no emit). Mirrors the confidence gate's reacquire_frames
 ## debounce: a tracking flicker is a few frames, a real loss is not.
 @export_range(0, 30, 1) var quality_grace_frames := 3
+## A PINCH is not a microgesture: thumb-tip-to-index-tip at or below this
+## vetoes arming outright. Found on device (2026-07-30): widening the start
+## zone to 0.98 for high thumb rests also let PINCH contacts (thumb near the
+## index tip) arm, and a pinch armed-and-released reads as a TAP -- which
+## toggles the teleport arc, felt as "switching from fist to pinching
+## doesn't remove the arc" because the pinch kept turning it back on. Meta
+## suppresses microgesture recognition during pinch for the same reason:
+## pinch is the higher-priority interaction, and the index-curl posture gate
+## cannot catch it (a pinching index curls partway, above the arming
+## minimum). Distances are palm-width-normalized; a true pinch reads well
+## under this, the microgesture rest (thumb on the index SIDE, tips apart)
+## well over it.
+@export_range(0.0, 1.0, 0.01) var pinch_veto_distance := 0.18
 
 var _runtime: XRGestureRuntime
 var _hands := {}
@@ -293,10 +306,16 @@ func process_features(p_hand: int, features: XRHandFeatures) -> void:
         Phase.READY:
             var side := features.thumb_index_side_distance
             var in_contact := side <= effective_contact_threshold(p_hand)
-            if float(state["cooldown_left"]) <= 0.0 and posture_score >= 0.999 and _can_start(features, p_hand):
+            # A pinching hand skips arming AND the near-miss reporters: a
+            # pinch is a deliberate act of a DIFFERENT interaction, not a
+            # failed microgesture attempt, so it must produce neither a
+            # gesture nor rejection noise. Episode-end bookkeeping below
+            # still runs, so a pinch also clears any stale latches.
+            var pinching := features.pinch_distance <= pinch_veto_distance
+            if not pinching and float(state["cooldown_left"]) <= 0.0 and posture_score >= 0.999 and _can_start(features, p_hand):
                 _start_tracking(state, features)
                 return
-            if float(state["cooldown_left"]) <= 0.0 and in_contact and posture_score >= 0.999 \
+            if not pinching and float(state["cooldown_left"]) <= 0.0 and in_contact and posture_score >= 0.999 \
                     and not bool(state.get("zone_blocked", false)):
                 # Contact made, posture good, cooldown clear -- the ONE gate
                 # refusing to arm is the start zone. Before this emission the
@@ -308,13 +327,13 @@ func process_features(p_hand: int, features: XRHandFeatures) -> void:
                 # per frame would fire dozens of times per touch.
                 state["zone_blocked"] = true
                 gesture_rejected.emit(p_hand, RejectReason.OUT_OF_START_ZONE, -1)
-            elif float(state["cooldown_left"]) <= 0.0 and in_contact and posture_score < 0.999 \
+            elif not pinching and float(state["cooldown_left"]) <= 0.0 and in_contact and posture_score < 0.999 \
                     and not bool(state.get("posture_blocked", false)):
                 # Contact made but the posture score flunks the (near-exact)
                 # arming bar. The other formerly-silent arming gate.
                 state["posture_blocked"] = true
                 gesture_rejected.emit(p_hand, RejectReason.POSTURE_NOT_READY, -1)
-            elif not in_contact and side <= effective_release_threshold(p_hand) and posture_score >= 0.999:
+            elif not pinching and not in_contact and side <= effective_release_threshold(p_hand) and posture_score >= 0.999:
                 # HOVERING just above the contact gate, in posture. Accumulate
                 # the lateral travel of the hover: a sweep's worth of motion
                 # that never pressed in is an attempt the contact gate ate --
@@ -324,14 +343,18 @@ func process_features(p_hand: int, features: XRHandFeatures) -> void:
                 # below, so a resting hover that never sweeps stays silent.
                 state["hover_low"] = minf(float(state.get("hover_low", INF)), features.thumb_index_contact_position)
                 state["hover_high"] = maxf(float(state.get("hover_high", -INF)), features.thumb_index_contact_position)
-            if side >= effective_release_threshold(p_hand):
-                # Episode over: the thumb left the surface region entirely.
+            if pinching or side >= effective_release_threshold(p_hand):
+                # Episode over: the thumb left the surface region entirely,
+                # or committed to a PINCH -- either way this contact episode
+                # is not a microgesture attempt any more.
                 state["zone_blocked"] = false
                 state["posture_blocked"] = false
                 var hover_range := float(state.get("hover_high", -INF)) - float(state.get("hover_low", INF))
                 state["hover_low"] = INF
                 state["hover_high"] = -INF
-                if hover_range >= minimum_index_travel and float(state["cooldown_left"]) <= 0.0:
+                # Not when the episode ended BY pinching: hover travel on the
+                # way into a pinch was a pinch approach, not a failed swipe.
+                if not pinching and hover_range >= minimum_index_travel and float(state["cooldown_left"]) <= 0.0:
                     gesture_rejected.emit(p_hand, RejectReason.CONTACT_TOO_LIGHT, -1)
         Phase.TRACKING:
             state["elapsed"] = float(state["elapsed"]) + delta

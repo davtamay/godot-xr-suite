@@ -33,6 +33,7 @@ func _init() -> void:
     _test_bad_posture_contact_reports_posture_not_ready(failures)
     _test_light_press_swipe_commits(failures)
     _test_gentle_swipe_commits_under_default_thresholds(failures)
+    _test_pinch_is_vetoed_entirely(failures)
 
     if failures.is_empty():
         print("XR microgesture hardening: PASS")
@@ -652,6 +653,49 @@ func _test_gentle_swipe_commits_under_default_thresholds(failures: Array[String]
     if rejections != [XRMicrogestureSource.RejectReason.SWIPE_TOO_SHORT]:
         failures.append("band travel must reject visibly as SWIPE_TOO_SHORT, got %s" % [rejections])
     recognizer.free()
+
+
+## A PINCH must be invisible to the recognizer: no gesture, no rejection
+## noise. Found on device: widening the start zone to 0.98 let pinch
+## contacts (thumb near the index tip) arm, and a pinch armed-and-released
+## read as TAP -- which toggles the teleport arc, felt as "switching from
+## fist to pinching doesn't remove the arc" because every pinch turned it
+## back on. The index-curl posture gate cannot catch this: a REALISTIC
+## pinching index curls partway (0.35 here), above the 0.16 arming minimum
+## -- the old fixture's 0.05 curl was optimistic, which is why this gap
+## survived. pinch_distance is the direct signal.
+func _test_pinch_is_vetoed_entirely(failures: Array[String]) -> void:
+    var performed: Array = []
+    var rejections: Array = []
+    var recognizer := _recognizer_with_rejections(performed, rejections)
+    var t := 1_000_000
+    # Realistic pinch: tips together (pinch_distance 0.10), thumb contact
+    # near the index tip but inside the widened zone, index curled partway.
+    for i in range(4):
+        var pinch := _features(t + i * DT72_USEC, 0.2, 0.95)
+        pinch.pinch_distance = 0.10
+        pinch.finger_curls[XRHandFeatures.Finger.INDEX] = 0.35
+        recognizer.process_features(1, pinch)
+    var release := _features(t + 4 * DT72_USEC, 0.8, 0.95)
+    release.pinch_distance = 0.5
+    recognizer.process_features(1, release)
+    if not performed.is_empty():
+        failures.append("a pinch must never read as a microgesture (a pinch-TAP toggles the teleport arc), got %s" % [performed])
+    if not rejections.is_empty():
+        failures.append("a pinch is a different interaction, not a failed attempt -- it must produce no rejection noise, got %s" % [rejections])
+    recognizer.free()
+
+    # The microgesture rest (tips APART, thumb on the index side) must be
+    # unaffected by the veto: same shape, pinch_distance well above the bar.
+    var rest_perf: Array = []
+    var rest_rej: Array = []
+    var rest := _recognizer_with_rejections(rest_perf, rest_rej)
+    rest.process_features(1, _features(t, 0.2, 0.50))
+    rest.process_features(1, _features(t + DT72_USEC, 0.2, 0.80))
+    rest.process_features(1, _features(t + 2 * DT72_USEC, 0.8, 0.80))
+    if rest_perf != [XRMicrogestureSource.Gesture.LEFT]:
+        failures.append("the veto must not touch the microgesture rest (tips apart), got %s" % [rest_perf])
+    rest.free()
 
 
 ## Capability honesty: the portable recognizer must not claim the
