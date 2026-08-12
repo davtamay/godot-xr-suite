@@ -46,6 +46,15 @@ const GROUP_SESSION_UI := "xr_session_ui"
 ## and restored on exit. Put screen-space UI (CanvasLayer HUDs) here:
 ## Godot composites the 2D canvas into each eye's view otherwise.
 @export var session_hide_group := GROUP_SESSION_HIDDEN
+## Fixed foveation level requested from the browser compositor for the
+## projection layer: 0.0 = off (full resolution everywhere), 1.0 = maximum
+## (lowest resolution at the periphery, best performance). Rendering the
+## periphery at reduced resolution is the single most effective perf lever on
+## standalone headsets and costs the engine nothing - the compositor does it.
+## Needs an engine build exposing WebXRInterface.set_fixed_foveation (the
+## WebGPU fork does); silently skipped on stock Godot templates and on
+## browsers without WebXR Layers fixed foveation.
+@export_range(0.0, 1.0, 0.01) var fixed_foveation := 1.0
 ## Snap the camera back to the design forward when a session ends. XR leaves
 ## the camera at your last head orientation, which on the flat page can face
 ## you away from the scene and its UI. Turn off for apps that deliberately
@@ -209,6 +218,8 @@ func _on_session_started() -> void:
         _active_session_mode = _webxr.session_mode
     _apply_ar_scene_mode(_active_session_mode == "immersive-ar")
     _apply_session_hidden(true)
+    if fixed_foveation > 0.0 and _webxr.has_method("set_fixed_foveation"):
+        _webxr.set_fixed_foveation(fixed_foveation)
     get_viewport().use_xr = true
     _set_status("%s session started. Reference space: %s. Enabled features: %s." % [_session_label(_active_session_mode), _webxr.reference_space_type, _webxr.enabled_features])
     session_started.emit(_active_session_mode)
