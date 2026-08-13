@@ -6,6 +6,7 @@ extends EditorExportPlugin
 ## When enabled, shader baking is implied and the web build selects WebGPU.
 
 const OPT := "webgpu/enabled"
+const FP16 := "webgpu/bake_fp16_variants"
 const STATUS := "webgpu/status"
 const SHADER_BAKER := "shader_baker/enabled"
 
@@ -30,6 +31,15 @@ func _get_export_options(platform: EditorExportPlatform) -> Array[Dictionary]:
 			"option": {"name": OPT, "type": TYPE_BOOL},
 			"default_value": false,
 			"update_visibility": true,
+		},
+		{
+			# Bake the half-precision (FP16) shader variants alongside FP32.
+			# Devices reporting shader-f16 (Quest, Galaxy XR, modern desktop
+			# GPUs) then run the faster half-float shaders; others fall back
+			# to FP32. Costs pck size (~+3.7 MB on the demo suite) - turn off
+			# for size-critical exports.
+			"option": {"name": FP16, "type": TYPE_BOOL},
+			"default_value": true,
 		},
 		{
 			"option": {
@@ -69,6 +79,8 @@ func _get_export_option_visibility(
 		return false
 	if option == STATUS:
 		return _is_on(OPT) and _base_ok()
+	if option == FP16:
+		return _is_on(OPT)
 	return true
 
 
@@ -108,6 +120,11 @@ func _export_begin(
 	ProjectSettings.set_setting("rendering/renderer/rendering_method.web", "mobile")
 	ProjectSettings.set_setting("rendering/rendering_device/driver.web", "webgpu")
 	ProjectSettings.set_setting("xr/shaders/enabled", false)
+	# Read by the engine's WebGPU shader baker (skips FP16 variant groups
+	# when false). Transient: set for this export only, defaults to true
+	# when absent so stock projects keep the perf-first behavior.
+	var bake_fp16: Variant = get_option(FP16)
+	ProjectSettings.set_setting("rendering/webgpu/bake_fp16_shader_variants", bake_fp16 == null or bool(bake_fp16))
 
 
 func _base_ok() -> bool:
