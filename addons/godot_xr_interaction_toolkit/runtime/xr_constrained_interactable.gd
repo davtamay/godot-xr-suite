@@ -79,17 +79,7 @@ func _physics_process(_delta: float) -> void:
 
 ## Track the physical HAND (ray/grip origin), not the reeled attach point.
 func _hand_world() -> Vector3:
-	if _grabber.has_method("get_ray_state"):
-		var ray: Dictionary = _grabber.get_ray_state()
-		if ray.get("valid", false) and ray.has("origin"):
-			return ray["origin"]
-	if _grabber.has_method("get_direct_state"):
-		var direct: Dictionary = _grabber.get_direct_state()
-		if direct.get("valid", false) and direct.has("origin"):
-			return direct["origin"]
-	if _grabber.has_method("get_attach_pose"):
-		return (_grabber.get_attach_pose() as Transform3D).origin
-	return (_grabber as Node3D).global_position
+	return XRBaseInteractor.hand_origin_of(_grabber)
 
 
 ## Signed angle (radians) from `from_vec` to `to_vec` measured around `axis`.

@@ -1,12 +1,11 @@
 class_name XRBaseInteractable
 extends Node3D
-
-const XRInteractionLayerMask := preload("res://addons/godot_xr_interaction_toolkit/runtime/xr_interaction_layers.gd")
-const XRInteractionManager := preload("res://addons/godot_xr_interaction_toolkit/runtime/xr_interaction_manager.gd")
-
 ## Base interactable: registers its colliders with the XRInteractionManager
 ## and tracks hover/select/activate state. Emits signals only; visual
 ## affordances are the consuming scene's responsibility.
+
+const XRInteractionLayerMask := preload("res://addons/godot_xr_interaction_toolkit/runtime/xr_interaction_layers.gd")
+const XRInteractionManager := preload("res://addons/godot_xr_interaction_toolkit/runtime/xr_interaction_manager.gd")
 
 enum ActivationMode {
 	DISABLED,

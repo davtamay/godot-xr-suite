@@ -1,7 +1,4 @@
 extends "res://addons/godot_xr_interaction_toolkit/runtime/input/xr_input_adapter.gd"
-
-const XRAimStabilizerScript := preload("res://addons/godot_xr_interaction_toolkit/runtime/input/xr_aim_stabilizer.gd")
-
 ## Shared base for controller + hand-tracking input adapters. This is the single
 ## source of truth for the platform-agnostic behavior: reading XRController3D aim
 ## poses, the XRHandTracker hand-ray + grip poses, synthesized bare-hand
@@ -9,6 +6,8 @@ const XRAimStabilizerScript := preload("res://addons/godot_xr_interaction_toolki
 ## machine. Platform subclasses add ONLY their select source - see
 ## WebXRInputAdapter (browser interface events) and OpenXRInputAdapter (action-map
 ## button signals). Both call _resolve_rig() from their _ready.
+
+const XRAimStabilizerScript := preload("res://addons/godot_xr_interaction_toolkit/runtime/input/xr_aim_stabilizer.gd")
 
 const XRHandGestureProvider := preload("res://addons/godot_xr_interaction_toolkit/runtime/input/xr_hand_gesture_provider.gd")
 const XRHandTrackerResolver := preload("res://addons/godot_xr_interaction_toolkit/runtime/input/xr_hand_tracker_resolver.gd")

@@ -1,12 +1,38 @@
 class_name XRBaseInteractor
 extends Node3D
+## Base interactor: wires an XRInputAdapter's select events to manager-arbitrated
+## selection and owns hover-transition bookkeeping. Subclasses compute what is
+## hovered and call _set_hovered().
 
 const XRInputAdapter := preload("res://addons/godot_xr_interaction_toolkit/runtime/input/xr_input_adapter.gd")
 const XRInteractionManager := preload("res://addons/godot_xr_interaction_toolkit/runtime/xr_interaction_manager.gd")
 
-## Base interactor: wires an XRInputAdapter's select events to manager-arbitrated
-## selection and owns hover-transition bookkeeping. Subclasses compute what is
-## hovered and call _set_hovered().
+
+## Where the hand driving an interactor is, in world space.
+##
+## Mechanisms (climb, dial, lever, drawer) follow the HAND, not the point the
+## ray happens to hit: reeling a far-grabbed object would otherwise move the
+## thing you are using while you use it. The ray's own origin is that hand,
+## which is why it is preferred over the attach pose.
+##
+## Static and interactor-typed so an interactable can ask about whichever
+## interactor grabbed it without knowing its concrete class.
+static func hand_origin_of(interactor: Node) -> Vector3:
+    if interactor == null:
+        return Vector3.ZERO
+    if interactor.has_method(&"get_ray_state"):
+        var ray: Dictionary = interactor.get_ray_state()
+        if ray.get("valid", false) and ray.has("origin"):
+            return ray["origin"]
+    if interactor.has_method(&"get_direct_state"):
+        var direct: Dictionary = interactor.get_direct_state()
+        if direct.get("valid", false) and direct.has("origin"):
+            return direct["origin"]
+    if interactor.has_method(&"get_attach_pose"):
+        return (interactor.get_attach_pose() as Transform3D).origin
+    if interactor is Node3D:
+        return (interactor as Node3D).global_position
+    return Vector3.ZERO
 
 signal hover_entered(interactable)
 signal hover_exited(interactable)
