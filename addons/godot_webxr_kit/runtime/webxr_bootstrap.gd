@@ -60,6 +60,11 @@ const GROUP_SESSION_UI := "xr_session_ui"
 ## you away from the scene and its UI. Turn off for apps that deliberately
 ## want to keep the last look direction.
 @export var reset_view_on_exit := true
+## Ask the browser to surface its own native "enter XR" prompt for this mode
+## at page load ("" = off). Needs an engine whose WebXRInterface has
+## offer_session() (the fork); silently skipped elsewhere, and the page
+## buttons keep working everywhere as the fallback.
+@export var offer_session_mode := ""
 
 ## Preloaded so the shader baker can precompile it for web/WebGPU exports.
 const HIGHLIGHT_MATERIAL := preload("res://addons/godot_webxr_kit/runtime/highlight_material.tres")
@@ -164,6 +169,7 @@ func _ready() -> void:
     _set_status("Checking WebXR VR/AR support...")
     _webxr.is_session_supported("immersive-vr")
     _webxr.is_session_supported("immersive-ar")
+    _maybe_offer_session()
 
 func _on_session_supported(session_mode: String, supported: bool) -> void:
     match session_mode:
@@ -210,6 +216,25 @@ func _start_xr_session(session_mode: String) -> void:
     if not _webxr.initialize():
         _requested_session_mode = ""
         _set_status("WebXR initialize() returned false. Session was not requested.")
+
+func _maybe_offer_session() -> void:
+    if offer_session_mode.is_empty() or _webxr == null:
+        return
+    if not _webxr.has_method("offer_session") or not _webxr.has_signal("session_offer_accepted"):
+        return
+    _webxr.connect("session_offer_accepted", _on_session_offer_accepted)
+    _webxr.session_mode = offer_session_mode
+    _webxr.requested_reference_space_types = _reference_space_types_for(offer_session_mode)
+    _webxr.required_features = _required_features_for(offer_session_mode)
+    _webxr.optional_features = _optional_features_for(offer_session_mode)
+    _webxr.offer_session()
+
+
+func _on_session_offer_accepted() -> void:
+    # The browser already granted the session with the user's consent;
+    # initialize() consumes it, so the normal start path just works.
+    _start_xr_session(offer_session_mode)
+
 
 func _on_session_started() -> void:
     _last_session_failed = false
