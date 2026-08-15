@@ -1168,6 +1168,6 @@ func get_webxr_required_features(_session_mode: String) -> PackedStringArray:
 	return PackedStringArray()
 
 func get_webxr_optional_features(session_mode: String) -> PackedStringArray:
-	if session_mode == "immersive-ar":
-		return PackedStringArray(["depth-sensing"])
+	if session_mode == WebXRFeatures.MODE_AR:
+		return PackedStringArray([WebXRFeatures.DEPTH_SENSING])
 	return PackedStringArray()

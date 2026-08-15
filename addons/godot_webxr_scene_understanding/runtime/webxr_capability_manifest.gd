@@ -21,10 +21,10 @@ func get_webxr_optional_features(session_mode: String) -> PackedStringArray:
 	if session_mode != "immersive-ar":
 		return PackedStringArray()
 	return PackedStringArray([
-		"mesh-detection",
-		"plane-detection",
-		"depth-sensing",
-		"hit-test",
-		"anchors",
-		"light-estimation",
+		WebXRFeatures.MESH_DETECTION,
+		WebXRFeatures.PLANE_DETECTION,
+		WebXRFeatures.DEPTH_SENSING,
+		WebXRFeatures.HIT_TEST,
+		WebXRFeatures.ANCHORS,
+		WebXRFeatures.LIGHT_ESTIMATION,
 	])

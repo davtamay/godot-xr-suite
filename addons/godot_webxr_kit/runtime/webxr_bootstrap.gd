@@ -353,16 +353,16 @@ func _required_features_for(session_mode: String) -> String:
     # Re-add (conditionally) only if quad/cylinder layers are ever used.
     var features: Array[String] = []
     if require_hand_tracking:
-        features.append("hand-tracking")
+        features.append(WebXRFeatures.HAND_TRACKING)
     _merge_provider_features(features, &"get_webxr_required_features", session_mode)
     return ", ".join(features)
 
 func _optional_features_for(session_mode: String) -> String:
-    var features: Array[String] = ["local-floor"]
-    if session_mode == "immersive-vr":
-        features.append("bounded-floor")
+    var features: Array[String] = [WebXRFeatures.LOCAL_FLOOR]
+    if session_mode == WebXRFeatures.MODE_VR:
+        features.append(WebXRFeatures.BOUNDED_FLOOR)
     if not require_hand_tracking:
-        features.append("hand-tracking")
+        features.append(WebXRFeatures.HAND_TRACKING)
     # Feature-provider contract: nodes in the 'webxr_feature_provider' group
     # declare the session features they need (mesh bridge -> mesh-detection,
     # depth bridge/occluder -> depth-sensing), so a scene only requests what

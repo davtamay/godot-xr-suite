@@ -774,4 +774,4 @@ func get_webxr_required_features(_session_mode: String) -> PackedStringArray:
 func get_webxr_optional_features(_session_mode: String) -> PackedStringArray:
 	# plane-detection carries the semantic labels on platforms whose meshes
 	# are untagged (Quest); the geometry itself still comes from meshes.
-	return PackedStringArray(["mesh-detection", "plane-detection"])
+	return PackedStringArray([WebXRFeatures.MESH_DETECTION, WebXRFeatures.PLANE_DETECTION])

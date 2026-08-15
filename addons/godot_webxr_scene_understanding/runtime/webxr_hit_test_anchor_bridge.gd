@@ -555,8 +555,8 @@ func get_webxr_required_features(_session_mode: String) -> PackedStringArray:
 
 
 func get_webxr_optional_features(session_mode: String) -> PackedStringArray:
-	if session_mode == "immersive-ar":
-		return PackedStringArray(["hit-test", "anchors"])
+	if session_mode == WebXRFeatures.MODE_AR:
+		return PackedStringArray([WebXRFeatures.HIT_TEST, WebXRFeatures.ANCHORS])
 	return PackedStringArray()
 
 
