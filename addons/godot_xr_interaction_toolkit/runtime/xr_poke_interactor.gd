@@ -143,9 +143,8 @@ func _resolve_point(hand: int) -> Vector3:
 ## controller-emulated hands as CONTROLLER); without it, fall back to the
 ## tracker source.
 func _is_controller_modality(hand: int) -> bool:
-	var manager := get_tree().get_first_node_in_group("xr_input_modality_manager")
-	if manager and manager.has_method("get_modality"):
-		return int(manager.get_modality(hand)) == 1  # Modality.CONTROLLER
+	if XRModalityQuery.is_resolved(self, hand):
+		return XRModalityQuery.is_controller(self, hand)
 	var tracker := XRHandTrackerResolver.get_tracker(hand)
 	return tracker != null and tracker.has_tracking_data \
 			and tracker.hand_tracking_source == XRHandTracker.HAND_TRACKING_SOURCE_CONTROLLER

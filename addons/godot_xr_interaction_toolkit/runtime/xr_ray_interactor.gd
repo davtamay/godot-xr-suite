@@ -155,9 +155,7 @@ func _clamp_grab_distance(value: float) -> float:
 func _suppressed_by_hand_pose() -> bool:
     # Only ever gate a REAL bare hand: a controller, an undetected modality, or a
     # missing manager all keep the ray on (never let this hide a controller ray).
-    var manager := get_tree().get_first_node_in_group("xr_input_modality_manager")
-    if manager == null or not manager.has_method("get_modality") \
-            or int(manager.get_modality(hand)) != 2:  # 2 == HAND
+    if not XRModalityQuery.is_hand(self, hand):
         return false
     if _adapter == null or not _adapter.has_method("get_grip_pose"):
         return false

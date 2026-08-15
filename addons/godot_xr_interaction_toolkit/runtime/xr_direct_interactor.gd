@@ -102,9 +102,8 @@ func _get_grip_pose() -> Dictionary:
 func _grip_grab_active_for(target) -> bool:
     if target == null or not target.has_method("uses_grip_grab") or not target.uses_grip_grab():
         return false
-    var manager := get_tree().get_first_node_in_group("xr_input_modality_manager")
-    if manager and manager.has_method("get_modality"):
-        return int(manager.get_modality(hand)) != 1  # 1 == Modality.CONTROLLER
+    if XRModalityQuery.is_resolved(self, hand):
+        return not XRModalityQuery.is_controller(self, hand)
     return true
 
 func _update_grip_grab() -> void:
