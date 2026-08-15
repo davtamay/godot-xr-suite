@@ -5,16 +5,25 @@ interactables, a select-arbitration manager, and the **abstract** input-adapter
 seam that keeps WebXR/OpenXR specifics out of interaction logic. Pure GDScript —
 no engine builds, no export-template changes. Engine-agnostic: depends on nothing.
 
-Architecture: see `docs/xr_interaction_toolkit_architecture.md` in this repo.
+Architecture: see `docs/interaction-arbitration-design.md`, `docs/grab-feel-design.md`
+and `docs/poke-fidelity-design.md` in this repo.
 
 ## Companion packages
 
 This core ships only the abstract `XRInputAdapter`. Platform and presentation
 layers live in separate drop-in addons so you take only what you need:
 
-- **`godot_webxr_kit`** — WebXR support: the concrete `WebXRInputAdapter`, the
-  custom HTML shell, session bootstrap, capability probe, and AR depth preview.
-  Add this for browser/WebXR delivery. (Depends on this toolkit.)
+- **`godot_webxr_kit`** — the platform layer for BOTH backends: the concrete
+  `WebXRInputAdapter` and `OpenXRInputAdapter`, session bootstraps for browser
+  and native OpenXR, the XR rig and one-drop prefab, the desktop simulator,
+  input-modality management, and the web shell. (Depends on this toolkit.)
+- **`godot_xr_scene_understanding`** — runtime-neutral AR perception: room mesh
+  and depth occlusion, with providers per platform.
+- **`godot_webxr_scene_understanding`** — the browser half of perception:
+  mesh/depth/light-estimation/hit-test bridges, plus a synthetic room for
+  desktop debugging.
+- **`godot_webgpu`** — WebGPU export tooling (preset toggle, bake anchors).
+- **`godot_universal_xr_apk`** — one APK across Quest, Pico and Android XR.
 - **`godot_xr_hands`** — a procedural `XRHandTracker` hand visualizer. Add this
   for a hand visual. (Depends on this toolkit; optionally uses `godot_webxr_kit`'s
   hand bridge if present.)
@@ -54,10 +63,9 @@ The `WebXRInputAdapter` referenced in the WebXR quick start below is provided by
    `select_exited`, `activate_entered`, and `activate_exited` on interactors
    or interactables. Interactables also emit XRITK-style `activated` and
    `deactivated` aliases. The toolkit never changes your materials.
-4. Session lifecycle, including requesting the WebXR session and setting
-   `viewport.use_xr`, stays in your project. See
-   `demo/scripts/webxr_bootstrap.gd` for a working example that requests
-   optional `hand-tracking` and required `layers`.
+4. Session lifecycle, including requesting the XR session and setting
+   `viewport.use_xr`, is handled by `godot_webxr_kit` (its `WebXRBootstrap`
+   and `OpenXRBootstrap` blocks), or by your own project code.
 
 Interaction layers: `interaction_layers` bitmasks on interactor and interactable
 must share a bit (default: both `1`). They are independent of physics layers;
@@ -119,6 +127,10 @@ Near/direct grab is unaffected by all of this.
   from close. The predictable option, for placing and arranging.
 - **REEL** — hand motion along the ray winds it in and out. The previous
   default, now opt-in.
+- **TWIST** — wrist roll sets the distance: how far you have rolled from the
+  roll captured at grab maps absolutely to a position along the ray, so the
+  object returns to where it started when your wrist does. Distance and aim
+  stay separate inputs, which is what makes it steady at long range.
 
 `XRRayInteractor`'s distance exports (`distance_motion_scale`,
 `max_distance_change_per_second`, `reel_to_grip_distance`) are **limits that

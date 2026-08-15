@@ -17,15 +17,47 @@ and robust `XRHandTracker` resolver. Runtime gesture logic does **not** require
 addons/godot_xr_hands/
   plugin.cfg / plugin.gd
   runtime/
-    hand_visualizer.gd                 # presentation only
-    features/                           # palm-local normalized features
-    gestures/                           # Resource definitions and conditions
-    recognition/                       # canonical events + lifecycle/scheduler
-  presets/                             # pinch, fist, point, open-palm assets
+    gesture_studio/                    # record, recognize, preview (see below)
+      xr_gesture_recognizer.gd         # gestures as data, per-hand signals
+      xr_gesture_recorder.gd           # hold a pose -> a .tres gesture
+      xr_gesture_ghost_hand.gd         # preview/mimic display
+      xr_gesture_debug_panel.gd        # live tuning HUD
+      xr_hand_gesture.gd               # the gesture Resource
+      xr_hand_sequence.gd              # staged motion gestures (authoring only)
+      presets/                         # fist, point, open palm, thumbs up, ...
+    hand_visualizer.gd                 # procedural joints, presentation only
+    xr_hand_mesh_visualizer.gd         # rigged hand meshes driven by tracking
+    xr_hand_pose_math.gd               # shared pose/curl math
+    features/                          # palm-local normalized features (legacy)
+    gestures/                          # Resource definitions (legacy)
+    recognition/                       # canonical events + thumb microgestures
+    binding/                           # teleport trajectory helper
+  models/                              # MIT-licensed rigged hand meshes
+  presets/                             # legacy gesture definitions
   samples/gesture_diagnostics_demo.tscn
+  samples/gesture_playground_demo.tscn  # the Gesture Studio scene
   samples/microgesture_locomotion_demo.tscn
-  tests/test_gesture_foundation.gd
+  tests/                               # 4 headless suites
 ```
+
+## Gesture Studio
+
+The authoring pipeline, in `runtime/gesture_studio/`:
+
+- **`XRGestureRecognizer`** — gestures are data (`XRHandGesture` resources).
+  Drop it in, point it at gesture files, get per-hand start/end signals with
+  hysteresis and hold timing built in. `show_debug` opens a live tuning HUD.
+- **`XRGestureRecorder`** — hold a pose and it writes a gesture: targets from
+  your recorded means, tolerances from your own jitter. Records both hands.
+- **`XRGestureGhostHand`** — shows the pose being recorded or previewed,
+  mirrored for the other hand.
+- **`XRHandGesture`** — the resource: named normalized features with targets
+  and tolerances, a strictness scale, plus a joint snapshot used for preview.
+
+Where recordings are saved depends on the platform: native and Link runs write
+real `.tres` files you can commit, while a browser writes to that browser's
+site storage, which is cleared with its site data. Record on native for
+gestures you intend to keep.
 
 ## Gesture pipeline
 
@@ -122,6 +154,10 @@ does not restart their activation timer.
 
 The current slice proves static feature conditions, confidence scoring,
 hysteresis, activation/release timing, cooldown, lifecycle signals, and a
-zero-allocation-per-frame palm-local thumb microgesture state machine. Longer
-motion history, compound condition trees, gesture compilation, native runtime
-microgesture event adapters, and recording/replay remain next-stage additions.
+zero-allocation-per-frame palm-local thumb microgesture state machine.
+Recording and replay have since shipped (Gesture Studio above, and the
+toolkit's hand-trace tooling), as have native runtime microgesture event
+adapters (`recognition/xr_native_microgesture_source.gd`). Longer motion
+history, compound condition trees, and gesture compilation remain next-stage
+additions; `XRHandSequence` defines the staged-motion format but no shipped
+scene assigns sequences to a recognizer yet.

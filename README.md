@@ -77,9 +77,9 @@ override the fallback metadata. Incremental adoption is therefore:
 
 Project Validator resumes configuration when all requirements are available.
 
-The test suite enforces parity between installed manifests and the fallback
-catalog so the missing-package view cannot silently drift. Both are authoring
-metadata and are excluded from Web and APK runtime packages.
+Both are authoring metadata and are excluded from Web and APK runtime
+packages. Note that nothing yet checks the fallback catalog against the
+installed manifests, so a package added without updating both can drift.
 
 Keeping all suite addons in the Godot project is supported and is the easiest
 team workflow. “Installed” does not mean “shipped”: the neutral XR Suite
@@ -165,6 +165,7 @@ finds the rig by itself (NodePath exports are overrides, not setup).
 | **Climb Provider + Climb Interactable** | Climbing (Unity's Climb Provider): grab a handhold and moving your hand moves the rig the opposite way — pull down to rise, hand over hand. Handholds self-wire to the provider. |
 | **Poke Interactor** (self-wiring, rig-default) | Fingertip touch: press panels, **drag sliders by touch**, push 3D buttons. Controller tips poke too. |
 | **Poke Button (3D)** | A physical push-button that visibly depresses and fires with hysteresis. |
+| **Pokeable** | Makes any object touch-sensitive: drop it in, set the face and press depth, get `pressed`/`released` per hand. The general form the poke button is one styling of. |
 | **Floor (teleportable)** | Ground in one drop: visible floor + teleport collision; in AR passthrough the solid floor hides and a translucent grid marks the teleportable area. |
 | **Grabbable** | Ready grabbable: swap the mesh, collision auto-fits, highlight included. |
 | **Throwable** | A physics block you grab and **throw** — a RigidBody3D frozen while held (gravity won't fight the grab), thrown on release, so it flies, falls, and bounces with real gravity. |
@@ -177,6 +178,7 @@ finds the rig by itself (NodePath exports are overrides, not setup).
 | **Highlight / Socket Affordance** | Self-wiring child components: parent INSIDE the object, they find their interactable and mesh. Doubles as the per-object OVERRIDE for Interaction Feedback (objects with their own affordance are skipped). |
 | **Socket Interactor** | Snap-zone that grabs and holds interactables. |
 | **Dial / Lever / Drawer** | Grab-driven mechanisms (Unity's Dial/Lever/Drawer): a rotary knob, a hinged handle, a linear drawer — each constrains your grab to one degree of freedom and outputs a normalized 0–1 `value_changed`. Track the hand, so far-ray operation never bounces. |
+| **Pinch-Twist Distance** | Far-grab distance by pinch-and-twist: hold the pinch and roll your wrist to push or pull the held object along the ray, leaving aim untouched. |
 | **Surface Draggable** | Position constraint (Unity XRI / XR Hands transform constraints): grab a piece and slide it along only the local axes you allow — a magnet on a board (two axes), a bead on a wire (one). Parent-local, so it works on a tilted board; optional per-axis bounds. |
 | **UI Panel (3D)** | In-world panel: ordinary Godot Controls, usable by ray *and* by touch. |
 | **Keyboard (XR)** | In-world keyboard: `open(initial, prompt)` → `text_submitted` / `cancelled`. |
@@ -186,14 +188,15 @@ finds the rig by itself (NodePath exports are overrides, not setup).
 |---|---|
 | **Gesture Recognizer** | Hand poses as data (`.tres`): per-hand start/end signals, hysteresis + hold built in, live tuning HUD (`show_debug`). Presets included. |
 | **Gesture Recorder** | Hold a pose, get a gesture — targets from your recorded means, tolerances from your own jitter. See persistence below. |
-| Sequences (`XRHandSequence`) | Motion gestures as staged data (conditions + feature deltas + time windows) — the authored-swipe framework. |
+| Sequences (`XRHandSequence`) | Motion gestures as staged data (conditions + feature deltas + time windows). Authoring format only for now — no shipped scene assigns sequences to a recognizer. |
 
-### Perception (`godot_xr_scene_understanding`)
+### Perception (`godot_xr_scene_understanding`, `godot_webxr_scene_understanding`)
 | Block | What you get |
 |---|---|
 | **Occlusion / Depth** | Real-world occlusion (hard/soft) with a drag-in occludees list. |
 | **Scene Mesh** | The device's room geometry: visualize, occlude, label, collide. |
-| **Light Estimation** | Objects lit by (and reflecting) the real room (Android XR). |
+| **Light Estimation** | Objects lit by (and reflecting) the real room (Android XR). Ships in `godot_webxr_scene_understanding`. |
+| **Synthetic Room** | A fake scanned room (surfaces, semantic labels, collision) fed through the real perception path, so the AR blocks work at your desk with no headset. Inert on web by default. |
 | **Hit Test + Anchors** | Surface reticle + pinch-to-place spatial anchors. |
 
 ### WebGPU export (`godot_webgpu`)
