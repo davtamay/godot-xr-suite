@@ -16,6 +16,13 @@ extends Node
 ## One-time project setup: Project Settings > XR > OpenXR > Enabled = on, then
 ## restart the editor. Have a runtime running (Quest Link / SteamVR) before Play.
 
+## Session lifecycle, matching WebXRBootstrap's signals so a scene connects
+## once and works on both platforms. mode is "immersive-ar" in passthrough,
+## "immersive-vr" otherwise - the same strings the browser reports.
+signal session_started(mode: String)
+signal session_ended
+signal session_failed(message: String)
+
 ## Hide nodes in this group while the session is active (mirrors the WebXR
 ## bootstrap so 2D HUDs don't composite into both eyes).
 @export var session_hide_group := WebXRBootstrap.GROUP_SESSION_HIDDEN
@@ -92,6 +99,7 @@ func _ready() -> void:
 		_set_native_opaque()
 	_set_group_hidden(true)
 	get_viewport().use_xr = true
+	session_started.emit(WebXRFeatures.MODE_AR if _passthrough_claimed else WebXRFeatures.MODE_VR)
 
 	# Only KEEP XR if a headset actually presents; otherwise this is a desktop
 	# run with a runtime idling in the background - go flat so the simulator runs.
@@ -245,6 +253,7 @@ func _check_flat_fallback() -> void:
 	get_viewport().use_xr = false
 	_set_group_hidden(false)
 	_xr = null  # released - _exit_tree won't re-toggle
+	session_ended.emit()
 	print_verbose("OpenXRBootstrap: no headset presented; running flat with the XR Simulator.")
 
 
