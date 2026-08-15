@@ -293,7 +293,7 @@ func _fetch_model(hand: int, profile: String) -> void:
 		request.queue_free()
 		_fetching[hand] = false
 		if code != 200 or body.is_empty():
-			print("XRInputModalityManager: model fetch miss '%s' %s (result %d, HTTP %d) - trying next candidate." % [profile, side, result, code])
+			print_verbose("XRInputModalityManager: model fetch miss '%s' %s (result %d, HTTP %d) - trying next candidate." % [profile, side, result, code])
 			_fetch_next(hand)  # asset miss for this id: try the next candidate
 			return
 		DirAccess.make_dir_recursive_absolute("user://controller_models")
@@ -318,7 +318,7 @@ func _attach_gltf_bytes(hand: int, profile: String, bytes: PackedByteArray) -> v
 	if model == null:
 		push_warning("XRInputModalityManager: glTF scene generation failed for '%s'." % profile)
 		return
-	print("XRInputModalityManager: controller model '%s' attached (%d bytes)." % [profile, bytes.size()])
+	print_verbose("XRInputModalityManager: controller model '%s' attached (%d bytes)." % [profile, bytes.size()])
 	# Runtime-parsed glTF creates fresh materials whose shader variants are NOT
 	# in a WebGPU export's baked cache (they render invisible there). Remap
 	# every surface onto duplicates of one small PRE-BAKED template, copying

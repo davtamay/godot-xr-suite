@@ -305,13 +305,13 @@ func _on_webxr_select(input_source_id: int) -> void:
         _apply_select_visual_state()
         _set_status("XR select received: %d (input source %d)" % [_select_count, input_source_id])
     else:
-        print("XR select received: %d (input source %d)" % [_select_count, input_source_id])
+        print_verbose("XR select received: %d (input source %d)" % [_select_count, input_source_id])
 
 func _on_webxr_select_start(input_source_id: int) -> void:
-    print("XR select started (input source %d)" % input_source_id)
+    print_verbose("XR select started (input source %d)" % input_source_id)
 
 func _on_webxr_select_end(input_source_id: int) -> void:
-    print("XR select ended (input source %d)" % input_source_id)
+    print_verbose("XR select ended (input source %d)" % input_source_id)
 
 func _apply_select_visual_state() -> void:
     if not _inspect_object:
@@ -325,7 +325,7 @@ func _apply_select_visual_state() -> void:
 func _set_status(message: String) -> void:
     if _status_label:
         _status_label.text = message
-    print(message)
+    print_verbose(message)
 
 func _support_text(checked: bool, supported: bool) -> String:
     if not checked:

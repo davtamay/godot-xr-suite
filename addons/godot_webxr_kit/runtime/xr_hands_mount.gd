@@ -45,7 +45,7 @@ enum ShowHands { NEVER, VR_ONLY, ALWAYS }
 @export var prefer_browser_hand_bridge := false
 
 ## The group WebXRBootstrap hides during AR passthrough.
-@export var ar_hide_group := "ar_passthrough_hidden"
+@export var ar_hide_group := WebXRBootstrap.GROUP_AR_PASSTHROUGH_HIDDEN
 
 ## Hide a hand's virtual mesh while THAT hand is driving a controller (the
 ## Unity-XRI visual swap: you see the controller model instead of the hand).

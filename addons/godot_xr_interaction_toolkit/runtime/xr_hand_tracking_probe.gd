@@ -1,4 +1,4 @@
-@icon("res://addons/godot_xr_interaction_toolkit/icons/xr_hands_mount.svg")
+@icon("res://addons/godot_xr_interaction_toolkit/icons/xr_direct_interactor.svg")
 class_name XRHandTrackingProbe
 extends Node
 

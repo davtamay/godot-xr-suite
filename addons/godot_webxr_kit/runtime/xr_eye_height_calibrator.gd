@@ -50,7 +50,7 @@ extends Node
 ## live. The startup default is a CONSTANT, so any real motion exceeds this.
 @export_range(0.0001, 0.05, 0.0001) var live_epsilon := 0.002
 @export var enabled := true
-@export var debug_log := true
+@export var debug_log := false
 
 signal calibrated(measured_height: float, applied_offset: float)
 

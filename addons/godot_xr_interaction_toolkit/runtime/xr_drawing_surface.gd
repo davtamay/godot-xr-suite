@@ -1,5 +1,5 @@
 @tool
-@icon("res://addons/godot_xr_interaction_toolkit/icons/xr_ui_canvas.svg")
+@icon("res://addons/godot_xr_interaction_toolkit/icons/xr_ui_canvas_interactable.svg")
 class_name XRDrawingSurface
 extends MeshInstance3D
 

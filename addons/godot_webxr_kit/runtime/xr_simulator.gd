@@ -174,7 +174,7 @@ func _activate() -> void:
 	if _help_layer == null:
 		_build_help_overlay()
 	_help_layer.visible = show_help
-	print("XRSimulator: flat-testing active (RMB=trigger, F=grab, T=teleport, Z/C=snap turn, H=help).")
+	print_verbose("XRSimulator: flat-testing active (RMB=trigger, F=grab, T=teleport, Z/C=snap turn, H=help).")
 
 
 func _deactivate() -> void:
@@ -348,7 +348,7 @@ func _update_common_keys() -> void:
 		if pressed >= 0 and pressed != _pose_key_down:
 			_active_pose = 0 if pressed == _active_pose else pressed
 			_update_help_text()
-			print("XRSimulator: right hand pose -> %s" % _pose_library[_active_pose]["name"])
+			print_verbose("XRSimulator: right hand pose -> %s" % _pose_library[_active_pose]["name"])
 		_pose_key_down = pressed
 
 
@@ -620,7 +620,7 @@ func _set_mode(mode: SimMode) -> void:
 		_remove_hand_trackers()
 		_add_controller_trackers()
 	_update_help_text()
-	print("XRSimulator: %s mode." % ("simulated HANDS (RMB=pinch, F=fist)" if _mode == SimMode.HAND else "simulated CONTROLLERS"))
+	print_verbose("XRSimulator: %s mode." % ("simulated HANDS (RMB=pinch, F=fist)" if _mode == SimMode.HAND else "simulated CONTROLLERS"))
 
 
 func _add_controller_trackers() -> void:

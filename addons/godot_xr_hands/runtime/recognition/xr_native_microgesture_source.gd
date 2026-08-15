@@ -1,4 +1,4 @@
-@icon("res://addons/godot_xr_hands/icons/xr_gesture_runtime.svg")
+@icon("res://addons/godot_xr_hands/icons/xr_gesture_recognizer.svg")
 extends "res://addons/godot_xr_hands/runtime/recognition/xr_microgesture_source.gd"
 
 ## Runtime-detected microgestures, surfaced through the same provider

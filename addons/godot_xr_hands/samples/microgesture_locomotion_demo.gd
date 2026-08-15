@@ -10,7 +10,7 @@ const TURN_COLOR := Color(1.0, 0.72, 0.15, 1.0)
 
 @export_range(15.0, 90.0, 1.0) var snap_turn_degrees := 45.0
 @export_range(1.0, 12.0, 0.5) var targeting_timeout := 8.0
-## See XRMicrogestureLocomotion.pose_release_grace: must outlast the
+## See XRThumbMicrogestureRecognizer pose-release timing: must outlast the
 ## recognizer's post-UP cooldown + dead-band transit + activation (~0.36 s
 ## worst case) or the DOWN commit races a cancelled aim.
 @export_range(0.0, 1.0, 0.01) var pose_release_grace := 0.45

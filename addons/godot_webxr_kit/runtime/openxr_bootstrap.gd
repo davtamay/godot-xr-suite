@@ -18,7 +18,7 @@ extends Node
 
 ## Hide nodes in this group while the session is active (mirrors the WebXR
 ## bootstrap so 2D HUDs don't composite into both eyes).
-@export var session_hide_group := "xr_session_hidden"
+@export var session_hide_group := WebXRBootstrap.GROUP_SESSION_HIDDEN
 
 ## Runtime-configurable master switch. This node is always inert in web
 ## exports, even when enabled, so it is safe to ship beside WebXRBootstrap.
@@ -124,9 +124,9 @@ func _request_android_runtime_permissions() -> void:
 	_android_permissions_requested = true
 	var already_granted := OS.request_permissions()
 	if already_granted:
-		print("OpenXRBootstrap: Android XR runtime permissions already granted.")
+		print_verbose("OpenXRBootstrap: Android XR runtime permissions already granted.")
 	else:
-		print("OpenXRBootstrap: requested Android XR runtime permissions.")
+		print_verbose("OpenXRBootstrap: requested Android XR runtime permissions.")
 
 
 func _claim_native_passthrough() -> bool:
@@ -153,7 +153,7 @@ func _claim_native_passthrough() -> bool:
 	get_viewport().transparent_bg = true
 	add_to_group(_PASSTHROUGH_CLAIM_GROUP)
 	_passthrough_claimed = true
-	print("OpenXRBootstrap: native passthrough AR enabled.")
+	print_verbose("OpenXRBootstrap: native passthrough AR enabled.")
 	return true
 
 
@@ -169,7 +169,7 @@ func _schedule_passthrough_retry() -> void:
 	if _passthrough_retry_pending or _passthrough_claimed:
 		return
 	if _passthrough_retry_count >= _PASSTHROUGH_RETRY_LIMIT:
-		print("OpenXRBootstrap: passthrough is unavailable; staying in opaque VR.")
+		print_verbose("OpenXRBootstrap: passthrough is unavailable; staying in opaque VR.")
 		return
 	_passthrough_retry_pending = true
 	get_tree().create_timer(0.1).timeout.connect(_retry_native_passthrough)
@@ -213,10 +213,10 @@ func _resume_multimodal() -> void:
 	if wrapper == null or not wrapper.has_method("is_simultaneous_hands_and_controllers_supported"):
 		return
 	if not wrapper.is_simultaneous_hands_and_controllers_supported():
-		print("OpenXRBootstrap: simultaneous hands+controllers not supported by this runtime.")
+		print_verbose("OpenXRBootstrap: simultaneous hands+controllers not supported by this runtime.")
 		return
 	wrapper.resume_simultaneous_hands_and_controllers_tracking()
-	print("OpenXRBootstrap: simultaneous hands+controllers tracking resumed.")
+	print_verbose("OpenXRBootstrap: simultaneous hands+controllers tracking resumed.")
 
 
 func _on_presented() -> void:
@@ -245,7 +245,7 @@ func _check_flat_fallback() -> void:
 	get_viewport().use_xr = false
 	_set_group_hidden(false)
 	_xr = null  # released - _exit_tree won't re-toggle
-	print("OpenXRBootstrap: no headset presented; running flat with the XR Simulator.")
+	print_verbose("OpenXRBootstrap: no headset presented; running flat with the XR Simulator.")
 
 
 func _exit_tree() -> void:
