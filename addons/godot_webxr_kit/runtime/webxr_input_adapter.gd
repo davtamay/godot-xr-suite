@@ -124,15 +124,12 @@ func _hand_for_input_source(input_source_id: int) -> int:
 	if tracker == null:
 		return -1
 
-	var tracker_hand = tracker.hand
-	var tracker_hand_text := str(tracker_hand).to_lower()
-	match tracker_hand:
-		XRPositionalTracker.TRACKER_HAND_LEFT:
-			return Hand.LEFT
-		XRPositionalTracker.TRACKER_HAND_RIGHT:
-			return Hand.RIGHT
-	if tracker_hand_text.find("left") >= 0:
-		return Hand.LEFT
-	if tracker_hand_text.find("right") >= 0:
-		return Hand.RIGHT
-	return -1
+	var hand_id := XRHandIdentity.from_tracker_hand(tracker.hand)
+	if XRHandIdentity.is_valid(hand_id):
+		return hand_id
+	# TRACKER_HAND_UNKNOWN: fall back to the tracker NAME ("left_hand",
+	# "/user/hand_tracker/left"...). The old fallback stringified the enum
+	# INT and searched it for "left" - a digit never contains a side word,
+	# so it had never fired and every unknown-handed source broadcast its
+	# selects to BOTH hands.
+	return XRHandIdentity.from_text(str(tracker.name))

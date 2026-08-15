@@ -201,7 +201,7 @@ func _create_shared_meshes() -> void:
 
 func _create_hand(hand_name: String, hand_id: int, fallback_pose_path: NodePath, color: Color) -> void:
     var root := Node3D.new()
-    root.name = "%sHandTracking" % hand_name
+    root.name = XRHandIdentity.hand_tracking_root_name(hand_id)
     root.visible = false
     add_child(root)
 

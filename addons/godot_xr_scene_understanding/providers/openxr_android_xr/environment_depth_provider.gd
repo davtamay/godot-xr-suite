@@ -211,6 +211,10 @@ func _configure_hand_occluder_modality() -> void:
 func _on_hand_occluder_modality_changed(hand: int, modality: int) -> void:
 	if _hand_occluder == null:
 		return
+	# "%sHandTracking" mirrors XRHandIdentity.hand_tracking_root_name() in the
+	# toolkit. Kept inline HERE ONLY because this provider must parse when the
+	# toolkit addon is absent; every other producer/consumer of this node-name
+	# contract goes through that one symbol.
 	var side := "Right" if hand == 1 else "Left"
 	var hand_root := _hand_occluder.get_node_or_null("%sHandTracking" % side)
 	if hand_root == null:

@@ -93,8 +93,7 @@ func _connect_modality() -> void:
 func _on_modality_changed(hand: int, modality: int) -> void:
 	if _hands == null:
 		return
-	var side := "Right" if hand == 1 else "Left"
-	var hand_root := _hands.get_node_or_null("%sHandTracking" % side)
+	var hand_root := _hands.get_node_or_null(XRHandIdentity.hand_tracking_root_name(hand))
 	if hand_root == null:
 		return
 	# Hide via render layers, not `visible` - the visualizer's own tracking

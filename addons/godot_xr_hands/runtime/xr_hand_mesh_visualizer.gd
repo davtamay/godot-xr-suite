@@ -90,7 +90,7 @@ func _setup_hand(hand: int) -> void:
 		push_warning("XRHandMeshVisualizer: hand model missing at '%s'." % _MODEL_PATHS[hand])
 		return
 	var root := Node3D.new()
-	root.name = "%sHandTracking" % ("Left" if hand == 0 else "Right")
+	root.name = XRHandIdentity.hand_tracking_root_name(hand)
 	root.visible = false
 	add_child(root)
 	var model := scene.instantiate() as Node3D

@@ -189,11 +189,13 @@ static func _score_tracker(tracker: XRHandTracker, expected_hand: int, side_text
         score += 10
     return score
 
+# Delegated to XRHandIdentity - the one place hand encodings convert. The
+# thin wrappers stay so this file's call sites and their tests are untouched.
 static func _expected_tracker_hand(hand_id: int) -> int:
-    return XRPositionalTracker.TRACKER_HAND_LEFT if hand_id == XRInputAdapter.Hand.LEFT else XRPositionalTracker.TRACKER_HAND_RIGHT
+    return XRHandIdentity.to_tracker_hand(hand_id)
 
 static func _side_text(hand_id: int) -> String:
-    return "left" if hand_id == XRInputAdapter.Hand.LEFT else "right"
+    return XRHandIdentity.side_text(hand_id)
 
 static func _valid_hand(hand_id: int) -> bool:
-    return hand_id == XRInputAdapter.Hand.LEFT or hand_id == XRInputAdapter.Hand.RIGHT
+    return XRHandIdentity.is_valid(hand_id)

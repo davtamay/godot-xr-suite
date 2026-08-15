@@ -14,7 +14,6 @@ extends Node
 ##
 ## Self-wiring: drop it anywhere in a scene with an XR rig.
 
-enum Hand { LEFT, RIGHT }
 enum TurnMode { NONE, CONTINUOUS }
 
 ## Group locomotion checks to know which hand(s) this block owns.
@@ -23,8 +22,10 @@ const GROUP := "xr_continuous_move"
 @export var enabled := true
 
 @export_group("Move")
-## Which thumbstick drives walking.
-@export var move_hand := Hand.LEFT
+## Which thumbstick drives walking. (This used to be a private duplicate of
+## XRInputAdapter.Hand that stayed in sync only by ordinal coincidence; the
+## ordinals are identical, so saved scenes keep their value.)
+@export var move_hand := XRInputAdapter.Hand.LEFT
 @export_range(0.5, 6.0, 0.1) var move_speed := 2.0
 ## Also move up/down with the play-space? Off = stay on your current height
 ## (recommended; gravity/steps are a future block).
@@ -82,7 +83,7 @@ func get_claimed_hands() -> Array:
 
 
 func _turn_hand() -> int:
-	return 1 - int(move_hand)
+	return XRHandIdentity.other(int(move_hand))
 
 
 func _physics_process(delta: float) -> void:

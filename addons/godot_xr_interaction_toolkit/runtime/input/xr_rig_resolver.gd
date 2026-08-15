@@ -44,10 +44,14 @@ static func find_camera(from: Node) -> XRCamera3D:
 ## The rig's aim controller for a hand (0 = left, 1 = right). Prefers aim/
 ## default-pose nodes so helper anchors (e.g. grip model anchors) never win.
 static func find_controller(from: Node, hand: int) -> XRController3D:
+	# The suite's -1 (any) / 2 (both) sentinels flow through hand-typed ints;
+	# a bare ternary here used to answer them with the RIGHT controller.
+	if not XRHandIdentity.is_valid(hand):
+		return null
 	var origin := find_origin(from)
 	if origin == null:
 		return null
-	var tracker_name: StringName = &"left_hand" if hand == 0 else &"right_hand"
+	var tracker_name := XRHandIdentity.controller_tracker_name(hand)
 	var fallback: XRController3D = null
 	for node in origin.find_children("*", "XRController3D", true, false):
 		var controller := node as XRController3D

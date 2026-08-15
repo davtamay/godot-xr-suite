@@ -658,7 +658,7 @@ func _add_hand_trackers() -> void:
 			continue
 		var tracker := XRHandTracker.new()
 		tracker.name = _HAND_TRACKER_NAMES[hand]
-		tracker.hand = XRPositionalTracker.TRACKER_HAND_LEFT if hand == 0 else XRPositionalTracker.TRACKER_HAND_RIGHT
+		tracker.hand = XRHandIdentity.to_tracker_hand(hand)
 		# UNOBSTRUCTED = real hand tracking: keeps the adapter's synthetic
 		# pinch select armed (it ignores controller-emulated joints).
 		tracker.hand_tracking_source = XRHandTracker.HAND_TRACKING_SOURCE_UNOBSTRUCTED

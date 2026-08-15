@@ -258,7 +258,7 @@ static func _ensure_tracker(hand: int) -> XRHandTracker:
 		return _trackers[hand]
 	var tracker := XRHandTracker.new()
 	tracker.name = TRACKER_NAMES[hand]
-	tracker.hand = XRPositionalTracker.TRACKER_HAND_LEFT if hand == 0 else XRPositionalTracker.TRACKER_HAND_RIGHT
+	tracker.hand = XRHandIdentity.to_tracker_hand(hand)
 	XRServer.add_tracker(tracker)
 	_trackers[hand] = tracker
 	return tracker
@@ -313,7 +313,7 @@ static func _is_controller_modality(hand: int) -> bool:
 	var loop := Engine.get_main_loop() as SceneTree
 	if loop == null:
 		return false
-	var manager := loop.get_first_node_in_group("xr_input_modality_manager")
+	var manager := loop.get_first_node_in_group(XRModalityQuery.GROUP)
 	if manager and manager.has_method("get_modality"):
-		return int(manager.get_modality(hand)) == 1  # Modality.CONTROLLER
+		return int(manager.get_modality(hand)) == XRModalityQuery.Modality.CONTROLLER
 	return _raw_source(hand) == XRHandTracker.HAND_TRACKING_SOURCE_CONTROLLER
