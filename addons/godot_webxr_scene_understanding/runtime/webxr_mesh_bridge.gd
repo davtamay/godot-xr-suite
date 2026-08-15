@@ -57,6 +57,11 @@ var occlusion_enabled := false
 var _webxr: XRInterface
 var _poll_accum := 0.0
 var _installed := false
+# Synthetic mode: geometry is fed by an XRSyntheticRoom (editor/desktop
+# debugging) instead of the browser hook; every JavaScript touchpoint is
+# bypassed while the whole downstream (merge, labels, collision, punch,
+# signals) runs exactly as it does on device.
+var _synthetic := false
 # id -> { verts: PackedVector3Array (chunk-local), idx: PackedInt32Array,
 #         xform: Transform3D, label: String }
 var _chunks := {}
@@ -273,6 +278,61 @@ func _on_session_ended() -> void:
 func get_surface_count() -> int:
 	return _chunks.size()
 
+
+## Puts the bridge in synthetic mode: builds the rendering machinery the
+## web-only _ready skips on native runs, so an XRSyntheticRoom can feed
+## geometry through the same pipeline the browser hook uses. Safe to call
+## on web too (the already-initialized pieces are kept).
+func enable_synthetic() -> void:
+	_synthetic = true
+	if not is_in_group("webxr_mesh_bridge"):
+		add_to_group("webxr_mesh_bridge")
+	if _merged == null:
+		_material = MESH_MATERIAL.duplicate() as StandardMaterial3D
+		_material.albedo_color = mesh_color
+		_merged = MeshInstance3D.new()
+		_merged.name = "MergedRoomMesh"
+		_merged.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		_merged.visible = false
+		add_child(_merged)
+		_merged_punch = MeshInstance3D.new()
+		_merged_punch.name = "MergedRoomMeshPunch"
+		_merged_punch.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		_merged_punch.material_override = PUNCH_MATERIAL
+		_merged_punch.visible = false
+		add_child(_merged_punch)
+	set_process(true)
+	_apply_render_mode()
+
+
+## Synthetic ingestion: same semantics as a dirty payload from the browser
+## hook, minus the JSON round-trip.
+func synthetic_store_chunk(id: int, p_verts: PackedVector3Array, p_indices: PackedInt32Array, p_xform: Transform3D, p_label := "") -> void:
+	var is_new := not _chunks.has(id)
+	_chunks[id] = {
+		"verts": p_verts,
+		"idx": p_indices,
+		"xform": p_xform,
+		"label": p_label,
+	}
+	_render_dirty = true
+	if generate_collision:
+		_rebuild_collision(id)
+	if is_new:
+		mesh_added.emit(id, p_label)
+
+
+func synthetic_store_plane(id: int, p_pos: Vector3, p_label: String) -> void:
+	_planes[id] = { "pos": p_pos, "label": p_label }
+	_render_dirty = true
+
+
+func synthetic_clear() -> void:
+	_planes.clear()
+	for id in _chunks.keys():
+		_drop_chunk(id)
+	_rebuild_merged(true)
+
 func set_visualize(p_enabled: bool) -> void:
 	auto_visualize = p_enabled
 	if p_enabled:
@@ -301,6 +361,8 @@ func set_occlusion(p_enabled: bool) -> void:
 ## restores the scan on browsers that lost resources created while a
 ## session was starting up.
 func _refresh_gpu_geometry() -> void:
+	if _synthetic or not Engine.has_singleton("JavaScriptBridge"):
+		return
 	Engine.get_singleton("JavaScriptBridge").eval("""
 (function () {
 	const bridge = window.GodotWebXRMeshBridge;
@@ -317,6 +379,8 @@ func _apply_render_mode() -> void:
 ## The frame hook copies geometry only while something consumes it; an idle
 ## bridge costs (nearly) nothing per frame.
 func _sync_harvest_gate() -> void:
+	if _synthetic or not Engine.has_singleton("JavaScriptBridge"):
+		return
 	var active := auto_visualize or occlusion_enabled or show_labels or generate_collision
 	Engine.get_singleton("JavaScriptBridge").eval(
 		"window.GodotWebXRMeshBridge && (window.GodotWebXRMeshBridge.harvest = %s);" % ("true" if active else "false"), true)
@@ -324,14 +388,18 @@ func _sync_harvest_gate() -> void:
 ## How many meshes the platform is serving RIGHT NOW (-1 = API absent,
 ## 0 = present but empty). For availability displays.
 func get_served_count() -> int:
+	if _synthetic:
+		return _chunks.size()
 	var prop := str(Engine.get_singleton("JavaScriptBridge").eval("window.GodotWebXRMeshBridge ? String(window.GodotWebXRMeshBridge.meshProp) : 'ABSENT'", true))
 	if not prop.begins_with("set:"):
 		return -1
 	return int(prop.get_slice(":", 1))
 
 func get_status() -> String:
-	var js := Engine.get_singleton("JavaScriptBridge")
-	var prop_str := str(js.eval("window.GodotWebXRMeshBridge ? String(window.GodotWebXRMeshBridge.meshProp) : 'NO BRIDGE'", true))
+	var prop_str := "set:%d (synthetic)" % _chunks.size()
+	if not _synthetic:
+		var js := Engine.get_singleton("JavaScriptBridge")
+		prop_str = str(js.eval("window.GodotWebXRMeshBridge ? String(window.GodotWebXRMeshBridge.meshProp) : 'NO BRIDGE'", true))
 	if _chunks.size() > 0:
 		var mode := "hidden"
 		if occlusion_enabled:
@@ -383,6 +451,8 @@ func _process(delta: float) -> void:
 	_poll_meshes()
 
 func _poll_meshes() -> void:
+	if _synthetic:
+		return
 	if not (auto_visualize or occlusion_enabled or show_labels or generate_collision):
 		return
 	var js := Engine.get_singleton("JavaScriptBridge")
