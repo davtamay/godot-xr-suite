@@ -60,6 +60,14 @@ var _done_sent := false
 var _drive_frame := 0
 ## Last driven aim per hand, re-published every frame (see _tick_queue).
 var _held_aim := {}
+## Last driven input per hand, {hand: {action: value}}, re-published every
+## frame for the same reason poses are: a runtime reports button and stick
+## state CONTINUOUSLY, and anything else driving the same tracker overwrites
+## a value that was only set once. Measured: the desktop simulator writes
+## thumbstick every frame from keyboard state - zero, headless - so a stick
+## set once by a drive was erased before locomotion sampled it, and teleport
+## passed or failed by a race (about two runs in three).
+var _held_input := {}
 
 ## Synthetic hand state, built only when a drive asks for hands.
 const _POSE_MATH_PATH := "res://addons/godot_xr_hands/runtime/xr_hand_pose_math.gd"
@@ -159,6 +167,11 @@ func _tick_queue() -> void:
 	for hand in _held_aim:
 		if _move.is_empty() or int(_move.get("hand", -1)) != hand:
 			_publish_pose(hand, _last_pos[clampi(hand, 0, 1)], _held_aim[hand])
+	for hand in _held_input:
+		var tracker := _tracker(hand)
+		if tracker != null:
+			for action_name in _held_input[hand]:
+				tracker.set_input(action_name, _held_input[hand][action_name])
 	for hand in _hand_state:
 		_publish_hand(hand)
 	if not _move.is_empty():
@@ -214,6 +227,9 @@ func _apply(action: Dictionary) -> void:
 				"frames": maxi(2, int(action.get("frames", 30))),
 				"step": 0,
 			}
+			if action.has("seconds"):
+				_move["seconds"] = maxf(0.05, float(action["seconds"]))
+				_move["elapsed"] = 0.0
 		"input":
 			var tracker := _tracker(int(action.get("hand", 1)))
 			if tracker:
@@ -224,7 +240,13 @@ func _apply(action: Dictionary) -> void:
 				# snap turn were undrivable rather than broken.
 				if value is Array and (value as Array).size() == 2:
 					value = Vector2(float(value[0]), float(value[1]))
-				tracker.set_input(StringName(str(action.get("action", "select"))), value)
+				_stand_down_simulator()
+				var action_name := StringName(str(action.get("action", "select")))
+				tracker.set_input(action_name, value)
+				var hand_index := int(action.get("hand", 1))
+				if not _held_input.has(hand_index):
+					_held_input[hand_index] = {}
+				_held_input[hand_index][action_name] = value
 		"hand":
 			# Publish articulated hand JOINTS, not just a controller pose:
 			# what a hand-tracking runtime serves, so hand visuals render and
@@ -293,13 +315,34 @@ func _apply(action: Dictionary) -> void:
 
 
 func _step_move() -> void:
-	var t: float = float(_move.step) / float(_move.frames)
+	# Progress by TIME when the caller asked for it. A frame-counted travel runs
+	# at whatever rate the host manages, and anything sampling it on the fixed
+	# physics clock - the poke interactor's shape query, for one - sees a
+	# different motion each run. That is a race, and it read as an interaction
+	# that worked about half the time.
+	var timed := _move.has("seconds")
+	if timed:
+		_move.elapsed = float(_move.get("elapsed", 0.0)) + get_process_delta_time()
+	var t := 0.0
+	if timed:
+		t = float(_move.elapsed) / float(_move.seconds)
+	else:
+		t = float(_move.step) / float(_move.frames)
+	t = clampf(t, 0.0, 1.0)
 	var e := t * t * (3.0 - 2.0 * t)
 	var pos: Vector3 = (_move.from as Vector3).lerp(_move.to, e)
 	var aim: Vector3 = _move.aim
 	_publish_pose(int(_move.hand), pos, aim if aim.is_finite() else pos)
 	_move.step += 1
-	if _move.step > int(_move.frames):
+	# Both paths must hand the destination over to the HELD pose, or the next
+	# frame's republish restores where the hand was before the move and it
+	# snaps back - which reads as the interaction never happening.
+	var done := false
+	if timed:
+		done = float(_move.elapsed) >= float(_move.seconds)
+	else:
+		done = _move.step > int(_move.frames)
+	if done:
 		_last_pos[clampi(int(_move.hand), 0, 1)] = _move.to
 		_held_aim[clampi(int(_move.hand), 0, 1)] = aim if aim.is_finite() else _move.to
 		_move = {}
@@ -376,15 +419,44 @@ func _ensure_hands() -> bool:
 ## synthetic-pinch detector - joints would be published and no select would
 ## ever fire. Driving hands means waking the adapter that owns this platform
 ## and pointing the interactors at it, exactly as the desktop simulator does.
-func _wake_platform_adapter() -> void:
-	var rig := get_parent()
-	if rig == null:
+## The desktop simulator fakes the same trackers this node drives, and writes
+## its inputs EVERY frame from keyboard state - zero, when nobody is at a
+## keyboard. Two drivers of one tracker means the last writer wins, so a stick
+## set once by a drive was erased before locomotion sampled it and teleport
+## passed or failed by a race.
+##
+## Stood down the first time a drive writes an INPUT, and deliberately not
+## restored: from that moment the operator owns this app's input for the rest
+## of the run. The simulator already stands itself down for a real XR session
+## on the same reasoning - whoever is really driving wins.
+##
+## Scoped to input on purpose. The simulator also resolves the rig and points
+## interactors at the platform adapter, and drives that need none of its INPUT
+## (a poke, say, which is pure hand geometry) still want those services - so
+## they are left alone rather than being made to depend on this node
+## reproducing everything the simulator does.
+func _stand_down_simulator() -> void:
+	if get_tree() == null:
 		return
-	var adapter := rig.get_node_or_null("WebXRInputAdapter" if OS.has_feature("web") else "OpenXRInputAdapter")
+	for node in get_tree().root.find_children("*", "", true, false):
+		if node.get_script() != null and str(node.get_script().get_global_name()) == "XRSimulator" 				and node.is_processing():
+			node.set_process(false)
+
+
+func _wake_platform_adapter() -> void:
+	# Searched from the tree ROOT, not from this node's parent: an injected
+	# actuator is a child of root, so the sibling lookup found nothing and
+	# silently did neither half of this job. The desktop simulator happened to
+	# wake the adapter too, which masked it - until the simulator was stood
+	# down for the drive and poke stopped firing.
+	var rig: Node = get_parent()
+	var wanted := "WebXRInputAdapter" if OS.has_feature("web") else "OpenXRInputAdapter"
+	var adapter: Node = rig.get_node_or_null(wanted) if rig != null else null
 	if adapter == null:
 		return
 	adapter.set_process(true)
-	for interactor in _adapter_interactors(rig):
+	var search_root: Node = rig if rig != null else get_tree().root
+	for interactor in _adapter_interactors(search_root):
 		if interactor.has_method(&"set_input_adapter"):
 			interactor.set_input_adapter(adapter)
 
