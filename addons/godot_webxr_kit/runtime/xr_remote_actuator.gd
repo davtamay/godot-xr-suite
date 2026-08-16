@@ -334,6 +334,20 @@ func _wake_platform_adapter() -> void:
 	for interactor in _adapter_interactors(rig):
 		if interactor.has_method(&"set_input_adapter"):
 			interactor.set_input_adapter(adapter)
+	_wake_gesture_runtimes()
+
+
+## Gesture runtimes skip their whole update outside an XR session, so a
+## driven hand would be published and never sampled - the recognizers would
+## report nothing and look broken. A hand this node is driving IS hand
+## input, session or not, so the runtimes are told to run.
+func _wake_gesture_runtimes() -> void:
+	var scene := get_tree().current_scene if get_tree() else null
+	if scene == null:
+		return
+	for node in scene.find_children("*", "", true, false):
+		if node.get("process_without_xr") != null and not bool(node.get("process_without_xr")):
+			node.set("process_without_xr", true)
 
 
 func _adapter_interactors(root: Node) -> Array:
