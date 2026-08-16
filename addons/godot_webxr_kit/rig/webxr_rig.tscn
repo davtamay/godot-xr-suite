@@ -17,12 +17,16 @@
 [ext_resource type="Script" uid="uid://dhcijs6x6gehg" path="res://addons/godot_xr_interaction_toolkit/runtime/xr_interaction_feedback.gd" id="14_feedback"]
 [ext_resource type="Script" uid="uid://bgmik2uq7x5ii" path="res://addons/godot_xr_interaction_toolkit/runtime/xr_interaction_arbiter.gd" id="15_arbiter"]
 [ext_resource type="Script" path="res://addons/godot_webxr_kit/runtime/xr_eye_height_calibrator.gd" id="16_eyeheight"]
+[ext_resource type="Script" path="res://addons/godot_webxr_kit/runtime/xr_remote_actuator.gd" id="17_actuator"]
 
 [node name="WebXRRig" type="Node3D"]
 script = ExtResource("0_rig")
 
 [node name="XRInteractionManager" type="Node" parent="."]
 script = ExtResource("1_manager")
+
+[node name="RemoteActuator" type="Node" parent="."]
+script = ExtResource("17_actuator")
 
 [node name="FlatscreenCamera" type="Node" parent="."]
 script = ExtResource("8_flatcam")

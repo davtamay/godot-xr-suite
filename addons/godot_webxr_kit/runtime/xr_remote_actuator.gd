@@ -50,9 +50,15 @@ var _done_sent := false
 
 func _ready() -> void:
 	set_process(false)
-	if not enabled:
-		return
-	var target := _resolve_endpoint()
+	# Two independent ways to activate, and NEITHER fires in a shipped build:
+	#  - a run argument names an operator (?operator= / --operator=). Its
+	#    presence is itself the opt-in - a user never adds it - so it
+	#    activates on its own, which is what lets the shared rig carry this
+	#    node with enabled off and still be drivable when asked.
+	#  - the author set a fixed `endpoint` AND turned `enabled` on.
+	var target := _run_arg_endpoint()
+	if target.is_empty() and enabled and not endpoint.is_empty():
+		target = endpoint
 	if target.is_empty():
 		return
 	_ws = WebSocketPeer.new()
@@ -65,16 +71,28 @@ func _ready() -> void:
 	set_process(true)
 
 
-## The endpoint comes from the RUN, not the scene: `?operator=` on web,
-## `--operator=` elsewhere. A scene-fixed endpoint is possible but defeats
-## the ship-inert property, so it is the exception.
-func _resolve_endpoint() -> String:
-	if not endpoint.is_empty():
-		return endpoint
+## The endpoint from the RUN itself: `?operator=` on web, `--operator=`
+## elsewhere. Empty unless a run argument names one - which is why a shipped
+## build never connects.
+func _run_arg_endpoint() -> String:
 	if OS.has_feature("web"):
-		var js := JavaScriptBridge.eval("new URLSearchParams(location.search).get('operator') || ''", true)
-		return str(js) if js != null else ""
-	for arg in OS.get_cmdline_args():
+		# ?operator=<port> means "reach the operator via this origin's relay":
+		# an https page can only open a wss socket, and only to a host whose
+		# cert it already trusts - which is the page's own origin. The serve
+		# relays /operator?p=<port> to the operator's local ws server. A full
+		# ws(s):// value is honored verbatim for non-relay setups.
+		var raw := str(JavaScriptBridge.eval("new URLSearchParams(location.search).get('operator') || ''", true))
+		if raw.is_empty():
+			return ""
+		if raw.begins_with("ws://") or raw.begins_with("wss://"):
+			return raw
+		var host := str(JavaScriptBridge.eval("location.host", true))
+		var op_port := raw if raw.is_valid_int() else "8470"
+		return "wss://%s/operator?p=%s" % [host, op_port]
+	# Both the engine args and the user args (after `--`): a windowed Play
+	# launch passes it as a user arg so it never collides with an engine
+	# option, while a bare native run may pass it directly.
+	for arg in OS.get_cmdline_args() + OS.get_cmdline_user_args():
 		if str(arg).begins_with("--operator="):
 			return str(arg).trim_prefix("--operator=")
 	return ""
