@@ -401,126 +401,21 @@ func _load_hand_poses() -> void:
 
 
 func _load_bind_skeletons() -> bool:
-	for hand in 2:
-		var path: String = _HAND_MODEL_PATHS[hand]
-		if not ResourceLoader.exists(path):
-			return false
-		var model := (load(path) as PackedScene).instantiate()
-		var skeletons := model.find_children("*", "Skeleton3D", true, false)
-		var meshes := model.find_children("*", "MeshInstance3D", true, false)
-		if skeletons.is_empty() or meshes.is_empty():
-			model.free()
-			return false
-		var skeleton := skeletons[0] as Skeleton3D
-		var skin: Skin = (meshes[0] as MeshInstance3D).skin
-		var joint_by_bone := _joint_name_map()
-		var wrist_rest := Vector3.ZERO
-		for bone in skeleton.get_bone_count():
-			if skeleton.get_bone_name(bone) == "wrist":
-				wrist_rest = skeleton.get_bone_rest(bone).origin
-		# Skin stores one transform per bind; whether it is the bind or its
-		# inverse differs by importer path - the wrist vote picks the reading
-		# whose origin matches the bone rest (the glb node translation), then
-		# all binds are read with the winning interpretation.
-		var bind_world := {}
-		var wrist_bind := Transform3D.IDENTITY
-		var use_inverse := true
-		for b in skin.get_bind_count():
-			var bone := skin.get_bind_bone(b)
-			if bone < 0:
-				bone = skeleton.find_bone(skin.get_bind_name(b))
-			if skeleton.get_bone_name(bone) == "wrist":
-				var sb := skin.get_bind_pose(b)
-				use_inverse = sb.affine_inverse().origin.distance_to(wrist_rest) <= sb.origin.distance_to(wrist_rest)
-				wrist_bind = sb.affine_inverse() if use_inverse else sb
-		for b in skin.get_bind_count():
-			var bone := skin.get_bind_bone(b)
-			if bone < 0:
-				bone = skeleton.find_bone(skin.get_bind_name(b))
-			var joint: int = joint_by_bone.get(skeleton.get_bone_name(bone), -1)
-			if joint < 0:
-				continue
-			var sb := skin.get_bind_pose(b)
-			bind_world[joint] = sb.affine_inverse() if use_inverse else sb
-		model.free()
-		if bind_world.size() < 25:
-			return false
-
-		var to_wrist := wrist_bind.affine_inverse()
-		var rel := []
-		rel.resize(XRHandTracker.HAND_JOINT_MAX)
-		for joint in XRHandTracker.HAND_JOINT_MAX:
-			rel[joint] = to_wrist * bind_world[joint] if bind_world.has(joint) else Transform3D.IDENTITY
-		var middle_origin: Vector3 = (rel[XRHandTracker.HAND_JOINT_MIDDLE_FINGER_METACARPAL] as Transform3D).origin
-		# OpenXR's real XR_HAND_JOINT_PALM_EXT sits at the CENTER of the middle
-		# metacarpal BONE - the midpoint between that metacarpal's own joint and
-		# the middle finger's proximal phalanx joint (Meta's OpenXR SDK computes
-		# it the same way when a runtime has no native palm joint). A
-		# wrist<->metacarpal midpoint reads too close to the wrist - that
-		# convention was retired from the live grip anchor 2026-07-24 for
-		# exactly that reason (xr_controller_hand_adapter.gd); fabricate the
-		# simulator's fake PALM the correct way so it matches a real one.
-		var middle_proximal_origin: Vector3 = (rel[XRHandTracker.HAND_JOINT_MIDDLE_FINGER_PHALANX_PROXIMAL] as Transform3D).origin
-		rel[XRHandTracker.HAND_JOINT_PALM] = Transform3D(Basis.IDENTITY, (middle_origin + middle_proximal_origin) * 0.5)
-
-		# Hand axes measured FROM the bind (no convention guessing): finger
-		# direction, chirality-corrected palm normal (the thumb metacarpal
-		# sits palm-side of the finger plane), per-finger curl hinge axes.
-		var fingers_dir := middle_origin.normalized()
-		var index_origin: Vector3 = (rel[XRHandTracker.HAND_JOINT_INDEX_FINGER_METACARPAL] as Transform3D).origin
-		var pinky_origin: Vector3 = (rel[XRHandTracker.HAND_JOINT_PINKY_FINGER_METACARPAL] as Transform3D).origin
-		var thumb_origin: Vector3 = (rel[XRHandTracker.HAND_JOINT_THUMB_METACARPAL] as Transform3D).origin
-		# Sign: the thumb metacarpal sits toward the BACK-of-hand side of the
-		# finger plane in this asset's bind (David-calibrated: the first guess
-		# put palms up and curls backward - both symptoms of this one sign).
-		var normal := index_origin.cross(pinky_origin).normalized()
-		if normal.dot(thumb_origin - (index_origin + pinky_origin) * 0.5) > 0.0:
-			normal = -normal
-		# Per-finger curl hinge axes come from the shared pose math (same result).
-		var curl_axes: Array = _pose_math().measure_curl_axes(rel)
-
-		# View alignment measured from the same axes: fingers -> view forward
-		# (-Z), palm -> view down (-Y).
-		var z_local := (-fingers_dir).normalized()
-		var y_local := (-(normal - z_local * normal.dot(z_local))).normalized()
-		var local_frame := Basis(y_local.cross(z_local), y_local, z_local)
-		var target_frame := Basis(Vector3(-1, 0, 0), Vector3(0, -1, 0), Vector3(0, 0, 1))
-		# Recorded Gesture Studio snapshots use fingers +Y / palm +Z wrist-
-		# local; this maps them into the bind wrist frame.
-		var rec_x := fingers_dir.cross(normal).normalized()
-		_bind[hand] = {
-			"rel": rel,
-			"curl_axes": curl_axes,
-			"align": target_frame * local_frame.transposed(),
-			"rec_convert": Basis(rec_x, fingers_dir, rec_x.cross(fingers_dir)),
-		}
+	# Delegated to XRHandPoseMath - the one place hand pose machinery lives,
+	# now that the remote actuator needs the same bind data.
+	var loaded: Dictionary = _pose_math().load_bind_skeletons() if _pose_math() else {}
+	if loaded.is_empty():
+		return false
+	_bind = loaded
 	return true
 
 
 func _joint_name_map() -> Dictionary:
-	var map := {"wrist": XRHandTracker.HAND_JOINT_WRIST}
-	var segments := {
-		"thumb": ["metacarpal", "phalanx-proximal", "phalanx-distal", "tip"],
-		"index-finger": ["metacarpal", "phalanx-proximal", "phalanx-intermediate", "phalanx-distal", "tip"],
-		"middle-finger": ["metacarpal", "phalanx-proximal", "phalanx-intermediate", "phalanx-distal", "tip"],
-		"ring-finger": ["metacarpal", "phalanx-proximal", "phalanx-intermediate", "phalanx-distal", "tip"],
-		"pinky-finger": ["metacarpal", "phalanx-proximal", "phalanx-intermediate", "phalanx-distal", "tip"],
-	}
-	var chain_index := 0
-	for finger in segments:
-		var chain: Array = _FINGER_CHAINS[chain_index]
-		for i in (segments[finger] as Array).size():
-			map["%s-%s" % [finger, segments[finger][i]]] = chain[i]
-		chain_index += 1
-	return map
+	return _pose_math().joint_name_map() if _pose_math() else {}
 
 
-## Same-axis FK: real knuckle hinges are parallel, so each finger's bends all
-## rotate around its bind hinge axis with accumulating angle - positions AND
-## authored orientations rotate together (the skin stays coherent).
-## Shared pose math (godot_xr_hands). Loaded at runtime so the simulator still
-## works controller-only when godot_xr_hands is absent.
 var _pose_math_cache: Object
+
 
 func _pose_math() -> Object:
 	if _pose_math_cache == null:
