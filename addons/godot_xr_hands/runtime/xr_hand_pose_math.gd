@@ -342,47 +342,140 @@ static func load_bind_skeletons() -> Dictionary:
 ## Returns the offset to add to the thumb tip, in the same wrist-local space
 ## the bind pose uses. Both the desktop simulator (keyboard-driven) and the
 ## remote actuator (script-driven) play the same path through here.
-static func microgesture_offset(bind: Array, kind: String, progress: float) -> Vector3:
-	if bind.size() <= HAND_JOINT_REF_INDEX_TIP:
-		return Vector3.ZERO
+## The hand mid-microgesture: the thumb swung along the index finger, solved
+## as ROTATIONS of the thumb joints.
+##
+## Rotations, not a repositioned fingertip, because every recognizer reads the
+## hand through the conditioning chain, and that chain stabilises bone LENGTHS:
+## parent-local offsets are low-passed at 0.05 Hz with no speed adaptation
+## (XRHandFilter.bone_min_cutoff), since a real hand's bones do not change
+## length. A synthesized thumb that reaches its target by STRETCHING the tip
+## bone is therefore precisely the signal that filter exists to reject -
+## measured, it arrived at the recognizer smoothed into nothing: thumb-to-index
+## side distance moved 1.78 -> 1.57 palm widths against a 0.46 contact gate, so
+## contact was never made and 420 feature updates produced no microgesture.
+## Carried in rotations, the same motion passes through and is recognized.
+##
+## The motion TRAVELS for the first MICROGESTURE_LIFT_AT of its progress and
+## then LIFTS clear, because the recognizer commits a swipe when the contact
+## episode ENDS - a sweep that never lets go stays in TRACKING and emits
+## nothing, which is what longer sweeps measured as.
+##
+## Returns a new array; the input is left untouched, so a caller may hold a
+## persistent pose and pass it in every frame.
+static func microgesture_pose(joints: Array, kind: String, progress: float) -> Array:
+	if joints.size() <= HAND_JOINT_REF_INDEX_TIP:
+		return joints
 	var t := clampf(progress, 0.0, 1.0)
-	var index_base: Vector3 = (bind[XRHandTracker.HAND_JOINT_INDEX_FINGER_PHALANX_PROXIMAL] as Transform3D).origin
-	var index_tip: Vector3 = (bind[XRHandTracker.HAND_JOINT_INDEX_FINGER_TIP] as Transform3D).origin
-	var thumb_tip: Vector3 = (bind[XRHandTracker.HAND_JOINT_THUMB_TIP] as Transform3D).origin
-	var along := (index_tip - index_base)
-	var length := along.length()
-	if length < 0.0001:
-		return Vector3.ZERO
-	along /= length
-	# Across the finger, in the plane of the hand: the axis a left/right
-	# swipe travels, and the one a tap approaches along.
-	var palm_normal := (index_base - (bind[XRHandTracker.HAND_JOINT_WRIST] as Transform3D).origin).cross(along).normalized()
-	var across := along.cross(palm_normal).normalized()
+	var travel := clampf(t / MICROGESTURE_LIFT_AT, 0.0, 1.0)
+	var lift := clampf((t - MICROGESTURE_LIFT_AT) / (1.0 - MICROGESTURE_LIFT_AT), 0.0, 1.0)
 
-	# Contact rides just off the surface; the recognizer's threshold is a
-	# fraction of palm width, so this stays comfortably inside it.
-	var contact := 0.004
+	var along := MICROGESTURE_SPAN.x
+	var lateral := 0.0
+	var clearance := lerpf(MICROGESTURE_CONTACT, MICROGESTURE_CLEARANCE, lift)
 	match kind:
 		"tap":
-			# In and out: touch the middle of the finger and release, which
-			# is a contact pulse with no travel.
-			var press := sin(t * PI)
-			return (index_base + along * (length * 0.5)) - thumb_tip + across * (contact + 0.012 * (1.0 - press))
+			# In and out at the middle of the finger: a contact pulse with no
+			# travel along the surface.
+			along = 0.5
+			clearance = lerpf(MICROGESTURE_CLEARANCE, MICROGESTURE_CONTACT, sin(t * PI))
 		"swipe_forward", "swipe_backward":
-			# Travel from base to tip (or back) while touching.
-			var u: float = t if kind == "swipe_forward" else 1.0 - t
-			var slide: float = length * lerpf(0.25, 0.85, u)
-			return (index_base + along * slide) - thumb_tip + across * contact
+			var u: float = travel if kind == "swipe_forward" else 1.0 - travel
+			along = lerpf(MICROGESTURE_SPAN.x, MICROGESTURE_SPAN.y, u)
 		"swipe_left", "swipe_right":
-			# Travel ACROSS the finger at mid-length.
-			var v: float = t if kind == "swipe_right" else 1.0 - t
-			var lateral: float = lerpf(-0.018, 0.018, v)
-			return (index_base + along * (length * 0.5) + palm_normal * lateral) - thumb_tip + across * contact
+			# ACROSS the finger at mid-length. Note the joint recognizer reads
+			# only the along-finger axis, so it cannot see this motion; the
+			# geometry is here for sources that can.
+			var v: float = travel if kind == "swipe_right" else 1.0 - travel
+			along = 0.5
+			lateral = lerpf(-0.018, 0.018, v)
 		_:
-			return Vector3.ZERO
+			return joints
+	return _solve_thumb_to(joints, _index_surface_point(joints, along, lateral, clearance))
+
+
+## A point just off the index finger's surface, `along` its length as a
+## fraction and `clearance` metres clear of it. Rides the finger's actual
+## POLYLINE - the geometry the feature extractor measures against - because a
+## straight base-to-tip line cuts the corner of a curled finger, putting the
+## thumb far off the surface while looking on-axis.
+static func _index_surface_point(joints: Array, along: float, lateral: float, clearance: float) -> Vector3:
+	var chain := [
+		XRHandTracker.HAND_JOINT_INDEX_FINGER_PHALANX_PROXIMAL,
+		XRHandTracker.HAND_JOINT_INDEX_FINGER_PHALANX_INTERMEDIATE,
+		XRHandTracker.HAND_JOINT_INDEX_FINGER_PHALANX_DISTAL,
+		XRHandTracker.HAND_JOINT_INDEX_FINGER_TIP,
+	]
+	var points := PackedVector3Array()
+	for joint in chain:
+		points.append((joints[joint] as Transform3D).origin)
+	var total := 0.0
+	for i in range(points.size() - 1):
+		total += (points[i + 1] - points[i]).length()
+	if total < 0.0001:
+		return (joints[XRHandTracker.HAND_JOINT_THUMB_TIP] as Transform3D).origin
+
+	var target_length := total * clampf(along, 0.0, 1.0)
+	var walked := 0.0
+	var point := points[points.size() - 1]
+	var direction := (points[1] - points[0]).normalized()
+	for i in range(points.size() - 1):
+		var segment := (points[i + 1] - points[i]).length()
+		if walked + segment >= target_length or i == points.size() - 2:
+			point = points[i].lerp(points[i + 1], clampf((target_length - walked) / maxf(segment, 0.0001), 0.0, 1.0))
+			direction = (points[i + 1] - points[i]).normalized()
+			break
+		walked += segment
+
+	var wrist: Vector3 = (joints[XRHandTracker.HAND_JOINT_WRIST] as Transform3D).origin
+	var thumb_tip: Vector3 = (joints[XRHandTracker.HAND_JOINT_THUMB_TIP] as Transform3D).origin
+	var palm_normal := (points[0] - wrist).cross(direction).normalized()
+	var across := direction.cross(palm_normal).normalized()
+	# Toward the thumb's own side of the finger, so either hand rests ON the
+	# surface rather than reaching through it.
+	if across.dot(thumb_tip - point) < 0.0:
+		across = -across
+	return point + across * clearance + palm_normal * lateral
+
+
+## Swings the thumb so its TIP reaches `target`, rotating the thumb joints only
+## (cyclic coordinate descent, tip-most joint first). Bone lengths and
+## parent-local offsets are preserved by construction, which is what lets the
+## motion survive the conditioning chain - see microgesture_pose.
+static func _solve_thumb_to(joints: Array, target: Vector3) -> Array:
+	var chain := [
+		XRHandTracker.HAND_JOINT_THUMB_METACARPAL,
+		XRHandTracker.HAND_JOINT_THUMB_PHALANX_PROXIMAL,
+		XRHandTracker.HAND_JOINT_THUMB_PHALANX_DISTAL,
+		XRHandTracker.HAND_JOINT_THUMB_TIP,
+	]
+	var out := joints.duplicate()
+	var tip_index: int = chain[chain.size() - 1]
+	for iteration in _THUMB_SOLVE_ITERATIONS:
+		for i in range(chain.size() - 2, -1, -1):
+			var pivot: Vector3 = (out[chain[i]] as Transform3D).origin
+			var tip: Vector3 = (out[tip_index] as Transform3D).origin
+			var swing := rotation_between(tip - pivot, target - pivot)
+			for k in range(i, chain.size()):
+				var joint: Transform3D = out[chain[k]]
+				out[chain[k]] = Transform3D(swing * joint.basis, pivot + swing * (joint.origin - pivot))
+	return out
 
 
 ## The gesture posture a microgesture is performed FROM: a relaxed hand with
 ## the thumb free, which is what the recognizer's posture gate expects.
+## Fraction of a microgesture spent travelling along the finger; the remainder
+## lifts the thumb clear so the contact episode ends and the swipe commits.
+const MICROGESTURE_LIFT_AT := 0.8
+## Thumb clearance from the index surface, in metres: resting contact, and
+## lifted well clear of the recognizer's release threshold.
+const MICROGESTURE_CONTACT := 0.004
+const MICROGESTURE_CLEARANCE := 0.030
+## Where along the index finger a sweep starts and ends, as a fraction of its
+## length. Inside the ends on purpose: contact pinned at an endpoint is a
+## corner, which the feature extractor treats as unbounded and excludes.
+const MICROGESTURE_SPAN := Vector2(0.12, 0.62)
+## Enough for the thumb chain to converge on a target within its reach.
+const _THUMB_SOLVE_ITERATIONS := 12
 const MICROGESTURE_CURLS := {"thumb": 0.15, "index": 0.35, "middle": 0.6, "ring": 0.65, "pinky": 0.65}
 const HAND_JOINT_REF_INDEX_TIP := XRHandTracker.HAND_JOINT_INDEX_FINGER_TIP

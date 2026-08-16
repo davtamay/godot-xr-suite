@@ -631,14 +631,18 @@ func _update_hand_poses(delta: float) -> void:
 		# Pinch morph (positions only): thumb+index tips meet -> the ADAPTER's
 		# real synthetic-pinch detector fires select, exactly like on-device.
 		var pinch_offsets := {}
+		var posed: Array = current
 		# A microgesture in flight moves the THUMB along the index finger
 		# over ~0.35s; the recognizer reads that path, so the thumb offset
 		# comes from the shared motion helper rather than a pose.
 		if hand == 1 and not _micro.is_empty():
 			_micro["elapsed"] = float(_micro["elapsed"]) + get_process_delta_time()
 			var micro_t: float = clampf(float(_micro["elapsed"]) / 0.35, 0.0, 1.0)
-			pinch_offsets[XRHandTracker.HAND_JOINT_THUMB_TIP] = _pose_math().microgesture_offset(
-					_bind[hand]["rel"], str(_micro["kind"]), micro_t)
+			# A POSE, not a moved fingertip - rotations are what survive the
+			# conditioning chain (see XRHandPoseMath.microgesture_pose). The
+			# result is published without touching _current_pose, so the blend
+			# state the next frame reads stays clean.
+			posed = _pose_math().microgesture_pose(current, str(_micro["kind"]), micro_t)
 			if micro_t >= 1.0:
 				_micro = {}
 		if hand == 1 and Input.is_mouse_button_pressed(MOUSE_BUTTON_RIGHT):
@@ -660,8 +664,8 @@ func _update_hand_poses(delta: float) -> void:
 		var anchor_pos := cam * Vector3(0.25 if hand == 1 else -0.25, -0.2, -controller_distance) + sway
 		var view_basis := _basis_looking(anchor_pos, _mouse_target(anchor_pos)) if hand == 1 else cam.basis
 		var anchor := to_origin * Transform3D(view_basis * (_bind[hand]["align"] as Basis), anchor_pos)
-		for joint in current.size():
-			var world: Transform3D = anchor * (current[joint] as Transform3D)
+		for joint in posed.size():
+			var world: Transform3D = anchor * (posed[joint] as Transform3D)
 			if pinch_offsets.has(joint):
 				world.origin += anchor.basis * (pinch_offsets[joint] as Vector3)
 			tracker.set_hand_joint_transform(joint,

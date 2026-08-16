@@ -49,6 +49,8 @@ var _ws: WebSocketPeer = null
 var _queue: Array = []
 var _applied := 0
 var _wait_frames := 0
+## Seconds still to hold, for waits authored in wall time.
+var _wait_seconds := 0.0
 var _move := {}
 var _last_pos: Array[Vector3] = [Vector3(0, 1.4, 0), Vector3(0, 1.4, 0)]
 var _owned_trackers: Array[XRControllerTracker] = []
@@ -162,6 +164,14 @@ func _tick_queue() -> void:
 	if not _move.is_empty():
 		_step_move()
 		return
+	# Seconds first: anything consumed in _physics_process is sampled on
+	# a FIXED clock while this queue advances on IDLE frames, so a hold
+	# measured in frames can slip between two physics ticks and never be
+	# seen. Measured as a thumbstick teleport that passed or failed run
+	# to run with nothing changed in between.
+	if _wait_seconds > 0.0:
+		_wait_seconds -= get_process_delta_time()
+		return
 	if _wait_frames > 0:
 		_wait_frames -= 1
 		return
@@ -181,7 +191,10 @@ func _tick_queue() -> void:
 func _apply(action: Dictionary) -> void:
 	match str(action.get("type", "")):
 		"wait":
-			_wait_frames = int(action.get("frames", 10))
+			if action.has("seconds"):
+				_wait_seconds = maxf(0.0, float(action["seconds"]))
+			else:
+				_wait_frames = int(action.get("frames", 10))
 		"pose":
 			var hand := int(action.get("hand", 1))
 			var pos := _vec(action.get("position", [0, 1.4, 0]))
@@ -204,7 +217,14 @@ func _apply(action: Dictionary) -> void:
 		"input":
 			var tracker := _tracker(int(action.get("hand", 1)))
 			if tracker:
-				tracker.set_input(StringName(str(action.get("action", "select"))), action.get("value", true))
+				var value: Variant = action.get("value", true)
+				# JSON has no vector, so a two-number ARRAY becomes one: the
+				# locomotion blocks read get_vector2("thumbstick"), so without
+				# this a drive simply could not express a stick - teleport and
+				# snap turn were undrivable rather than broken.
+				if value is Array and (value as Array).size() == 2:
+					value = Vector2(float(value[0]), float(value[1]))
+				tracker.set_input(StringName(str(action.get("action", "select"))), value)
 		"hand":
 			# Publish articulated hand JOINTS, not just a controller pose:
 			# what a hand-tracking runtime serves, so hand visuals render and
@@ -251,10 +271,20 @@ func _apply(action: Dictionary) -> void:
 			# cooldowns - so a motion that arrives cold is measured against
 			# nothing and rejected. Hold the posture first, then travel.
 			var warmup := maxi(0, int(action.get("warmup_frames", 100)))
+			var frames := maxi(6, int(action.get("frames", 24)))
 			_micro[mghand] = {
 				"kind": str(action.get("gesture", "tap")).replace("thumb_", ""),
 				"step": -warmup,
-				"frames": maxi(6, int(action.get("frames", 24))),
+				"frames": frames,
+				"elapsed": 0.0,
+				# SECONDS, not frames, is what the recognizer reasons in: it
+				# re-anchors an attempt that spends longer than half its window
+				# below tap travel, reading it as a RESTING thumb rather than a
+				# swipe. Measured: the same motion recognized on a 90 fps host
+				# stretched to ~1 s on a 39 fps headless one and was correctly
+				# discarded as a rest. A real thumb swipe is ~0.3 s, so drive it
+				# in wall time and let the frame rate fall where it may.
+				"seconds": maxf(0.05, float(action.get("seconds", 0.3))),
 			}
 			# The motion owns the queue while it plays, like a move does.
 			_wait_frames = warmup + int(_micro[mghand]["frames"])
@@ -302,7 +332,25 @@ func _to_play_space(world: Transform3D) -> Transform3D:
 func _origin_node() -> XROrigin3D:
 	if _origin == null or not is_instance_valid(_origin):
 		_origin = XRRigResolver.find_origin(self)
+		if _origin == null:
+			# The resolver walks up from this node and scans the current scene;
+			# an INJECTED actuator has neither - its parent is the tree root and
+			# the host never made the scene current. Failing to find the origin
+			# is silent and wrong rather than loud: _to_play_space then returns
+			# world coordinates unchanged, so every driven pose lands offset by
+			# the rig's transform. Invisible in a scene whose origin sits at
+			# identity, and measured as "nothing interacts at all" in one whose
+			# origin does not.
+			_origin = _find_origin_in_tree()
 	return _origin
+
+
+func _find_origin_in_tree() -> XROrigin3D:
+	if get_tree() == null:
+		return null
+	for node in get_tree().root.find_children("*", "XROrigin3D", true, false):
+		return node as XROrigin3D
+	return null
 
 ## Loads the pose machinery and the asset bind pose once, on first use, so a
 ## drive that never asks for hands pays nothing.
@@ -316,6 +364,11 @@ func _ensure_hands() -> bool:
 	if _bind.is_empty():
 		return false
 	_wake_platform_adapter()
+	# Independently of the adapter: waking the runtimes is about HANDS being
+	# driven, and the adapter walk above returns early on any scene without a
+	# rig - which is every scene the headless host injects this node into, so
+	# gating one on the other left the recognizers asleep exactly there.
+	_wake_gesture_runtimes()
 	return true
 
 
@@ -334,7 +387,6 @@ func _wake_platform_adapter() -> void:
 	for interactor in _adapter_interactors(rig):
 		if interactor.has_method(&"set_input_adapter"):
 			interactor.set_input_adapter(adapter)
-	_wake_gesture_runtimes()
 
 
 ## Gesture runtimes skip their whole update outside an XR session, so a
@@ -342,7 +394,9 @@ func _wake_platform_adapter() -> void:
 ## report nothing and look broken. A hand this node is driving IS hand
 ## input, session or not, so the runtimes are told to run.
 func _wake_gesture_runtimes() -> void:
-	var scene := get_tree().current_scene if get_tree() else null
+	# The tree ROOT, not current_scene: a host that injects this node adds the
+	# scene under root without making it current, and that walk found nothing.
+	var scene: Node = get_tree().root if get_tree() else null
 	if scene == null:
 		return
 	for node in scene.find_children("*", "", true, false):
@@ -475,11 +529,19 @@ func _publish_hand(hand: int) -> void:
 		# the finger, which is the state the envelope is learned from.
 		var micro_step := int(m["step"])
 		if micro_step >= 0:
-			var micro_t: float = float(micro_step) / float(m["frames"])
-			morph[XRHandTracker.HAND_JOINT_THUMB_TIP] = _pose_math.microgesture_offset(
-					_bind[hand]["rel"], str(m["kind"]), micro_t)
+			m["elapsed"] = float(m["elapsed"]) + get_process_delta_time()
+			var micro_t: float = clampf(float(m["elapsed"]) / float(m["seconds"]), 0.0, 1.0)
+			# A POSE, not a moved fingertip: the thumb is swung by rotating
+			# its joints, the only form of this motion that survives the
+			# conditioning chain every recognizer reads through (see
+			# XRHandPoseMath.microgesture_pose).
+			joints = _pose_math.microgesture_pose(joints, str(m["kind"]), micro_t)
 		m["step"] = micro_step + 1
-		if int(m["step"]) > int(m["frames"]):
+		# Done when the MOTION is done, not when a frame budget runs out: on a
+		# fast host a frame count expires mid-swipe, and the thumb never reaches
+		# the lift that ends the contact episode and commits the gesture. The
+		# frame cap stays as a hang guard.
+		if micro_step >= 0 and (float(m["elapsed"]) >= float(m["seconds"]) 				or int(m["step"]) > int(m["frames"]) * 8):
 			_micro.erase(hand)
 	if str(_hand_state[hand].get("pose", "")) == "pinch":
 		var thumb: Vector3 = (joints[XRHandTracker.HAND_JOINT_THUMB_TIP] as Transform3D).origin
@@ -543,7 +605,11 @@ func _wire_signals() -> void:
 		"activated": true, "deactivated": true,
 		"pressed": true, "value_changed": true,
 		"object_socketed": true, "object_released": true,
-		"teleported": true, "climb_started": true, "climb_ended": true,
+		"teleported": true, "snap_turned": true,
+		# The AIM lifecycle too: without it a teleport that engaged and then
+		# failed to commit is indistinguishable from one that never armed.
+		"teleport_aim_started": true, "teleport_cancelled": true,
+		"climb_started": true, "climb_ended": true,
 		"gesture_started": true, "gesture_ended": true,
 		# The thumb recognizers use their own names; listening only for the
 		# gesture_* pair made a working microgesture look like a dead one.
@@ -563,8 +629,13 @@ func _wire_signals() -> void:
 				node.connect(sig_name, _on_event.bind(sig_name, String(root.get_path_to(node))))
 
 
-func _on_event(a = null, b = null, c = null, d = null) -> void:
-	var args := [a, b, c, d]
+## Wide enough for the largest signal here plus the two bound arguments:
+## a 3-argument signal (microgesture_performed, gesture_started) arrives as
+## FIVE, and a handler that took four made Godot refuse the call - the
+## recognizer fired, the error went to a stdout the operator discards, and
+## the drive reported the interaction as dead.
+func _on_event(a = null, b = null, c = null, d = null, e = null, f = null) -> void:
+	var args := [a, b, c, d, e, f]
 	var bound := []
 	for v in args:
 		if v != null:
