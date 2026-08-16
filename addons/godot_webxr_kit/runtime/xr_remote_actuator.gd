@@ -46,6 +46,10 @@ var _last_pos: Array[Vector3] = [Vector3(0, 1.4, 0), Vector3(0, 1.4, 0)]
 var _owned_trackers: Array[XRControllerTracker] = []
 var _signals_wired := false
 var _done_sent := false
+## Frames since the drive began, so events align with the action list.
+var _drive_frame := 0
+## Last driven aim per hand, re-published every frame (see _tick_queue).
+var _held_aim := {}
 
 ## Synthetic hand state, built only when a drive asks for hands.
 const _POSE_MATH_PATH := "res://addons/godot_xr_hands/runtime/xr_hand_pose_math.gd"
@@ -132,8 +136,16 @@ func _process(_delta: float) -> void:
 
 
 func _tick_queue() -> void:
-	# A held hand pose re-publishes every frame so the hand follows the
-	# driven position and keeps looking live to the tracking watchdogs.
+	_drive_frame += 1
+	# A runtime publishes poses EVERY frame, and the interaction chain is
+	# built for that: a pose written once and left alone goes stale, and the
+	# interactor drops its hover a frame or two later even though nothing
+	# moved. Measured before this republish existed - hover entered on drive
+	# frame 64 and exited on 66 with the hand held still. So hold what was
+	# last driven and re-publish it, exactly like a device would.
+	for hand in _held_aim:
+		if _move.is_empty() or int(_move.get("hand", -1)) != hand:
+			_publish_pose(hand, _last_pos[clampi(hand, 0, 1)], _held_aim[hand])
 	for hand in _hand_state:
 		_publish_hand(hand)
 	if not _move.is_empty():
@@ -162,8 +174,10 @@ func _apply(action: Dictionary) -> void:
 		"pose":
 			var hand := int(action.get("hand", 1))
 			var pos := _vec(action.get("position", [0, 1.4, 0]))
-			_publish_pose(hand, pos, _vec(action["aim"]) if action.has("aim") else pos)
+			var aim_at := _vec(action["aim"]) if action.has("aim") else pos
+			_publish_pose(hand, pos, aim_at)
 			_last_pos[clampi(hand, 0, 1)] = pos
+			_held_aim[clampi(hand, 0, 1)] = aim_at
 		"move":
 			var mhand := int(action.get("hand", 1))
 			_move = {
@@ -219,6 +233,7 @@ func _step_move() -> void:
 	_move.step += 1
 	if _move.step > int(_move.frames):
 		_last_pos[clampi(int(_move.hand), 0, 1)] = _move.to
+		_held_aim[clampi(int(_move.hand), 0, 1)] = aim if aim.is_finite() else _move.to
 		_move = {}
 
 
@@ -420,6 +435,9 @@ func _tracker(hand: int) -> XRControllerTracker:
 func _wire_signals() -> void:
 	var of_interest := {
 		"grabbed": true, "released": true, "thrown": true,
+		# select_* is the raw interactor-level pair: some interactables (the
+		# climb handhold) act on it directly and never emit a grab.
+		"select_entered": true, "select_exited": true,
 		"hover_entered": true, "hover_exited": true,
 		"activated": true, "deactivated": true,
 		"pressed": true, "value_changed": true,
@@ -452,7 +470,11 @@ func _on_event(a = null, b = null, c = null, d = null) -> void:
 		"type": "event",
 		"signal": str(bound[bound.size() - 2]),
 		"node": str(bound[bound.size() - 1]),
-		"frame": Engine.get_process_frames(),
+		# Engine frames count from process start; the drive starts whenever
+		# the socket connected. Only the queue-relative number lets a caller
+		# line an event up against the action that caused it.
+		"frame": _drive_frame,
+		"engine_frame": Engine.get_process_frames(),
 	})
 
 
