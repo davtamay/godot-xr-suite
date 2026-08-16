@@ -23,6 +23,12 @@ extends Node
 ##   app -> {"type":"event",...}           every interaction signal, live
 ##   app -> {"type":"done","applied":N}    when the queue empties
 ##
+## COORDINATES: positions are ORIGIN-LOCAL (play space), the space a runtime
+## publishes tracker poses in - consumers multiply by the XROrigin3D
+## transform to reach world. They coincide only while the origin sits at
+## identity, which is why a drive authored against world coordinates works
+## in one scene and lands offset in another that moves its origin.
+##
 ## NOTE for browser use: an https page may only open wss:// sockets, so the
 ## operator endpoint must speak TLS on a certificate this headset already
 ## accepted - the practical route is the serve relay (planned), not a raw
@@ -177,6 +183,8 @@ func _apply(action: Dictionary) -> void:
 			var hand := int(action.get("hand", 1))
 			var pos := _vec(action.get("position", [0, 1.4, 0]))
 			var aim_at := _vec(action["aim"]) if action.has("aim") else pos
+			if bool(action.get("tip", false)):
+				pos = _anchor_for_tip(hand, pos)
 			_publish_pose(hand, pos, aim_at)
 			_last_pos[clampi(hand, 0, 1)] = pos
 			_held_aim[clampi(hand, 0, 1)] = aim_at
@@ -185,7 +193,7 @@ func _apply(action: Dictionary) -> void:
 			_move = {
 				"hand": mhand,
 				"from": _vec(action["from"]) if action.has("from") else _last_pos[clampi(mhand, 0, 1)],
-				"to": _vec(action.get("to", [0, 1.4, 0])),
+				"to": _anchor_for_tip(mhand, _vec(action.get("to", [0, 1.4, 0]))) if bool(action.get("tip", false)) else _vec(action.get("to", [0, 1.4, 0])),
 				"aim": _vec(action["aim"]) if action.has("aim") else Vector3.INF,
 				"frames": maxi(2, int(action.get("frames", 30))),
 				"step": 0,
@@ -364,6 +372,23 @@ func _curls_for(pose: String) -> Dictionary:
 		_:
 			return {}
 
+
+
+## Poking is aimed with the FINGERTIP, but a drive positions the hand
+## anchor, and the tip sits ~15cm further along - so "move to the button"
+## puts the wrist there and the finger through it. With `tip: true` a pose
+## or move names where the INDEX TIP should land and this solves back to
+## the anchor that puts it there. Needs a hand pose published first; without
+## one there are no joints to measure against and the position is used as-is.
+func _anchor_for_tip(hand: int, tip_target: Vector3) -> Vector3:
+	if not _hand_state.has(hand):
+		return tip_target
+	var joints: Array = _hand_state[hand]["joints"]
+	if joints.size() <= XRHandTracker.HAND_JOINT_INDEX_FINGER_TIP:
+		return tip_target
+	var basis: Basis = _hand_basis(hand) * (_bind[hand]["align"] as Basis)
+	var local_tip: Vector3 = (joints[XRHandTracker.HAND_JOINT_INDEX_FINGER_TIP] as Transform3D).origin
+	return tip_target - basis * local_tip
 
 ## Registers a hand tracker the way a hand-tracking runtime would.
 func _hand_tracker(hand: int) -> XRHandTracker:
