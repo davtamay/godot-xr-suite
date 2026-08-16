@@ -61,6 +61,8 @@ var _pose_math: Object = null
 var _bind := {}
 var _hand_trackers := {}
 var _hand_state := {}
+## Microgesture motions in flight, per hand.
+var _micro := {}
 
 
 func _ready() -> void:
@@ -220,6 +222,26 @@ func _apply(action: Dictionary) -> void:
 				joints = _pose_math.fk_pose(_bind[hhand]["rel"], _bind[hhand]["curl_axes"], curls)
 			_hand_state[hhand] = {"joints": joints, "pose": pose_name}
 			_publish_hand(hhand)
+		"microgesture":
+			# A motion, not a pose: the thumb travels along the index finger
+			# and the recognizer reads the path. Same helper the desktop
+			# simulator plays from its arrow keys.
+			var mghand := int(action.get("hand", 1))
+			if not _ensure_hands():
+				_send({"type": "event", "error": "microgestures need the godot_xr_hands addon"})
+				return
+			_hand_state[mghand] = {
+				"joints": _pose_math.fk_pose(_bind[mghand]["rel"], _bind[mghand]["curl_axes"],
+						_pose_math.MICROGESTURE_CURLS),
+				"pose": "microgesture",
+			}
+			_micro[mghand] = {
+				"kind": str(action.get("gesture", "tap")).replace("thumb_", ""),
+				"step": 0,
+				"frames": maxi(6, int(action.get("frames", 24))),
+			}
+			# The motion owns the queue while it plays, like a move does.
+			_wait_frames = int(_micro[mghand]["frames"])
 		_:
 			_send({"type": "event", "error": "unknown action type %s" % action.get("type", "")})
 
@@ -385,6 +407,14 @@ func _publish_hand(hand: int) -> void:
 	# what makes the ADAPTER's own synthetic-pinch detector fire - the same
 	# path a real hand takes on-device, rather than a faked select.
 	var morph := {}
+	if _micro.has(hand):
+		var m: Dictionary = _micro[hand]
+		var micro_t: float = float(m["step"]) / float(m["frames"])
+		morph[XRHandTracker.HAND_JOINT_THUMB_TIP] = _pose_math.microgesture_offset(
+				_bind[hand]["rel"], str(m["kind"]), micro_t)
+		m["step"] = int(m["step"]) + 1
+		if int(m["step"]) > int(m["frames"]):
+			_micro.erase(hand)
 	if str(_hand_state[hand].get("pose", "")) == "pinch":
 		var thumb: Vector3 = (joints[XRHandTracker.HAND_JOINT_THUMB_TIP] as Transform3D).origin
 		var index: Vector3 = (joints[XRHandTracker.HAND_JOINT_INDEX_FINGER_TIP] as Transform3D).origin

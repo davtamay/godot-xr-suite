@@ -329,3 +329,60 @@ static func load_bind_skeletons() -> Dictionary:
 			"rec_convert": Basis(rec_x, fingers_dir, rec_x.cross(fingers_dir)),
 		}
 	return bind
+
+
+## MICROGESTURES are motions, not poses: the thumb travels along the side of
+## the index finger while touching it, and the recognizer reads that path
+## over time (contact distance, then direction). Snapping to a "swipe pose"
+## produces nothing, because there is no such pose - which is why this
+## returns a thumb-tip OFFSET for a moment in the motion rather than a hand.
+##
+## kind: "tap", "swipe_forward", "swipe_backward", "swipe_left", "swipe_right"
+## progress: 0..1 through the motion.
+## Returns the offset to add to the thumb tip, in the same wrist-local space
+## the bind pose uses. Both the desktop simulator (keyboard-driven) and the
+## remote actuator (script-driven) play the same path through here.
+static func microgesture_offset(bind: Array, kind: String, progress: float) -> Vector3:
+	if bind.size() <= HAND_JOINT_REF_INDEX_TIP:
+		return Vector3.ZERO
+	var t := clampf(progress, 0.0, 1.0)
+	var index_base: Vector3 = (bind[XRHandTracker.HAND_JOINT_INDEX_FINGER_PHALANX_PROXIMAL] as Transform3D).origin
+	var index_tip: Vector3 = (bind[XRHandTracker.HAND_JOINT_INDEX_FINGER_TIP] as Transform3D).origin
+	var thumb_tip: Vector3 = (bind[XRHandTracker.HAND_JOINT_THUMB_TIP] as Transform3D).origin
+	var along := (index_tip - index_base)
+	var length := along.length()
+	if length < 0.0001:
+		return Vector3.ZERO
+	along /= length
+	# Across the finger, in the plane of the hand: the axis a left/right
+	# swipe travels, and the one a tap approaches along.
+	var palm_normal := (index_base - (bind[XRHandTracker.HAND_JOINT_WRIST] as Transform3D).origin).cross(along).normalized()
+	var across := along.cross(palm_normal).normalized()
+
+	# Contact rides just off the surface; the recognizer's threshold is a
+	# fraction of palm width, so this stays comfortably inside it.
+	var contact := 0.004
+	match kind:
+		"tap":
+			# In and out: touch the middle of the finger and release, which
+			# is a contact pulse with no travel.
+			var press := sin(t * PI)
+			return (index_base + along * (length * 0.5)) - thumb_tip + across * (contact + 0.012 * (1.0 - press))
+		"swipe_forward", "swipe_backward":
+			# Travel from base to tip (or back) while touching.
+			var u: float = t if kind == "swipe_forward" else 1.0 - t
+			var slide: float = length * lerpf(0.25, 0.85, u)
+			return (index_base + along * slide) - thumb_tip + across * contact
+		"swipe_left", "swipe_right":
+			# Travel ACROSS the finger at mid-length.
+			var v: float = t if kind == "swipe_right" else 1.0 - t
+			var lateral: float = lerpf(-0.018, 0.018, v)
+			return (index_base + along * (length * 0.5) + palm_normal * lateral) - thumb_tip + across * contact
+		_:
+			return Vector3.ZERO
+
+
+## The gesture posture a microgesture is performed FROM: a relaxed hand with
+## the thumb free, which is what the recognizer's posture gate expects.
+const MICROGESTURE_CURLS := {"thumb": 0.15, "index": 0.35, "middle": 0.6, "ring": 0.65, "pinky": 0.65}
+const HAND_JOINT_REF_INDEX_TIP := XRHandTracker.HAND_JOINT_INDEX_FINGER_TIP

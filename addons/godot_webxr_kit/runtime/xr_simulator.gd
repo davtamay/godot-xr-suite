@@ -85,6 +85,9 @@ var _mode_key_down := false
 var _hand_trackers := {}      # hand -> XRHandTracker WE registered
 var _poses := {}              # "open"/"fist" -> per-hand Arrays of wrist-local Transform3D
 var _bind := {}               # hand -> {rel, curl_axes, align, rec_convert} from the asset glb
+## A microgesture in flight: {kind, elapsed}. Microgestures are motions,
+## so a key press PLAYS one rather than holding a pose.
+var _micro := {}
 var _pose_library: Array = [] # [{name, per_hand}] - open + presets + user recordings
 var _active_pose := 0         # library index applied to the RIGHT hand (0 = open)
 var _pose_key_down := -1
@@ -332,6 +335,25 @@ func _update_common_keys() -> void:
 		if _help_layer:
 			_help_layer.visible = show_help
 	_help_key_down = help_key
+
+	# Microgestures are motions along the index finger, so the arrow keys map
+	# to where the thumb travels: up/down slide along the finger, left/right
+	# across it, and Space taps. Pressing one PLAYS the motion; the
+	# recognizer sees the same path a real thumb makes.
+	if _mode == SimMode.HAND and _micro.is_empty():
+		var micro_kind := ""
+		if Input.is_physical_key_pressed(KEY_UP):
+			micro_kind = "swipe_forward"
+		elif Input.is_physical_key_pressed(KEY_DOWN):
+			micro_kind = "swipe_backward"
+		elif Input.is_physical_key_pressed(KEY_LEFT):
+			micro_kind = "swipe_left"
+		elif Input.is_physical_key_pressed(KEY_RIGHT):
+			micro_kind = "swipe_right"
+		elif Input.is_physical_key_pressed(KEY_SPACE):
+			micro_kind = "tap"
+		if micro_kind != "":
+			_micro = {"kind": micro_kind, "elapsed": 0.0}
 
 	var mode_key := Input.is_physical_key_pressed(KEY_X)
 	if mode_key and not _mode_key_down and _hands_available():
@@ -609,6 +631,16 @@ func _update_hand_poses(delta: float) -> void:
 		# Pinch morph (positions only): thumb+index tips meet -> the ADAPTER's
 		# real synthetic-pinch detector fires select, exactly like on-device.
 		var pinch_offsets := {}
+		# A microgesture in flight moves the THUMB along the index finger
+		# over ~0.35s; the recognizer reads that path, so the thumb offset
+		# comes from the shared motion helper rather than a pose.
+		if hand == 1 and not _micro.is_empty():
+			_micro["elapsed"] = float(_micro["elapsed"]) + get_process_delta_time()
+			var micro_t: float = clampf(float(_micro["elapsed"]) / 0.35, 0.0, 1.0)
+			pinch_offsets[XRHandTracker.HAND_JOINT_THUMB_TIP] = _pose_math().microgesture_offset(
+					_bind[hand]["rel"], str(_micro["kind"]), micro_t)
+			if micro_t >= 1.0:
+				_micro = {}
 		if hand == 1 and Input.is_mouse_button_pressed(MOUSE_BUTTON_RIGHT):
 			var thumb: Vector3 = (current[XRHandTracker.HAND_JOINT_THUMB_TIP] as Transform3D).origin
 			var index: Vector3 = (current[XRHandTracker.HAND_JOINT_INDEX_FINGER_TIP] as Transform3D).origin
@@ -712,6 +744,8 @@ func _update_help_text() -> void:
 			["Right Mouse", "pinch — select / grab"],
 			["F", "fist (hold)"],
 			["X", "switch to controllers"],
+			["Arrows", "microgesture: thumb swipes along/across the index"],
+			["Space", "microgesture: thumb tap"],
 		]
 		for i in range(1, _pose_library.size()):
 			rows.append([str(i), "pose: %s (again = open)" % _pose_library[i]["name"]])
