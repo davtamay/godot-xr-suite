@@ -23,11 +23,13 @@ extends Node
 ##   app -> {"type":"event",...}           every interaction signal, live
 ##   app -> {"type":"done","applied":N}    when the queue empties
 ##
-## COORDINATES: positions are ORIGIN-LOCAL (play space), the space a runtime
-## publishes tracker poses in - consumers multiply by the XROrigin3D
-## transform to reach world. They coincide only while the origin sits at
-## identity, which is why a drive authored against world coordinates works
-## in one scene and lands offset in another that moves its origin.
+## COORDINATES: drives are authored in WORLD space - the space scene_dump
+## reports and a person reads off a scene - and converted here. Tracker
+## poses are published in play space (origin-local), which is what a
+## runtime provides and what consumers like the poke interactor assume when
+## they resolve a point as origin.global_transform * joint. The two coincide
+## only while the origin sits at identity, so doing this conversion is what
+## makes the same drive work in a scene whose origin has moved.
 ##
 ## NOTE for browser use: an https page may only open wss:// sockets, so the
 ## operator endpoint must speak TLS on a certificate this headset already
@@ -69,6 +71,7 @@ var _hand_trackers := {}
 var _hand_state := {}
 ## Microgesture motions in flight, per hand.
 var _micro := {}
+var _origin: XROrigin3D = null
 
 
 func _ready() -> void:
@@ -276,10 +279,25 @@ func _publish_pose(hand: int, pos: Vector3, aim_target: Vector3) -> void:
 	var basis := Basis()
 	if not aim_target.is_equal_approx(pos):
 		basis = Basis.looking_at(aim_target - pos, Vector3.UP)
-	var xform := Transform3D(basis, pos)
+	var xform := _to_play_space(Transform3D(basis, pos))
 	for pose_name in [&"default", &"aim", &"grip"]:
 		tracker.set_pose(pose_name, xform, Vector3.ZERO, Vector3.ZERO, XRPose.XR_TRACKING_CONFIDENCE_HIGH)
 
+
+
+## World -> play space. Tracker poses are origin-local; drives are authored
+## in world, which is the space a scene is read in.
+func _to_play_space(world: Transform3D) -> Transform3D:
+	var origin := _origin_node()
+	if origin == null:
+		return world
+	return origin.global_transform.affine_inverse() * world
+
+
+func _origin_node() -> XROrigin3D:
+	if _origin == null or not is_instance_valid(_origin):
+		_origin = XRRigResolver.find_origin(self)
+	return _origin
 
 ## Loads the pose machinery and the asset bind pose once, on first use, so a
 ## drive that never asks for hands pays nothing.
@@ -386,7 +404,7 @@ func _anchor_for_tip(hand: int, tip_target: Vector3) -> Vector3:
 	var joints: Array = _hand_state[hand]["joints"]
 	if joints.size() <= XRHandTracker.HAND_JOINT_INDEX_FINGER_TIP:
 		return tip_target
-	var basis: Basis = _hand_basis(hand) * (_bind[hand]["align"] as Basis)
+	var basis: Basis = _hand_world_basis(hand) * (_bind[hand]["align"] as Basis)
 	var local_tip: Vector3 = (joints[XRHandTracker.HAND_JOINT_INDEX_FINGER_TIP] as Transform3D).origin
 	return tip_target - basis * local_tip
 
@@ -427,7 +445,7 @@ func _publish_hand(hand: int) -> void:
 	# frozen-hand watchdog (built for a real stale-pose bug) hides the hand.
 	var t := float(Time.get_ticks_msec()) * 0.001
 	var sway := Vector3(sin(t * 1.3 + hand), sin(t * 1.7), sin(t * 2.1)) * 0.0006
-	var anchor := Transform3D(_hand_basis(hand) * align, pos + sway)
+	var anchor := _to_play_space(Transform3D(_hand_world_basis(hand) * align, pos + sway))
 	# Pinch morph (positions only): the tips are pulled to meet, which is
 	# what makes the ADAPTER's own synthetic-pinch detector fire - the same
 	# path a real hand takes on-device, rather than a faked select.
@@ -458,11 +476,16 @@ func _publish_hand(hand: int) -> void:
 
 ## The hand's world orientation: the same aim the controller pose uses, so a
 ## driven hand and its ray point the same way.
-func _hand_basis(hand: int) -> Basis:
+func _hand_world_basis(hand: int) -> Basis:
+	# The tracker holds a play-space pose; the anchor is built in world and
+	# converted once, so this hands back the world basis.
 	var tracker := _tracker(hand)
 	if tracker:
 		var pose := tracker.get_pose(&"default")
 		if pose:
+			var origin := _origin_node()
+			if origin:
+				return (origin.global_transform * pose.transform).basis
 			return pose.transform.basis
 	return Basis()
 
