@@ -246,13 +246,18 @@ func _apply(action: Dictionary) -> void:
 						_pose_math.MICROGESTURE_CURLS),
 				"pose": "microgesture",
 			}
+			# The recognizer LEARNS its contact envelope from sustained
+			# samples while the hand holds gesture posture, and guards with
+			# cooldowns - so a motion that arrives cold is measured against
+			# nothing and rejected. Hold the posture first, then travel.
+			var warmup := maxi(0, int(action.get("warmup_frames", 100)))
 			_micro[mghand] = {
 				"kind": str(action.get("gesture", "tap")).replace("thumb_", ""),
-				"step": 0,
+				"step": -warmup,
 				"frames": maxi(6, int(action.get("frames", 24))),
 			}
 			# The motion owns the queue while it plays, like a move does.
-			_wait_frames = int(_micro[mghand]["frames"])
+			_wait_frames = warmup + int(_micro[mghand]["frames"])
 		_:
 			_send({"type": "event", "error": "unknown action type %s" % action.get("type", "")})
 
@@ -452,10 +457,14 @@ func _publish_hand(hand: int) -> void:
 	var morph := {}
 	if _micro.has(hand):
 		var m: Dictionary = _micro[hand]
-		var micro_t: float = float(m["step"]) / float(m["frames"])
-		morph[XRHandTracker.HAND_JOINT_THUMB_TIP] = _pose_math.microgesture_offset(
-				_bind[hand]["rel"], str(m["kind"]), micro_t)
-		m["step"] = int(m["step"]) + 1
+		# Negative steps are the warm-up: posture held, thumb resting off
+		# the finger, which is the state the envelope is learned from.
+		var micro_step := int(m["step"])
+		if micro_step >= 0:
+			var micro_t: float = float(micro_step) / float(m["frames"])
+			morph[XRHandTracker.HAND_JOINT_THUMB_TIP] = _pose_math.microgesture_offset(
+					_bind[hand]["rel"], str(m["kind"]), micro_t)
+		m["step"] = micro_step + 1
 		if int(m["step"]) > int(m["frames"]):
 			_micro.erase(hand)
 	if str(_hand_state[hand].get("pose", "")) == "pinch":
@@ -522,6 +531,10 @@ func _wire_signals() -> void:
 		"object_socketed": true, "object_released": true,
 		"teleported": true, "climb_started": true, "climb_ended": true,
 		"gesture_started": true, "gesture_ended": true,
+		# The thumb recognizers use their own names; listening only for the
+		# gesture_* pair made a working microgesture look like a dead one.
+		"microgesture_performed": true, "microgesture_candidate": true,
+		"pose_performed": true, "pose_ended": true,
 		"session_started": true, "session_ended": true,
 	}
 	var root := get_tree().current_scene if get_tree().current_scene else get_tree().root
