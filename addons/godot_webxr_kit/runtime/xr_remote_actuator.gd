@@ -20,7 +20,8 @@ extends Node
 ##   app -> {"type":"hello","scene":...}   on connect
 ##   ctl -> {"type":"actions","actions":[...]}   pose/move/input/wait,
 ##          the same action dictionaries the headless simulate_input takes
-##   app -> {"type":"event",...}           every interaction signal, live
+##   app -> {"type":"event",...}           every interaction signal, live,
+##          plus anything a `report` action reads back out of the scene
 ##   app -> {"type":"done","applied":N}    when the queue empties
 ##
 ## COORDINATES: drives are authored in WORLD space - the space scene_dump
@@ -296,6 +297,43 @@ func _apply(action: Dictionary) -> void:
 			var err := image.save_png(shot_path)
 			_send({"type": "event", "shot": shot_path, "ok": err == OK,
 					"label": str(action.get("label", ""))})
+		"report":
+			# Read a value back OUT of the scene, onto the same channel as the
+			# signals. Signals cover most of what a drive needs to assert, but
+			# not everything an interaction DOES is announced: two-hand scaling
+			# only changes a transform, so a case watching signals alone could
+			# not tell a two-hand scale from an ordinary one-hand grab - both
+			# report exactly `grabbed`. Reporting the property makes that state
+			# assertable instead of assumed.
+			var report_root := get_tree().current_scene if get_tree().current_scene else get_tree().root
+			var report_path := str(action.get("path", ""))
+			var subject: Node = report_root.get_node_or_null(NodePath(report_path))
+			if subject == null:
+				# Fall back to a name search: hints and dumps quote paths
+				# relative to whichever root they walked, and a drive should not
+				# fail because two roots disagree about a prefix.
+				subject = report_root.find_child(report_path.get_file(), true, false)
+			if subject == null:
+				_send({"type": "event", "error": "report: no node at %s" % report_path})
+				return
+			# get_indexed, so a case can ask for `scale:x` and get back a NUMBER
+			# rather than a vector string it would have to parse apart again.
+			var prop := str(action.get("property", "scale"))
+			var read: Variant = subject.get_indexed(NodePath(prop))
+			if read == null:
+				_send({"type": "event", "error": "report: %s has no %s" % [report_path, prop]})
+				return
+			_send({
+				"type": "event",
+				"signal": "report %s%s=%s" % [
+					prop,
+					("[%s]" % str(action["label"])) if action.has("label") else "",
+					str(read),
+				],
+				"node": report_path,
+				"frame": _drive_frame,
+				"engine_frame": Engine.get_process_frames(),
+			})
 		"input":
 			var tracker := _tracker(int(action.get("hand", 1)))
 			if tracker:
