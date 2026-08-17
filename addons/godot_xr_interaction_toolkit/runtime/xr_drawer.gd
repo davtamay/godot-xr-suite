@@ -49,3 +49,8 @@ func _project(hand_world: Vector3) -> float:
 	var parent := moved.get_parent() as Node3D if moved else null
 	var local := parent.to_local(hand_world) if parent else hand_world
 	return local.dot(_axis().normalized())
+
+
+## Pull it most of the way open along its slide.
+func drive_travel() -> Vector3:
+	return drive_point() + drive_axis_world(slide_axis) * (travel * 0.6)

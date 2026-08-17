@@ -120,3 +120,27 @@ func _axis() -> Vector3:
 
 func _axis_world() -> Vector3:
 	return (target().global_transform.basis * _axis()).normalized()
+
+
+## Orbit the grip around the spin axis. A knob's collider is usually centred ON
+## that axis, and a hand there has no angle to turn - so the grip is pushed out
+## to the rim first, exactly the correction a person makes without thinking.
+func drive_travel() -> Vector3:
+	var moved := target()
+	if moved == null:
+		return drive_point()
+	var pivot := moved.global_position
+	var axis := drive_axis_world(spin_axis)
+	var arm := drive_point() - pivot
+	arm -= axis * arm.dot(axis)
+	if arm.length() < 0.015:
+		var side := moved.global_transform.basis.x
+		if absf(side.dot(axis)) > 0.9:
+			side = moved.global_transform.basis.z
+		arm = (side - axis * side.dot(axis)).normalized() * _RIM_RADIUS
+	var sweep := deg_to_rad(minf(range_degrees * 0.35, 80.0))
+	return pivot + Basis(axis, sweep) * arm
+
+
+## Where to hold a knob whose collider sits on its own axis.
+const _RIM_RADIUS := 0.045

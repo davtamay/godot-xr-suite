@@ -115,10 +115,22 @@ func drive_point() -> Vector3:
 	var colliders := get_colliders()
 	if colliders.is_empty():
 		return global_position
-	var total := Vector3.ZERO
+	# The SHAPES, not the bodies. A body often sits at the node origin while its
+	# shape is where the geometry actually is - a lever's body is on the pivot
+	# and its shape is 13 cm up the handle, and a hand placed on the pivot has
+	# no lever arm to turn, which is the difference between working the
+	# mechanism and holding still inside it.
+	var points: Array[Vector3] = []
 	for collider in colliders:
-		total += (collider as Node3D).global_position
-	return total / float(colliders.size())
+		for child in (collider as Node).get_children():
+			if child is CollisionShape3D and (child as CollisionShape3D).shape != null:
+				points.append((child as Node3D).global_position)
+		if points.is_empty():
+			points.append((collider as Node3D).global_position)
+	var total := Vector3.ZERO
+	for point in points:
+		total += point
+	return total / float(points.size())
 
 
 func is_hovered() -> bool:

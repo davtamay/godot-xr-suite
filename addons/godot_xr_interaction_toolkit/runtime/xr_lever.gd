@@ -53,3 +53,14 @@ func _axis() -> Vector3:
 ## The hinge axis in world space (fixed as the lever swings around it).
 func _axis_world() -> Vector3:
 	return (target().global_transform.basis * _axis()).normalized()
+
+
+## Swing the handle through the bulk of its arc, around the hinge.
+func drive_travel() -> Vector3:
+	var moved := target()
+	if moved == null:
+		return drive_point()
+	var pivot := moved.global_position
+	var arm := drive_point() - pivot
+	var sweep := deg_to_rad((max_angle_deg - min_angle_deg) * 0.55)
+	return pivot + Basis(drive_axis_world(hinge_axis), sweep) * arm

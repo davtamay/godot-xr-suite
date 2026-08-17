@@ -49,6 +49,32 @@ func target() -> Node3D:
 
 
 ## Set the mechanism 0..1 programmatically (clamped), moving it and signalling.
+## A mechanism needs a MOTION, not just a grip: a drive has to know where to
+## carry the hand once it has hold. `to` is a world point that works the
+## mechanism through a useful part of its range - subclasses know their own
+## axis and say so.
+func drive_hint() -> Dictionary:
+	var hint := super()
+	hint["kind"] = "constrained"
+	hint["gesture"] = "grab"
+	hint["to"] = drive_travel()
+	return hint
+
+
+## Default: no motion. A mechanism that does not override this is grabbed and
+## held still, which is honest rather than a guess about its axis.
+func drive_travel() -> Vector3:
+	return drive_point()
+
+
+## The mechanism's own axis in world space.
+func drive_axis_world(local_axis: Vector3) -> Vector3:
+	var moved := target()
+	if moved == null:
+		return Vector3.UP
+	return (moved.global_transform.basis * local_axis).normalized()
+
+
 func set_value(new_value: float) -> void:
 	var clamped := clampf(new_value, 0.0, 1.0)
 	if is_equal_approx(clamped, value):
