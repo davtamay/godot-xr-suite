@@ -67,6 +67,10 @@ func _ready() -> void:
 	if not ResourceLoader.exists(script_path):
 		return  # godot_xr_hands not installed; nothing to mount.
 	_hands = load(script_path).new()
+	# Named for the same reason the poke station names what it builds: an
+	# anonymous runtime node reads as @Node@N in every scene dump and probe,
+	# and the hand visuals are exactly what someone debugging hands looks for.
+	_hands.name = "HandMeshVisualizer" if script_path == HAND_MESH_VISUALIZER else "HandVisualizer"
 	if "prefer_browser_hand_bridge" in _hands:
 		_hands.prefer_browser_hand_bridge = prefer_browser_hand_bridge
 	if "left_model" in _hands:

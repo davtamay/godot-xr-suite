@@ -31,15 +31,34 @@ extends Node3D
 ## hold it as mirror images (a left-handed grip mirrors your right-handed one).
 @export var mirror_to_other_hand := true
 
+## Render the authored grip on the real hand while this point holds the object,
+## instead of the live tracked fingers - the pose you previewed BECOMES the
+## hold. A tracked hand around a virtual object is always a little wrong
+## (fingers through the mesh, or floating off it), so showing the authored grip
+## trades a true report of your fingers for a true depiction of the hold.
+##
+## Visual only: the trackers keep publishing your real hand, so releasing,
+## gestures and every recognizer downstream still see the truth. Needs the
+## godot_xr_hands realistic hand meshes; silently does nothing without them.
+@export var pose_hand_while_held := false
+
+## Fingers that keep TRACKING while the rest hold the authored grip. A spray
+## can gripped by the body with the index left free lets you work the trigger
+## with your own finger while the hold stays put - which is the whole reason
+## per-finger freedom exists rather than a single frozen hand.
+@export_flags("Thumb", "Index", "Middle", "Ring", "Pinky") var free_fingers := 0
+
 ## AUTHORING AID (editor only): show a translucent reference HAND gripping the
 ## object exactly as it will at runtime (same grip convention). Move/rotate this
 ## grab point until the hand holds the object naturally - then it's correct
 ## in-headset, no guessing. The preview is never saved and never appears in-game.
 @export var preview_hand := false: set = _set_preview_hand
 
-## Which pose the preview hand makes. The dropdown lists your SAVED poses from
-## the Gesture Studio (shipped presets + your user:// recordings) plus a few
-## built-in grips, so you place a grab point against the shape you'll hold.
+## Which pose this grip uses - previewed in the editor, and rendered on the
+## real hand at runtime when pose_hand_while_held is on. The dropdown lists
+## your SAVED poses from the Gesture Studio (shipped presets + your user://
+## recordings) plus a few built-in grips, so the grip you record on a real
+## hand is the grip the object is authored against and the one players see.
 var preview_pose := "Relaxed Grip": set = _set_preview_pose
 
 const _HAND_MODEL_PATH := "res://addons/godot_xr_hands/models/generic_hand/right.glb"
@@ -113,6 +132,67 @@ func _ready() -> void:
 		_build_editor_marker()
 		if preview_hand:
 			_rebuild_hand_preview()
+
+
+## The interactable calls these when this point wins a grab and when the hold
+## ends. Told rather than observed: several points can be registered on one
+## object and only the one that actually won may pose the hand.
+func notify_held(hand: int) -> void:
+	if not pose_hand_while_held:
+		return
+	var visualizer := _mesh_visualizer()
+	if visualizer == null:
+		return
+	var joints := _held_joints(hand)
+	if joints.is_empty():
+		return
+	visualizer.set_grip_pose(hand, joints, free_fingers)
+
+
+func notify_released(hand: int) -> void:
+	if not pose_hand_while_held:
+		return
+	var visualizer := _mesh_visualizer()
+	if visualizer:
+		visualizer.clear_grip_pose(hand)
+
+
+## Soft lookup by group: realistic hands live in godot_xr_hands, which the
+## toolkit does not depend on. No meshes, no posing, no error.
+func _mesh_visualizer() -> Node:
+	if not is_inside_tree():
+		return null
+	var node := get_tree().get_first_node_in_group("xr_hand_mesh_visualizer")
+	return node if node and node.has_method("set_grip_pose") else null
+
+
+## The authored grip as wrist-relative joints for THIS hand. Built against the
+## target hand's own bind skeleton, so a right-handed authored grip comes out
+## correct on a left hand with no mirroring step - the poses are rotations over
+## whatever bones the hand actually has, which is also why one authored pose
+## fits every hand size (Meta ships per-scale pose variants to solve the same
+## problem positionally).
+func _held_joints(hand: int) -> Array:
+	var math := _pose_math()
+	if math == null:
+		return []
+	if _bind_cache.is_empty():
+		# Parses a glb - cached statically, since every grab point in a scene
+		# wants the same two skeletons.
+		_bind_cache = math.load_bind_skeletons()
+	if not _bind_cache.has(hand):
+		return []
+	var rel: Array = _bind_cache[hand]["rel"]
+	var axes: Array = _bind_cache[hand]["curl_axes"]
+	if _BUILTIN.has(preview_pose):
+		return math.fk_pose(rel, axes, _BUILTIN[preview_pose])
+	var gesture := _find_pose(preview_pose, math)
+	if gesture == null:
+		return []
+	return math.pose_joints(rel, axes, gesture, hand)
+
+
+static var _bind_cache := {}
 
 
 func _set_preview_hand(value: bool) -> void:

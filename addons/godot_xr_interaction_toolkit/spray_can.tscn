@@ -82,6 +82,8 @@ surface_material_override/0 = SubResource("MistMat")
 transform = Transform3D(-0.9565071, -0.10921134, 0.27049416, -0.036781568, -0.8747199, -0.48323113, 0.28938094, -0.47216317, 0.83265895, 0.012282848, 0.03285504, 0.1308627)
 script = ExtResource("2_point")
 preview_hand = true
+pose_hand_while_held = true
+free_fingers = 2
 preview_pose = "Trigger Grip"
 
 [node name="Activator" type="Node" parent="Body" unique_id=2100100108]

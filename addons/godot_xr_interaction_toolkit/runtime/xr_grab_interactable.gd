@@ -275,11 +275,15 @@ func _notify_select_entered(interactor) -> void:
 	_grabbers.append(interactor)
 	if _grabbers.size() == 1:
 		_grabbing = interactor
+		_held_point = null
 		_grab_offset = _compute_grab_offset(interactor)
 		_two_hand_active = false
 		_set_body_frozen(true)
 		_reset_throw_sample(_movement_target_pose_for(interactor))
 		_arm_transit(interactor)
+		# After the offset: the point that won the grab is only known once
+		# _compute_grab_offset has picked it.
+		_pose_hand_for(interactor, true)
 		grabbed.emit(interactor)
 	elif _grabbers.size() == 2:
 		_begin_two_hand_grab()
@@ -299,6 +303,8 @@ func _notify_select_exited(interactor) -> void:
 		_transit_duration = 0.0
 		_transit_time_left = 0.0
 		set_use_value(0.0)
+		_pose_hand_for(interactor, false)
+		_held_point = null
 		released.emit(interactor)
 		return
 
@@ -437,6 +443,7 @@ func _compute_grab_offset(interactor) -> Transform3D:
 		# in the hand, position AND rotation, regardless of the free-grab
 		# track_* defaults.
 		_point_grab = true
+		_held_point = point
 		var offset := point.global_transform.affine_inverse() * target.global_transform
 		return _mirror_offset(point, interactor, offset)
 	if snap_to_attach:
@@ -478,6 +485,23 @@ func _mirror_offset(point: Node, interactor, offset: Transform3D) -> Transform3D
 
 
 ## Grab points self-register from _enter_tree (see XRGrabPoint).
+## The grab point that won the current hold, if any - only it may pose the hand.
+var _held_point: Node3D = null
+
+
+## Tell the winning grab point to pose (or release) the grabbing hand's mesh.
+## Guarded on the method rather than the class so an older grab point, or a
+## project without the hands addon, simply does nothing.
+func _pose_hand_for(interactor, held: bool) -> void:
+	if _held_point == null or not is_instance_valid(_held_point):
+		return
+	if interactor == null or not ("hand" in interactor):
+		return
+	var method := "notify_held" if held else "notify_released"
+	if _held_point.has_method(method):
+		_held_point.call(method, int(interactor.hand))
+
+
 func register_grab_point(point: Node3D) -> void:
 	if not _grab_points.has(point):
 		_grab_points.append(point)

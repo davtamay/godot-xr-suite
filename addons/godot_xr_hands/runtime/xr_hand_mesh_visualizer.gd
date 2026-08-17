@@ -76,9 +76,84 @@ const _UNADJUST := Basis(Vector3(-1, 0, 0), Vector3(0, 0, -1), Vector3(0, -1, 0)
 var _roots: Array = [null, null]
 var _skeletons: Array = [null, null]
 var _bone_joints: Array = [[], []]  # per hand: [[bone_idx, joint], ...]
+## Per hand: {} or {joints, locked, weight, target} - see set_grip_pose.
+var _grip: Array = [{}, {}]
+
+## Seconds to blend into and out of an authored grip. A hard cut reads as a
+## glitch; this is short enough that the hand still looks like it closed on
+## the object rather than melting into it.
+const GRIP_BLEND_SECONDS := 0.09
+
+const _POSE_MATH_PATH := "res://addons/godot_xr_hands/runtime/xr_hand_pose_math.gd"
+
+## Findable by consumers that must not hard-depend on this addon - the grab
+## points that author held grips live in the toolkit, which ships without it.
+const GROUP := "xr_hand_mesh_visualizer"
+
+
+## Render an AUTHORED grip on this hand instead of the live tracked fingers.
+##
+## A tracked hand holding a virtual object is always slightly wrong - fingers
+## pass through the mesh or float off it, because nothing stops them. Showing
+## the grip the object was authored for trades a true report of your fingers
+## for a true depiction of the hold, which is the trade every hand-tracking
+## app that looks right has made (Meta's ISDK calls it a HandGrabPose).
+##
+## `joints` is wrist-relative, in the bind convention XRHandPoseMath produces
+## (fk_pose / pose_joints output straight from load_bind_skeletons). The WRIST
+## itself always stays live: the object was already snapped into the hand by
+## the grab point, so overriding the wrist would fight that snap instead of
+## completing it. `free_fingers` is a bitmask (1 = thumb ... 16 = pinky) of
+## fingers that keep tracking - a trigger finger stays yours while the rest of
+## the hand holds the tool.
+##
+## VISUAL ONLY, deliberately: the trackers keep publishing your real fingers,
+## so release detection, gesture recognizers and every consumer downstream go
+## on seeing the truth. Driving the trackers instead would put two writers on
+## one signal, which is the bug class this stack has spent weeks removing.
+func set_grip_pose(hand: int, joints: Array, free_fingers: int = 0) -> void:
+	if hand < 0 or hand > 1 or joints.size() <= XRHandTracker.HAND_JOINT_PINKY_FINGER_TIP:
+		return
+	var previous: Dictionary = _grip[hand]
+	_grip[hand] = {
+		"joints": joints,
+		"locked": _locked_joints(free_fingers),
+		# Keep the weight across a re-pose (a grip changing mid-hold, e.g. a
+		# use-value morph) so it does not blink back through the live hand.
+		"weight": float(previous.get("weight", 0.0)),
+		"target": 1.0,
+	}
+
+
+## Hand the fingers back. Blends out rather than cutting, then drops.
+func clear_grip_pose(hand: int) -> void:
+	if hand < 0 or hand > 1 or _grip[hand].is_empty():
+		return
+	_grip[hand]["target"] = 0.0
+
+
+func has_grip_pose(hand: int) -> bool:
+	return hand >= 0 and hand <= 1 and not _grip[hand].is_empty()
+
+
+## Which joints a finger mask locks. Built from the shared chain table, so a
+## joint this addon adds later is covered without touching this block.
+func _locked_joints(free_fingers: int) -> Dictionary:
+	var locked := {}
+	if not ResourceLoader.exists(_POSE_MATH_PATH):
+		return locked
+	var math: Object = load(_POSE_MATH_PATH)
+	var chains: Array = math.FINGER_CHAINS
+	for finger in chains.size():
+		if (free_fingers & (1 << finger)) != 0:
+			continue
+		for joint in chains[finger]:
+			locked[joint] = true
+	return locked
 
 
 func _ready() -> void:
+	add_to_group(GROUP)
 	for hand in 2:
 		_setup_hand(hand)
 
@@ -123,7 +198,7 @@ func _setup_hand(hand: int) -> void:
 	_bone_joints[hand] = pairs
 
 
-func _process(_delta: float) -> void:
+func _process(delta: float) -> void:
 	for hand in 2:
 		var root := _roots[hand] as Node3D
 		if root == null:
@@ -134,7 +209,41 @@ func _process(_delta: float) -> void:
 		if not live:
 			continue
 		var skeleton := _skeletons[hand] as Skeleton3D
+		var weight := _advance_grip(hand, delta)
+		# The authored pose rides the LIVE wrist, so the hand still goes where
+		# the tracking says - only the grip is authored.
+		var wrist_world := Transform3D.IDENTITY
+		if weight > 0.0:
+			var wrist: Transform3D = tracker.get_hand_joint_transform(XRHandTracker.HAND_JOINT_WRIST)
+			wrist_world = Transform3D(wrist.basis * _UNADJUST, wrist.origin)
+		var grip: Dictionary = _grip[hand]
 		for pair in _bone_joints[hand]:
 			var joint_transform: Transform3D = tracker.get_hand_joint_transform(pair[1])
-			skeleton.set_bone_pose_position(pair[0], joint_transform.origin)
-			skeleton.set_bone_pose_rotation(pair[0], (joint_transform.basis * _UNADJUST).get_rotation_quaternion())
+			var world := Transform3D(joint_transform.basis * _UNADJUST, joint_transform.origin)
+			if weight > 0.0 and (grip["locked"] as Dictionary).has(pair[1]):
+				var authored: Transform3D = wrist_world * ((grip["joints"] as Array)[pair[1]] as Transform3D)
+				world = _blend(world, authored, weight) if weight < 1.0 else authored
+			skeleton.set_bone_pose_position(pair[0], world.origin)
+			skeleton.set_bone_pose_rotation(pair[0], world.basis.get_rotation_quaternion())
+
+
+## Moves this hand's grip blend toward its target and returns the weight;
+## drops the override once it has fully blended back out.
+func _advance_grip(hand: int, delta: float) -> float:
+	var grip: Dictionary = _grip[hand]
+	if grip.is_empty():
+		return 0.0
+	var target := float(grip["target"])
+	var step := delta / GRIP_BLEND_SECONDS
+	var weight := move_toward(float(grip["weight"]), target, step)
+	grip["weight"] = weight
+	if weight <= 0.0 and target <= 0.0:
+		_grip[hand] = {}
+		return 0.0
+	return weight
+
+
+func _blend(from: Transform3D, to: Transform3D, weight: float) -> Transform3D:
+	return Transform3D(
+			Basis(from.basis.get_rotation_quaternion().slerp(to.basis.get_rotation_quaternion(), weight)),
+			from.origin.lerp(to.origin, weight))
