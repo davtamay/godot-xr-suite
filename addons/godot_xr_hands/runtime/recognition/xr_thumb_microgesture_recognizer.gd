@@ -238,10 +238,22 @@ func effective_release_threshold(p_hand: int) -> float:
 ## suppresses microgesture recognition during pinch for the same reason:
 ## pinch is the higher-priority interaction, and the index-curl posture gate
 ## cannot catch it (a pinching index curls partway, above the arming
-## minimum). Distances are palm-width-normalized; a true pinch reads well
-## under this, the microgesture rest (thumb on the index SIDE, tips apart)
-## well over it.
-@export_range(0.0, 1.0, 0.01) var pinch_veto_distance := 0.18
+## minimum). Distances are palm-width-normalized - and MEASURED, not
+## assumed: palm width is the metacarpal-to-metacarpal span (~34 mm on the
+## reference skeleton), so a closed pinch with pads touching (~8 mm gap)
+## reads ~0.24 and the synthesized rotational pinch reads 0.465. The old
+## 0.18 veto sat BELOW every real pinch, so it never fired and a pinch
+## release swiped the teleport arc on. Microgesture motion keeps a wide
+## margin above this: the thumb rides the index SIDE mid-finger, tip-to-tip
+## stays >= ~0.9 palm widths (rest posture measures 1.5-1.78).
+@export_range(0.0, 1.5, 0.01) var pinch_veto_distance := 0.5
+## How long after a pinch ends before microgestures may arm again. The
+## instantaneous veto above stops a PINCHED hand from arming, but the moment
+## the tips separate the hand is mid-RELEASE: the thumb sweeping off the
+## index in perfect posture, which is a swipe in every way the features can
+## see. Measured, deterministic: releasing a pinch-grab fired a microgesture
+## and engaged teleport aim. The tail lets the release play out unobserved.
+@export_range(0.0, 1.0, 0.01) var pinch_release_veto_seconds := 0.3
 
 var _runtime: XRGestureRuntime
 var _hands := {}
@@ -281,6 +293,13 @@ func process_features(p_hand: int, features: XRHandFeatures) -> void:
         delta = maxf(float(timestamp - int(state["last_timestamp"])) / 1000000.0, 0.0)
     state["last_timestamp"] = timestamp
     state["cooldown_left"] = maxf(float(state["cooldown_left"]) - delta, 0.0)
+    # The pinch veto's release tail: refreshed for as long as the pinch holds,
+    # decaying only once the tips have separated - so the window covers the
+    # release motion itself, which is the part that reads as a swipe.
+    if features.pinch_distance <= pinch_veto_distance:
+        state["pinch_veto_left"] = pinch_release_veto_seconds
+    else:
+        state["pinch_veto_left"] = maxf(float(state.get("pinch_veto_left", 0.0)) - delta, 0.0)
 
     # A discontinuity frame carries a real pose that is NOT continuous with the
     # last one -- reacquisition after an FOV freeze being the measured case.
@@ -311,7 +330,10 @@ func process_features(p_hand: int, features: XRHandFeatures) -> void:
             # failed microgesture attempt, so it must produce neither a
             # gesture nor rejection noise. Episode-end bookkeeping below
             # still runs, so a pinch also clears any stale latches.
-            var pinching := features.pinch_distance <= pinch_veto_distance
+            # Pinching OR inside the release tail - both are a different
+            # interaction in progress, not a microgesture attempt.
+            var pinching := features.pinch_distance <= pinch_veto_distance \
+                    or float(state.get("pinch_veto_left", 0.0)) > 0.0
             if not pinching and float(state["cooldown_left"]) <= 0.0 and posture_score >= 0.999 and _can_start(features, p_hand):
                 _start_tracking(state, features)
                 return
@@ -358,6 +380,13 @@ func process_features(p_hand: int, features: XRHandFeatures) -> void:
                     gesture_rejected.emit(p_hand, RejectReason.CONTACT_TOO_LIGHT, -1)
         Phase.TRACKING:
             state["elapsed"] = float(state["elapsed"]) + delta
+            if features.pinch_distance <= pinch_veto_distance:
+                # A pinch beginning mid-track is a deliberate DIFFERENT act:
+                # the approach travel must not commit as a swipe, and per the
+                # arming veto's contract it produces neither a gesture nor
+                # rejection noise.
+                state["phase"] = Phase.WAITING_FOR_RELEASE
+                return
             # Split so the rejection can carry the SPECIFIC cause -- "hand
             # opened up" and "thumb lingered too long" need different user
             # corrections, and a merged reason would teach neither.
@@ -536,6 +565,7 @@ func _new_state() -> Dictionary:
         "phase": Phase.READY,
         "elapsed": 0.0,
         "cooldown_left": 0.0,
+        "pinch_veto_left": 0.0,
         "last_timestamp": 0,
         "start_contact_position": 0.5,
         "smoothed_contact_position": 0.5,
