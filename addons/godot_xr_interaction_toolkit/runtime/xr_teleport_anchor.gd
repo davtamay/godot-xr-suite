@@ -65,6 +65,18 @@ var _arrow_material: StandardMaterial3D
 var _highlighted := false
 
 
+## An anchor is a place, not a thing to hold: it is reached by aiming a teleport
+## arc at it and letting the stick go. The point is where a driver should AIM,
+## so it is the anchor's own landing spot rather than a collider centre.
+func drive_hint() -> Dictionary:
+	return {
+		"kind": "teleport",
+		"gesture": "stick",
+		"point": global_position,
+		"radius": anchor_radius,
+	}
+
+
 func _ready() -> void:
 	_rebuild()
 
