@@ -855,37 +855,35 @@ func _end_select_stabilization(hand_id: int) -> void:
 	_select_anchor_hand_anchor[hand_id] = null
 
 
+## The hand's world-space palm (wrist-fallback) anchor, or null when there is
+## no trustworthy one. Position and rotation both read from THIS rather than
+## each re-deriving it: the two used to repeat the same four-part guard, and a
+## guard that exists twice is one edit away from the positional anchor and the
+## rotational one disagreeing about whether the hand is trackable at all.
+func _hand_anchor_transform(hand_id: int):
+	if not _valid_hand(hand_id) or _origin == null:
+		return null
+
+	var tracker := XRHandTrackerResolver.get_tracker(hand_id)
+	if tracker == null:
+		return null
+
+	if not XRHandGestureProvider.joint_position_valid(tracker, XRHandTracker.HAND_JOINT_PALM) 			and not XRHandGestureProvider.joint_position_valid(tracker, XRHandTracker.HAND_JOINT_WRIST):
+		return null
+
+	return _origin.global_transform * resolve_grip_anchor(tracker)
+
+
 func _hand_anchor_global(hand_id: int):
-	if not _valid_hand(hand_id) or _origin == null:
-		return null
-
-	var tracker := XRHandTrackerResolver.get_tracker(hand_id)
-	if tracker == null:
-		return null
-
-	if not XRHandGestureProvider.joint_position_valid(tracker, XRHandTracker.HAND_JOINT_PALM) \
-			and not XRHandGestureProvider.joint_position_valid(tracker, XRHandTracker.HAND_JOINT_WRIST):
-		return null
-
-	return _origin.global_transform * resolve_grip_anchor(tracker).origin
+	var anchor = _hand_anchor_transform(hand_id)
+	return null if anchor == null else (anchor as Transform3D).origin
 
 
-## World-space palm (wrist-fallback) orientation, or null on the same
-## conditions _hand_anchor_global returns null. The rotation companion to
-## that positional anchor, used to drive the gap ray's direction.
+## The rotation companion to that positional anchor, used to drive the gap
+## ray's direction.
 func _hand_anchor_basis_global(hand_id: int):
-	if not _valid_hand(hand_id) or _origin == null:
-		return null
-
-	var tracker := XRHandTrackerResolver.get_tracker(hand_id)
-	if tracker == null:
-		return null
-
-	if not XRHandGestureProvider.joint_position_valid(tracker, XRHandTracker.HAND_JOINT_PALM) \
-			and not XRHandGestureProvider.joint_position_valid(tracker, XRHandTracker.HAND_JOINT_WRIST):
-		return null
-
-	return (_origin.global_transform.basis * resolve_grip_anchor(tracker).basis).orthonormalized()
+	var anchor = _hand_anchor_transform(hand_id)
+	return null if anchor == null else (anchor as Transform3D).basis.orthonormalized()
 
 
 func _offset_pose_by_anchor_delta(pose: Dictionary, start_anchor: Vector3, current_anchor: Vector3) -> Dictionary:
