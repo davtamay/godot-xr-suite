@@ -40,6 +40,17 @@ extends Node3D
 ## Visual only: the trackers keep publishing your real hand, so releasing,
 ## gestures and every recognizer downstream still see the truth. Needs the
 ## godot_xr_hands realistic hand meshes; silently does nothing without them.
+##
+## ⚠ USE A RECORDED POSE. Curl-based grips (the built-ins, and any preset
+## without a joint snapshot) cannot visually close on an object, and the
+## reason is measured, not stylistic: FK curl bends each finger around its
+## bind hinge, and even at curl 1.0 the fingertips stop 5.7 cm from the palm
+## anchor - where a held object sits - against a spray can's 2.5 cm radius.
+## Every curl value lands in the same place, so no tuning reaches a wrap.
+## A pose RECORDED in the Gesture Studio carries the joint positions of a
+## real hand actually holding something, which is the only data that reads
+## as a hold. Reach: open 11.6 cm, trigger preset 7.3, Fist 6.6, curl 1.0
+## 5.7 - all measured from the bundled hand's bind skeleton.
 @export var pose_hand_while_held := false
 
 ## Fingers that keep TRACKING while the rest hold the authored grip. A spray
