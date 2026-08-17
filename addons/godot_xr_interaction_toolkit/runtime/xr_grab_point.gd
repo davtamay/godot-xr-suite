@@ -80,12 +80,29 @@ const _POSE_MATH_PATH := "res://addons/godot_xr_hands/runtime/xr_hand_pose_math.
 func _pose_math() -> Object:
 	return load(_POSE_MATH_PATH) if ResourceLoader.exists(_POSE_MATH_PATH) else null
 
-## Built-in fallback grips (per-finger curl 0..1) for when a pose has no snapshot.
+## Built-in grips (per-finger curl 0..1), consulted BEFORE the gesture library.
+##
+## These exist because a gesture RESOURCE and a held GRIP are different things
+## that look interchangeable. A shipped preset like trigger_grip.tres is a
+## recognition rule - "are these fingers making a trigger grip?" - stored as
+## per-finger tolerance bands, and fingers it does not care about are simply
+## absent. Rendered as a shape those absences read as straight fingers: the
+## trigger preset leaves the THUMB unconstrained, so a hand posed from it holds
+## nothing, thumb and index both sticking out. Recognition presets stay tuned
+## for recognition; the grips below are tuned to look like a hold.
+##
+## A pose RECORDED in the Gesture Studio carries a real joint snapshot and is
+## always preferred - it is a shape someone's actual hand made.
 const _BUILTIN := {
 	"Open": {"thumb": 0.0, "index": 0.0, "middle": 0.0, "ring": 0.0, "pinky": 0.0},
 	"Relaxed Grip": {"thumb": 0.35, "index": 0.5, "middle": 0.55, "ring": 0.6, "pinky": 0.6},
 	"Pinch": {"thumb": 0.45, "index": 0.5, "middle": 0.25, "ring": 0.2, "pinky": 0.2},
 	"Fist": {"thumb": 0.5, "index": 0.85, "middle": 0.9, "ring": 0.95, "pinky": 0.95},
+	# Wraps a can-sized body: three fingers closed, thumb closed OVER them, and
+	# the index left nearly straight to reach a trigger or a top button.
+	"Trigger Grip": {"thumb": 0.62, "index": 0.12, "middle": 0.85, "ring": 0.88, "pinky": 0.85},
+	# A whole-hand wrap with no free finger, for handles and hafts.
+	"Tool Grip": {"thumb": 0.6, "index": 0.8, "middle": 0.85, "ring": 0.88, "pinky": 0.88},
 }
 
 
