@@ -18,6 +18,19 @@ extends Node3D
 ## In the editor the point draws a small palm bar + forward arrow so grips
 ## are authorable visually.
 
+## Derive WHERE the hand goes from the object's own collision geometry instead
+## of this node's authored transform, the way "Auto (fit object)" derives the
+## fingers. The node's position stays meaningful as a HINT - it picks which
+## side of the object the palm lands on - but the exact placement, the surface
+## contact and the wrap orientation are solved from the shape.
+##
+## This exists because an authored grip transform is a six-degree-of-freedom
+## hand-tune that nothing checks, and they drift: the spray can's authored
+## point sat 13.6 cm from a can 6.4 cm wide, so the palm was anchored in empty
+## air and the can dangled past the fingertips. No finger pose can rescue a
+## palm that is not on the object.
+@export var auto_place := false
+
 ## Restrict this grip to one hand (-1 = either).
 @export_enum("Any:-1", "Left:0", "Right:1") var hand := -1
 
@@ -240,6 +253,98 @@ func _held_joints(hand: int) -> Array:
 	return math.pose_joints(rel, axes, gesture, hand)
 
 
+## Where the hand's grip actually goes for this point - the authored transform
+## normally, or a placement solved from the object when auto_place is on.
+## Everything that positions a hand against this point goes through here, so
+## the runtime grab, the auto-fit and the editor ghost cannot disagree.
+func grip_transform() -> Transform3D:
+	if not auto_place:
+		return global_transform
+	var body := _collision_body()
+	if body == null:
+		return global_transform
+	var local := _auto_grip_in_body(body)
+	return body.global_transform * local if local != null else global_transform
+
+
+func _collision_body() -> CollisionObject3D:
+	var cursor := get_parent()
+	while cursor != null and not (cursor is CollisionObject3D):
+		cursor = cursor.get_parent()
+	return cursor as CollisionObject3D
+
+
+## Solve a wrap grip against the body's largest round shape: palm ON the
+## surface, facing the axis, fist wrapping the circumference.
+##
+## Round shapes only (cylinder/capsule/sphere) - a hand wrapping a barrel is
+## the case a shape can answer unambiguously. Boxes and meshes fall back to
+## the authored transform rather than guessing a face, because "which way is
+## up on this box" is an intent question, not a geometry one.
+func _auto_grip_in_body(body: CollisionObject3D) -> Variant:
+	var best: CollisionShape3D = null
+	var best_size := -1.0
+	for child in body.get_children():
+		var col := child as CollisionShape3D
+		if col == null or col.disabled or col.shape == null:
+			continue
+		var size := _round_shape_size(col.shape)
+		if size > best_size:
+			best_size = size
+			best = col
+	if best == null or best_size < 0.0:
+		return null
+
+	var shape_xform: Transform3D = best.transform
+	var radius := _round_shape_radius(best.shape)
+	# The axis a fist wraps AROUND: the shape's own long axis (Y for cylinder
+	# and capsule). A sphere has none, so the hint direction supplies one.
+	var axis: Vector3 = (shape_xform.basis * Vector3.UP).normalized()
+
+	# The authored node position is the hint: which side to approach from,
+	# taken perpendicular to the axis so it names a direction around the
+	# barrel rather than a point along it.
+	var hint: Vector3 = transform.origin - shape_xform.origin
+	var radial := hint - axis * hint.dot(axis)
+	if radial.length_squared() < 0.000001:
+		# No usable hint (point on the axis): approach from whichever way the
+		# authored basis was already facing, so the answer stays stable.
+		radial = transform.basis.z - axis * transform.basis.z.dot(axis)
+	if radial.length_squared() < 0.000001:
+		radial = Vector3.RIGHT if absf(axis.dot(Vector3.RIGHT)) < 0.9 else Vector3.FORWARD
+	radial = radial.normalized()
+
+	# Palm ON the surface. The fingers curl from here around the barrel: at a
+	# 3.2 cm radius the far side is ~6.4 cm away and a full curl reaches
+	# ~5.7 cm, which is why a wrap closes at all.
+	var palm: Vector3 = shape_xform.origin + radial * radius
+	# Fist axis points along the barrel (thumb toward one end); fingers run
+	# tangentially. Which tangent sign wraps and which curls away is
+	# handedness, so it is MEASURED below rather than derived.
+	var forward := axis.cross(radial).normalized() * _wrap_flip
+	return Transform3D(_grip_basis(axis, forward), palm)
+
+
+## Assemble the grip basis the way the runtime and the editor ghost both do,
+## so a solved placement is expressed in the one convention everything reads.
+func _grip_basis(up: Vector3, forward: Vector3) -> Basis:
+	return Basis(up.cross(-forward).normalized(), up, -forward).orthonormalized()
+
+
+func _round_shape_size(shape: Shape3D) -> float:
+	if shape is SphereShape3D:
+		return (shape as SphereShape3D).radius
+	if shape is CapsuleShape3D:
+		return (shape as CapsuleShape3D).radius
+	if shape is CylinderShape3D:
+		return (shape as CylinderShape3D).radius
+	return -1.0
+
+
+func _round_shape_radius(shape: Shape3D) -> float:
+	return maxf(_round_shape_size(shape), 0.001)
+
+
 ## ---- Auto-fit: curl each finger onto the object's collision shapes ---------
 
 ## Per-finger curls that wrap THIS object: sweep each finger's curl and stop
@@ -247,7 +352,42 @@ func _held_joints(hand: int) -> Array:
 ## sampled rather than binary-searched on purpose - contact distance is not
 ## monotonic once a finger passes a surface tangentially, and 24 FK poses are
 ## effectively free.
+## Which way round the barrel the fingers wrap is handedness, and deriving it
+## has been wrong often enough in this stack to be worth measuring instead:
+## solve the fit both ways and keep whichever actually reaches the surface.
+## The wrong sign curls the fingers into open air, so contact discriminates
+## cleanly - and the answer costs one extra fit, once, at grab time.
+func _wrap_sign(rel: Array, axes: Array, math: Object) -> float:
+	var forward_contact := _fit_contact(rel, axes, math, 1.0)
+	var reverse_contact := _fit_contact(rel, axes, math, -1.0)
+	return 1.0 if forward_contact <= reverse_contact else -1.0
+
+
+## Total fingertip-to-surface distance for one wrap direction: lower wraps.
+func _fit_contact(rel: Array, axes: Array, math: Object, sign: float) -> float:
+	_wrap_flip = sign
+	var shapes := _collect_fit_shapes(rel)
+	if shapes.is_empty():
+		return INF
+	var chains: Array = math.FINGER_CHAINS
+	var names: Array = math.FINGER_NAMES
+	var total := 0.0
+	for f in names.size():
+		var curl: float = _fit_one_finger(rel, axes, math, chains[f], names[f], shapes)
+		var posed: Array = math.fk_pose(rel, axes, {names[f]: curl})
+		var tip: int = chains[f][chains[f].size() - 1]
+		total += absf(_surface_distance((posed[tip] as Transform3D).origin, shapes))
+	return total
+
+
+## Set while a fit is being evaluated, so _collect_fit_shapes expresses the
+## object in the grip frame that wrap direction implies.
+var _wrap_flip := 1.0
+
+
 func _fit_curls(rel: Array, axes: Array, math: Object) -> Dictionary:
+	if auto_place:
+		_wrap_flip = _wrap_sign(rel, axes, math)
 	var shapes := _collect_fit_shapes(rel)
 	if shapes.is_empty():
 		return _BUILTIN["Relaxed Grip"]
@@ -302,7 +442,11 @@ func _collect_fit_shapes(rel: Array) -> Array:
 		var col := child as CollisionShape3D
 		if col == null or col.disabled or col.shape == null:
 			continue
-		var shape_in_point := global_transform.affine_inverse() * col.global_transform
+		# Through grip_transform(), not global_transform: with auto_place the
+		# palm is solved from the shape, and fitting fingers against the
+		# authored transform instead would pose them for a hold that is not
+		# the one happening.
+		var shape_in_point := grip_transform().affine_inverse() * col.global_transform
 		out.append({"shape": col.shape, "xform": grip_from_point * shape_in_point})
 	return out
 
@@ -438,7 +582,9 @@ func _rebuild_hand_preview() -> void:
 	# joints), then curl the fingers into the chosen pose - the grip origin
 	# (wrist/palm) does not move, so the alignment holds.
 	var grip_rel_hand := ghost.global_transform.affine_inverse() * grip_world
-	ghost.global_transform = global_transform * grip_rel_hand.affine_inverse()
+	# Against the SOLVED grip when auto_place is on, so the ghost previews the
+	# hold that will actually happen rather than the authored hint.
+	ghost.global_transform = grip_transform() * grip_rel_hand.affine_inverse()
 	_pose_skeleton(skeleton)
 
 

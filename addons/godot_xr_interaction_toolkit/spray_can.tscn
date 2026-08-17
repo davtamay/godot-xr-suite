@@ -84,6 +84,7 @@ script = ExtResource("2_point")
 preview_hand = true
 pose_hand_while_held = true
 free_fingers = 2
+auto_place = true
 preview_pose = "Auto (fit object)"
 
 [node name="Activator" type="Node" parent="Body" unique_id=2100100108]

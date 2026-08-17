@@ -444,7 +444,10 @@ func _compute_grab_offset(interactor) -> Transform3D:
 		# track_* defaults.
 		_point_grab = true
 		_held_point = point
-		var offset := point.global_transform.affine_inverse() * target.global_transform
+		# grip_transform(), not global_transform: a point may SOLVE its
+		# placement from the object's shape rather than carry an authored one.
+		var grip: Transform3D = point.grip_transform() if point.has_method("grip_transform") else point.global_transform
+		var offset := grip.affine_inverse() * target.global_transform
 		return _mirror_offset(point, interactor, offset)
 	if snap_to_attach:
 		var attach_node := get_node_or_null(attach_transform_path) as Node3D
