@@ -51,6 +51,10 @@ var _applied := 0
 var _wait_frames := 0
 ## Seconds still to hold, for waits authored in wall time.
 var _wait_seconds := 0.0
+## Last driven viewpoint, re-applied every frame. The flat camera controller
+## writes its own transform each frame, so a viewpoint set once is overwritten
+## before it can be seen - the same staleness that poses and inputs both hit.
+var _held_view := {}
 var _move := {}
 var _last_pos: Array[Vector3] = [Vector3(0, 1.4, 0), Vector3(0, 1.4, 0)]
 var _owned_trackers: Array[XRControllerTracker] = []
@@ -167,6 +171,8 @@ func _tick_queue() -> void:
 	for hand in _held_aim:
 		if _move.is_empty() or int(_move.get("hand", -1)) != hand:
 			_publish_pose(hand, _last_pos[clampi(hand, 0, 1)], _held_aim[hand])
+	if not _held_view.is_empty():
+		_apply_view(_held_view["eye"], _held_view["target"])
 	for hand in _held_input:
 		var tracker := _tracker(hand)
 		if tracker != null:
@@ -230,6 +236,50 @@ func _apply(action: Dictionary) -> void:
 			if action.has("seconds"):
 				_move["seconds"] = maxf(0.05, float(action["seconds"]))
 				_move["elapsed"] = 0.0
+		"view":
+			# Move the VIEWPOINT. A drive moves hands; without this the camera
+			# stays wherever the rig was left, so a station being worked on can be
+			# entirely off-screen - fine for asserting on signals, useless for
+			# showing someone what happened. Positions whichever camera is actually
+			# rendering, so it works on the flat view and in a session alike.
+			_stand_down_simulator()
+			# The flat camera controller writes its own transform every frame, and
+			# node order decides who wins - so take it out of the loop rather than
+			# racing it. Same reasoning as the simulator: whoever is really driving
+			# owns the viewpoint.
+			for node in get_tree().root.find_children("*", "", true, false):
+				if node.get_script() != null 						and str(node.get_script().get_global_name()) == "FlatscreenCamera" 						and node.is_processing():
+					node.set_process(false)
+			var camera := get_viewport().get_camera_3d() if get_viewport() != null else null
+			if camera == null:
+				_send({"type": "event", "error": "no active camera to place"})
+				return
+			var eye := _vec(action.get("position", [0, 1.6, 0]))
+			var target := _vec(action["look_at"]) if action.has("look_at") else eye + Vector3(0, 0, -1)
+			_held_view = {"eye": eye, "target": target}
+			_apply_view(eye, target)
+			_send({"type": "event", "view": String(camera.name),
+					"at": [camera.global_position.x, camera.global_position.y, camera.global_position.z]})
+		"screenshot":
+			# Proof you can LOOK at. Signals say an interaction fired; a frame says
+			# what it looked like when it did - which is the difference between a
+			# green test and being able to show someone the hand doing the thing.
+			# Needs a rendering run (drive_session visible:true); headless has no
+			# viewport texture and says so rather than writing a black file.
+			var shot_path := str(action.get("path", ""))
+			if shot_path.is_empty():
+				_send({"type": "event", "error": "screenshot needs a path"})
+				return
+			var viewport := get_viewport()
+			var texture := viewport.get_texture() if viewport != null else null
+			var image := texture.get_image() if texture != null else null
+			if image == null or image.is_empty():
+				_send({"type": "event", "error": "no viewport image - run with visible:true"})
+				return
+			DirAccess.make_dir_recursive_absolute(shot_path.get_base_dir())
+			var err := image.save_png(shot_path)
+			_send({"type": "event", "shot": shot_path, "ok": err == OK,
+					"label": str(action.get("label", ""))})
 		"input":
 			var tracker := _tracker(int(action.get("hand", 1)))
 			if tracker:
@@ -350,6 +400,15 @@ func _step_move() -> void:
 
 ## Tracker-level pose publication, identical to the headless simulator's:
 ## the rig binds specific pose names, so all three are published.
+func _apply_view(eye: Vector3, target: Vector3) -> void:
+	var camera := get_viewport().get_camera_3d() if get_viewport() != null else null
+	if camera == null:
+		return
+	camera.global_transform = Transform3D(Basis(), eye)
+	if not target.is_equal_approx(eye):
+		camera.look_at(target, Vector3.UP)
+
+
 func _publish_pose(hand: int, pos: Vector3, aim_target: Vector3) -> void:
 	var tracker := _tracker(hand)
 	if tracker == null:
@@ -441,6 +500,13 @@ func _stand_down_simulator() -> void:
 	for node in get_tree().root.find_children("*", "", true, false):
 		if node.get_script() != null and str(node.get_script().get_global_name()) == "XRSimulator" 				and node.is_processing():
 			node.set_process(false)
+			# Its help overlay narrates keyboard controls nobody is pressing, and
+			# sits on top of any capture of the drive.
+			if node.get("show_help") != null:
+				node.set("show_help", false)
+			var layer = node.get("_help_layer")
+			if layer != null and is_instance_valid(layer):
+				(layer as CanvasLayer).visible = false
 
 
 func _wake_platform_adapter() -> void:
