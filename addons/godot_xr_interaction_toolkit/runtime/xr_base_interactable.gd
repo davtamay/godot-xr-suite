@@ -91,6 +91,36 @@ func get_colliders() -> Array[CollisionObject3D]:
 				colliders.append(collider)
 	return colliders
 
+## How something driving this scene should take hold of it: WHERE to put the
+## hand, and WHAT gesture this object expects. Authored drives had to carry both
+## as hand-measured constants, and both were routinely wrong in ways nothing
+## reported - a hand aimed at a node origin can sit 50 mm inside the object it
+## meant to press, and an open hand reaches a grip-style tool forever without
+## being offered it. Neither is knowable from outside, so the object says it.
+##
+## Subclasses override to describe their own affordance. The default is the
+## honest one for a plain interactable: the middle of its collider, taken with
+## an ordinary grab.
+func drive_hint() -> Dictionary:
+	return {
+		"kind": "grab",
+		"gesture": "grab",
+		"point": drive_point(),
+	}
+
+
+## The point a hand should occupy to interact. Collider centre rather than node
+## origin, because the two differ on almost everything with a body.
+func drive_point() -> Vector3:
+	var colliders := get_colliders()
+	if colliders.is_empty():
+		return global_position
+	var total := Vector3.ZERO
+	for collider in colliders:
+		total += (collider as Node3D).global_position
+	return total / float(colliders.size())
+
+
 func is_hovered() -> bool:
 	return not _hovering_interactors.is_empty()
 

@@ -66,6 +66,26 @@ func is_pressed() -> bool:
 
 ## The cap's firing point expressed in the evaluator's canonical frame, where
 ## the surface is the BOTTOMED-OUT cap: z = travel - penetration.
+## Where a fingertip has to be to press this, in world space.
+##
+## Not the node origin: the throw is local geometry - base, travel, half a cap -
+## and the evaluator measures against the finger's BOTTOM, so the band that
+## actually presses sits well ABOVE the node. A drive aimed at the origin goes
+## straight through the button and fires only if the fingertip happens to cross
+## the band on the way, which reads as an interaction that works half the time.
+func drive_hint() -> Dictionary:
+	var cap_top := _cap_rest_y + _cap_height * 0.5
+	var fires_at := cap_top - travel * press_fraction + _FINGER_RADIUS
+	return {
+		"kind": "poke",
+		"gesture": "point",
+		# Mid-band: clear of the firing threshold, short of bottoming out.
+		"point": to_global(Vector3(0.0, (fires_at + cap_top - travel + _FINGER_RADIUS) * 0.5, 0.0)),
+		"approach": to_global(Vector3(0.0, cap_top + 0.03, 0.0)),
+		"release": to_global(Vector3(0.0, cap_top + 0.06, 0.0)),
+	}
+
+
 func canonical_press_depth() -> float:
 	return travel * (1.0 - press_fraction)
 

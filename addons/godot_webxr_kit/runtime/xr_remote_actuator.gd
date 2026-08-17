@@ -124,8 +124,24 @@ func _run_arg_endpoint() -> String:
 		var raw := str(JavaScriptBridge.eval("new URLSearchParams(location.search).get('operator') || ''", true))
 		if raw.is_empty():
 			return ""
+		# A URL parameter is not an opt-in by the person running the app - it is
+		# an opt-in by whoever sent them the link. On the command line the
+		# argument really is the operator's own choice, but on the web anyone
+		# can append one, so a RELEASE build ignores it entirely: a shipped
+		# product must not be drivable, or have its interaction stream shipped
+		# somewhere, because a user clicked a crafted link.
+		if not enabled and not OS.is_debug_build():
+			push_warning("XRRemoteActuator: ignoring ?operator= in a release build. Set enabled to allow it.")
+			return ""
 		if raw.begins_with("ws://") or raw.begins_with("wss://"):
-			return raw
+			# An absolute endpoint names an arbitrary host, which is the part
+			# worth refusing: it turns the parameter into "stream this session
+			# to me". Only an author who set `enabled` can point the app off
+			# its own origin; everyone else gets the same-origin relay below.
+			if not enabled:
+				push_warning("XRRemoteActuator: refusing an absolute ?operator= endpoint; using the page's own origin.")
+			else:
+				return raw
 		var host := str(JavaScriptBridge.eval("location.host", true))
 		var op_port := raw if raw.is_valid_int() else "8470"
 		return "wss://%s/operator?p=%s" % [host, op_port]

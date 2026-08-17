@@ -101,6 +101,21 @@ enum FarGrabMode { ATTRACT, FIXED, REEL, TWIST }
 
 ## Whether a bare hand grabs this by gripping the lower fingers instead of
 ## pinching. Queried by the direct interactor.
+## Where to take this, and how. GRIP-style tools (a blaster, a spray can) are
+## never offered to an open hand, and an authored grab point is where the object
+## expects to be held - both were found the hard way by a drive that reached the
+## right place and was ignored.
+func drive_hint() -> Dictionary:
+	var hint := super()
+	hint["gesture"] = "grip" if uses_grip_grab() else "grab"
+	for child in find_children("*", "", true, false):
+		var script: Script = child.get_script()
+		if script != null and str(script.get_global_name()) == "XRGrabPoint" and child is Node3D:
+			hint["point"] = (child as Node3D).global_position
+			break
+	return hint
+
+
 func uses_grip_grab() -> bool:
 	return hand_grab_style == HandGrab.GRIP
 
