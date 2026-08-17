@@ -107,6 +107,9 @@ enum FarGrabMode { ATTRACT, FIXED, REEL, TWIST }
 ## right place and was ignored.
 func drive_hint() -> Dictionary:
 	var hint := super()
+	if hint.is_empty():
+		# Excluded upstream; writing keys here would un-exclude it.
+		return hint
 	hint["gesture"] = "grip" if uses_grip_grab() else "grab"
 	for child in find_children("*", "", true, false):
 		var script: Script = child.get_script()

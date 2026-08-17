@@ -212,6 +212,10 @@ func _build_dense_row(parent: Node3D) -> void:
 		row.add_child(body)
 
 		var pokeable := XRPokeable.new()
+		# Named: a runtime-built node without one gets an anonymous @-name,
+		# which never appears in a scene file, a scene_dump, or an autodrive
+		# sweep - these five keys were the sweep's only unexplained misses.
+		pokeable.name = "Key%dPokeable" % i
 		pokeable.poke_face = XRPokeable.Face.Z_PLUS
 		pokeable.half_size = Vector2(0.015, 0.015)
 		body.add_child(pokeable)
@@ -243,6 +247,7 @@ func _build_drag_handle(parent: Node3D) -> void:
 	parent.add_child(body)
 
 	var pokeable := XRPokeable.new()
+	pokeable.name = "DragHandlePokeable"
 	pokeable.interpret_drag = true
 	pokeable.drag_threshold = 0.01
 	pokeable.half_size = Vector2(0.06, 0.01)
@@ -302,6 +307,7 @@ func _build_cancel_target(parent: Node3D) -> void:
 	parent.add_child(body)
 
 	var pokeable := XRPokeable.new()
+	pokeable.name = "CancelPadPokeable"
 	pokeable.half_size = Vector2(_CANCEL_SIZE.x * 0.5, _CANCEL_SIZE.y * 0.5)
 	body.add_child(pokeable)
 	# XRPokeable's press plane is its OWN origin, not the body's centre - put

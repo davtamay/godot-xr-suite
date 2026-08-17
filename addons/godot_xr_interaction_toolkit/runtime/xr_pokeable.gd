@@ -120,6 +120,26 @@ func _get_configuration_warnings() -> PackedStringArray:
 	return PackedStringArray(["Place this inside a body with a collider (StaticBody3D/Area3D)."])
 
 
+## Where a drive should put a fingertip, straight from the evaluator's own
+## contract: the surface is this node's plane (z = 0 along the face normal),
+## a press fires at z <= press_depth, re-arms above release_depth, and
+## cancels below -release_depth. So: approach from outside release_depth
+## ALONG THE NORMAL (which is also what require_entry_through_face demands),
+## press to half press_depth - inside the firing band, far from the cancel
+## floor - and retract well clear. XRPokeButton has described itself this
+## way since the hint system landed; this block never did, which left every
+## runtime-built pokeable invisible to a sweep.
+func drive_hint() -> Dictionary:
+	var normal := _local_normal()
+	return {
+		"kind": "poke",
+		"gesture": "point",
+		"point": to_global(normal * (press_depth * 0.5)),
+		"approach": to_global(normal * (release_depth + 0.03)),
+		"release": to_global(normal * (release_depth + 0.06)),
+	}
+
+
 ## Driven by the interactor with the world-space fingertip.
 func poke_update(hand: int, world_point: Vector3) -> void:
 	_sync_evaluator()

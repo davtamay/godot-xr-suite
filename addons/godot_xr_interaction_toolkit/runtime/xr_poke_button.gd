@@ -21,6 +21,11 @@ const _FINGER_RADIUS := 0.008
 const _BASE_HEIGHT := 0.012
 
 @export var enabled := true
+## Excluded from generated drives: drive_hint() answers empty, so sweeps and
+## scripted drives leave this control alone. For controls whose PRESS changes
+## what scene is running - a back-to-menu button pressed mid-sweep tears down
+## the scene under the sweep's feet.
+@export var drive_hint_excluded := false
 
 ## How far the cap travels to bottom out.
 @export_range(0.005, 0.06, 0.001) var travel := 0.022
@@ -74,6 +79,8 @@ func is_pressed() -> bool:
 ## straight through the button and fires only if the fingertip happens to cross
 ## the band on the way, which reads as an interaction that works half the time.
 func drive_hint() -> Dictionary:
+	if drive_hint_excluded:
+		return {}
 	var cap_top := _cap_rest_y + _cap_height * 0.5
 	var fires_at := cap_top - travel * press_fraction + _FINGER_RADIUS
 	return {

@@ -27,6 +27,10 @@ signal deactivated(interactor)
 @export var activation_mode := ActivationMode.SELECTED
 ## Colliders to register. Empty = auto-collect all CollisionObject3D descendants.
 @export var collider_paths: Array[NodePath] = []
+## Excluded from generated drives: drive_hint() answers empty, so sweeps and
+## scripted drives leave this object alone. For controls whose activation
+## changes what scene is running, or objects a drive must never disturb.
+@export var drive_hint_excluded := false
 
 var _hovering_interactors: Array[Node] = []
 var _selecting_interactor: Node
@@ -102,6 +106,8 @@ func get_colliders() -> Array[CollisionObject3D]:
 ## honest one for a plain interactable: the middle of its collider, taken with
 ## an ordinary grab.
 func drive_hint() -> Dictionary:
+	if drive_hint_excluded:
+		return {}
 	return {
 		"kind": "grab",
 		"gesture": "grab",

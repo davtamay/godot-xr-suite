@@ -55,6 +55,9 @@ func target() -> Node3D:
 ## axis and say so.
 func drive_hint() -> Dictionary:
 	var hint := super()
+	if hint.is_empty():
+		# Excluded upstream; writing keys here would un-exclude it.
+		return hint
 	hint["kind"] = "constrained"
 	hint["gesture"] = "grab"
 	hint["to"] = drive_travel()

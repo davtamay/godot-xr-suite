@@ -30,6 +30,8 @@ const _DEFAULT_THEME := preload("res://addons/godot_xr_interaction_toolkit/runti
 
 var _wired := {}       # interactable -> true (avoid double-wiring)
 var _audio := {}       # interactable -> AudioStreamPlayer3D
+var _grip_hint: Label3D = null   # one shared hint, repositioned per hover
+var _grip_hint_target: Node = null
 
 
 func _ready() -> void:
@@ -75,6 +77,13 @@ func _on_interactable_registered(interactable) -> void:
 		interactable.hover_entered.connect(_on_hover.bind(interactable))
 		interactable.select_entered.connect(_on_select.bind(interactable))
 
+	# Not folded into the block above: the hint needs hover even when audio
+	# and haptics are both off, and it needs the EXIT edge besides.
+	if theme.grip_hint_enabled and _wants_grip_hint(interactable):
+		interactable.hover_entered.connect(_on_grip_hover.bind(interactable))
+		interactable.hover_exited.connect(_on_grip_unhover.bind(interactable))
+		interactable.select_entered.connect(_on_grip_unhover.bind(interactable))
+
 
 ## A UI canvas panel (XRUICanvasInteractable, incl. subclasses) whose surface has
 ## its own interactive controls - no whole-object highlight.
@@ -95,6 +104,42 @@ func _has_own_affordance(interactable: Node) -> bool:
 				return true
 			script = script.get_base_script()
 	return false
+
+
+## Duck-typed so this block keeps zero hard dependency on the grab script:
+## anything exposing hand_grab_style == GRIP (1) wants the hint.
+func _wants_grip_hint(interactable: Node) -> bool:
+	var style: Variant = interactable.get("hand_grab_style")
+	return style != null and int(style) == 1
+
+
+func _on_grip_hover(_interactor, interactable) -> void:
+	if _grip_hint == null or not is_instance_valid(_grip_hint):
+		# A runtime Label3D renders on WebGPU because the demo scenes carry
+		# the label bake anchor (the flag-twin pattern); no material work
+		# needed here. no_depth_test + priority so a held tool or the object
+		# itself cannot swallow the hint - the scene-labels lesson.
+		_grip_hint = Label3D.new()
+		_grip_hint.name = "GripHint"
+		_grip_hint.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+		_grip_hint.no_depth_test = true
+		_grip_hint.render_priority = 10
+		_grip_hint.pixel_size = 0.0009
+		_grip_hint.font_size = 40
+		_grip_hint.outline_size = 8
+		add_child(_grip_hint)
+	_grip_hint.text = theme.grip_hint_text
+	_grip_hint.global_position = (interactable as Node3D).global_position + Vector3(0.0, 0.14, 0.0)
+	_grip_hint.visible = true
+	_grip_hint_target = interactable
+
+
+func _on_grip_unhover(_interactor, interactable) -> void:
+	# Only the CURRENT target may clear the hint: with two hands, the first
+	# hand's exit must not erase the hint the second hand is looking at.
+	if interactable == _grip_hint_target and _grip_hint and is_instance_valid(_grip_hint):
+		_grip_hint.visible = false
+		_grip_hint_target = null
 
 
 func _on_hover(interactor, interactable) -> void:

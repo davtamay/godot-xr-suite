@@ -30,3 +30,12 @@ extends Resource
 @export_range(0.0, 0.5, 0.005) var hover_duration := 0.01
 @export_range(0.0, 1.0, 0.05) var select_amplitude := 0.6
 @export_range(0.0, 0.5, 0.005) var select_duration := 0.03
+
+@export_group("Hints")
+## A GRIP-style object never responds to a pinch or an open hand - the person
+## must squeeze (fist / grip button), and nothing in the scene said so. Both a
+## human on device and a scripted drive stumbled on this the same way, four
+## attempts each, which makes it a discoverability gap rather than bad luck.
+## While enabled, hovering a grip-style grabbable floats a short hint above it.
+@export var grip_hint_enabled := true
+@export var grip_hint_text := "squeeze to grab"
