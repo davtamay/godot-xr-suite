@@ -628,9 +628,6 @@ func _update_hand_poses(delta: float) -> void:
 					Basis(from.basis.get_rotation_quaternion().slerp(to.basis.get_rotation_quaternion(), blend)),
 					from.origin.lerp(to.origin, blend))
 
-		# Pinch morph (positions only): thumb+index tips meet -> the ADAPTER's
-		# real synthetic-pinch detector fires select, exactly like on-device.
-		var pinch_offsets := {}
 		var posed: Array = current
 		# A microgesture in flight moves the THUMB along the index finger
 		# over ~0.35s; the recognizer reads that path, so the thumb offset
@@ -646,11 +643,12 @@ func _update_hand_poses(delta: float) -> void:
 			if micro_t >= 1.0:
 				_micro = {}
 		if hand == 1 and Input.is_mouse_button_pressed(MOUSE_BUTTON_RIGHT):
-			var thumb: Vector3 = (current[XRHandTracker.HAND_JOINT_THUMB_TIP] as Transform3D).origin
-			var index: Vector3 = (current[XRHandTracker.HAND_JOINT_INDEX_FINGER_TIP] as Transform3D).origin
-			var mid := (thumb + index) * 0.5
-			pinch_offsets[XRHandTracker.HAND_JOINT_THUMB_TIP] = mid + (thumb - mid).normalized() * 0.008 - thumb
-			pinch_offsets[XRHandTracker.HAND_JOINT_INDEX_FINGER_TIP] = mid + (index - mid).normalized() * 0.008 - index
+			# RMB pinch, closed by ROTATION (thumb solved to the index tip) so
+			# the adapter's real synthetic-pinch detector fires. The tip morph
+			# that used to live here was a bone-length change the conditioning
+			# chain low-passes over seconds - the select arrived late or never,
+			# same disease as the microgesture's stretched thumb.
+			posed = _pose_math().pinch_pose(posed)
 
 		# Wrist anchor mirrors the controller placement; the right hand aims
 		# at the mouse cursor so the hand ray is mouse-driven. The sub-mm sway
@@ -666,8 +664,6 @@ func _update_hand_poses(delta: float) -> void:
 		var anchor := to_origin * Transform3D(view_basis * (_bind[hand]["align"] as Basis), anchor_pos)
 		for joint in posed.size():
 			var world: Transform3D = anchor * (posed[joint] as Transform3D)
-			if pinch_offsets.has(joint):
-				world.origin += anchor.basis * (pinch_offsets[joint] as Vector3)
 			tracker.set_hand_joint_transform(joint,
 					Transform3D(world.basis * _GODOT_HAND_REBASE, world.origin))
 			tracker.set_hand_joint_flags(joint, _JOINT_FLAGS)

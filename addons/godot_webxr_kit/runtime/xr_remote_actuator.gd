@@ -377,6 +377,14 @@ func _apply(action: Dictionary) -> void:
 				if action.has("pose"):
 					curls = _curls_for(pose_name)
 				joints = _pose_math.fk_pose(_bind[hhand]["rel"], _bind[hhand]["curl_axes"], curls)
+				if pose_name == "pinch":
+					# Close the pinch by ROTATION (thumb solved to the index
+					# tip), not by dragging tip positions: a positional morph
+					# is a bone-length change, and the conditioning chain
+					# low-passes those over seconds - measured as a pinch that
+					# selected ~5 s late, i.e. never within a normal hold.
+					# Same root cause and same cure as the microgesture.
+					joints = _pose_math.pinch_pose(joints)
 			_hand_state[hhand] = {"joints": joints, "pose": pose_name}
 			_publish_hand(hhand)
 		"microgesture":
@@ -711,10 +719,10 @@ func _publish_hand(hand: int) -> void:
 	var t := float(Time.get_ticks_msec()) * 0.001
 	var sway := Vector3(sin(t * 1.3 + hand), sin(t * 1.7), sin(t * 2.1)) * 0.0006
 	var anchor := _to_play_space(Transform3D(_hand_world_basis(hand) * align, pos + sway))
-	# Pinch morph (positions only): the tips are pulled to meet, which is
-	# what makes the ADAPTER's own synthetic-pinch detector fire - the same
-	# path a real hand takes on-device, rather than a faked select.
-	var morph := {}
+	# NOTE the pinch is closed rotationally at pose time (pinch_pose) - the
+	# positional tip morph that used to live here was low-passed into
+	# nothing by the conditioning chain, exactly like the microgesture's
+	# stretched thumb, and the select arrived seconds late or never.
 	if _micro.has(hand):
 		var m: Dictionary = _micro[hand]
 		# Negative steps are the warm-up: posture held, thumb resting off
@@ -735,16 +743,8 @@ func _publish_hand(hand: int) -> void:
 		# frame cap stays as a hang guard.
 		if micro_step >= 0 and (float(m["elapsed"]) >= float(m["seconds"]) 				or int(m["step"]) > int(m["frames"]) * 8):
 			_micro.erase(hand)
-	if str(_hand_state[hand].get("pose", "")) == "pinch":
-		var thumb: Vector3 = (joints[XRHandTracker.HAND_JOINT_THUMB_TIP] as Transform3D).origin
-		var index: Vector3 = (joints[XRHandTracker.HAND_JOINT_INDEX_FINGER_TIP] as Transform3D).origin
-		var mid := (thumb + index) * 0.5
-		morph[XRHandTracker.HAND_JOINT_THUMB_TIP] = mid + (thumb - mid).normalized() * 0.008 - thumb
-		morph[XRHandTracker.HAND_JOINT_INDEX_FINGER_TIP] = mid + (index - mid).normalized() * 0.008 - index
 	for joint in joints.size():
 		var world: Transform3D = anchor * (joints[joint] as Transform3D)
-		if morph.has(joint):
-			world.origin += anchor.basis * (morph[joint] as Vector3)
 		tracker.set_hand_joint_transform(joint,
 				Transform3D(world.basis * _pose_math.GODOT_HAND_REBASE, world.origin))
 		tracker.set_hand_joint_flags(joint, _JOINT_FLAGS)

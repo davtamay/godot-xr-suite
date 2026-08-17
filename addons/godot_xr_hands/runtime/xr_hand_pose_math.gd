@@ -462,6 +462,27 @@ static func _solve_thumb_to(joints: Array, target: Vector3) -> Array:
 	return out
 
 
+## Closes a pinch by ROTATION: the thumb is swung (joint rotations only)
+## until its tip sits `gap` from the index tip. The obvious alternative -
+## dragging the two TIP positions together - is a bone-length change, which
+## the conditioning chain low-passes over seconds: measured, a morphed pinch
+## crossed the adapter's 35 mm select threshold seconds late, so any pinch
+## held for a normal moment never selected at all. Curling alone cannot do
+## it either (39 mm floor at max curl - the thumb and index curl in
+## different planes); the rotational solve closes the remaining distance the
+## way a real thumb does.
+static func pinch_pose(joints: Array, gap := 0.012) -> Array:
+	if joints.size() <= XRHandTracker.HAND_JOINT_INDEX_FINGER_TIP:
+		return joints
+	var index_tip: Vector3 = (joints[XRHandTracker.HAND_JOINT_INDEX_FINGER_TIP] as Transform3D).origin
+	var thumb_tip: Vector3 = (joints[XRHandTracker.HAND_JOINT_THUMB_TIP] as Transform3D).origin
+	var dir := thumb_tip - index_tip
+	# A degenerate direction (already-coincident tips) still needs a defined
+	# offset, or the solve would target the index tip itself.
+	var offset := dir.normalized() * gap if dir.length() > 0.001 else Vector3(0.0, gap, 0.0)
+	return _solve_thumb_to(joints, index_tip + offset)
+
+
 ## The gesture posture a microgesture is performed FROM: a relaxed hand with
 ## the thumb free, which is what the recognizer's posture gate expects.
 ## Fraction of a microgesture spent travelling along the finger; the remainder
