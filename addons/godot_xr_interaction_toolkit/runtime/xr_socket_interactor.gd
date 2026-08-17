@@ -47,6 +47,21 @@ var _reselect_delay_remaining := 0.0
 var _editor_preview: MeshInstance3D
 
 
+## A socket is the one affordance that is not a single point: something has to
+## be carried INTO it, so the hint describes the destination and what it will
+## accept, and leaves the driver to find a source. Radius matters because it is
+## how close is close enough - guessing it is how a peg gets released next to a
+## socket rather than in it.
+func drive_hint() -> Dictionary:
+	return {
+		"kind": "socket",
+		"gesture": "grab",
+		"point": global_position,
+		"radius": socket_radius,
+		"accepts": accepted_groups.map(func(g): return String(g)),
+	}
+
+
 func _ready() -> void:
 	if Engine.is_editor_hint():
 		set_physics_process(false)
