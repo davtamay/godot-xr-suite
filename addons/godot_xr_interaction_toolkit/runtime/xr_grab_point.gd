@@ -117,9 +117,27 @@ const _BUILTIN := {
 }
 
 
+## The pose that is not a pose: derived from the OBJECT instead. Each finger
+## curls (same hinge FK as every other pose) until it touches the object's own
+## collision shape, so the item's geometry IS the grip data - no studio
+## session, no authoring, and it holds for objects that do not exist yet.
+## The editor ghost runs the same solve, so the preview shows the fitted grip
+## against the actual item.
+const AUTO_POSE := "Auto (fit object)"
+## Skin pad: fingers stop this far off the surface rather than exactly on it,
+## because a fingertip JOINT sits at the finger's core, not its pad.
+const _FIT_PAD := 0.008
+## Curl sweep for the fit. Past 1.0 deliberately: the 0..1 gesture range tops
+## out with fingertips 5.7 cm from the palm (measured), while a wrap needs
+## 2-4 cm - which extended curls reach (1.3 -> 3.2 cm, 1.5 -> 1.9 cm).
+const _FIT_CURL_MAX := 1.7
+const _FIT_STEPS := 24
+
+
 ## Expose preview_pose as a dropdown of the built-in grips + every SAVED pose.
 func _get_property_list() -> Array[Dictionary]:
-	var names: Array = _BUILTIN.keys()
+	var names: Array = [AUTO_POSE]
+	names.append_array(_BUILTIN.keys())
 	var math := _pose_math()
 	if math:
 		for pose in math.list_poses():
@@ -212,12 +230,127 @@ func _held_joints(hand: int) -> Array:
 		return []
 	var rel: Array = _bind_cache[hand]["rel"]
 	var axes: Array = _bind_cache[hand]["curl_axes"]
+	if preview_pose == AUTO_POSE:
+		return math.fk_pose(rel, axes, _fit_curls(rel, axes, math))
 	if _BUILTIN.has(preview_pose):
 		return math.fk_pose(rel, axes, _BUILTIN[preview_pose])
 	var gesture := _find_pose(preview_pose, math)
 	if gesture == null:
 		return []
 	return math.pose_joints(rel, axes, gesture, hand)
+
+
+## ---- Auto-fit: curl each finger onto the object's collision shapes ---------
+
+## Per-finger curls that wrap THIS object: sweep each finger's curl and stop
+## at first contact with any collision shape (plus the skin pad). The sweep is
+## sampled rather than binary-searched on purpose - contact distance is not
+## monotonic once a finger passes a surface tangentially, and 24 FK poses are
+## effectively free.
+func _fit_curls(rel: Array, axes: Array, math: Object) -> Dictionary:
+	var shapes := _collect_fit_shapes(rel)
+	if shapes.is_empty():
+		return _BUILTIN["Relaxed Grip"]
+	var chains: Array = math.FINGER_CHAINS
+	var names: Array = math.FINGER_NAMES
+	var curls := {}
+	for f in names.size():
+		# The thumb's FK spans 1.7 rad against the fingers' 3.6, so the same
+		# sweep range covers a proportionally similar arc.
+		curls[names[f]] = _fit_one_finger(rel, axes, math, chains[f], names[f], shapes)
+	return curls
+
+
+func _fit_one_finger(rel: Array, axes: Array, math: Object, chain: Array, finger: String, shapes: Array) -> float:
+	var best_curl := 0.35
+	var best_distance := INF
+	var previous := INF
+	for step in _FIT_STEPS + 1:
+		var curl := 0.05 + (_FIT_CURL_MAX - 0.05) * float(step) / float(_FIT_STEPS)
+		var posed: Array = math.fk_pose(rel, axes, {finger: curl})
+		# The three distal joints, not just the tip: a wrap contacts along the
+		# finger, and a tip-only test lets the middle of the finger clip in.
+		var distance := INF
+		for i in range(maxi(chain.size() - 3, 1), chain.size()):
+			distance = minf(distance, _surface_distance((posed[chain[i]] as Transform3D).origin, shapes))
+		if distance <= _FIT_PAD:
+			# Contact: settle halfway back toward the previous (clear) sample
+			# so the finger rests ON the pad rather than inside the surface.
+			return curl if previous > _FIT_PAD * 2.0 else curl - (_FIT_CURL_MAX - 0.05) / float(_FIT_STEPS) * 0.5
+		if distance < best_distance:
+			best_distance = distance
+			best_curl = curl
+		previous = distance
+	# Never touched (object thinner than the closed hand, or shapes far from
+	# this finger): the closest approach still reads as an intentional wrap.
+	return best_curl
+
+
+## Collision shapes of the body this point is authored inside, expressed in
+## GRIP space - the frame the fingers are posed in, where the palm anchor sits
+## at this grab point. Shape offsets from the point are rigid scene data, so
+## this works identically in the editor ghost and at grab time.
+func _collect_fit_shapes(rel: Array) -> Array:
+	var body := get_parent()
+	while body != null and not (body is CollisionObject3D):
+		body = body.get_parent()
+	if body == null:
+		return []
+	var grip_from_point := _grip_frame_in_wrist(rel)
+	var out := []
+	for child in body.get_children():
+		var col := child as CollisionShape3D
+		if col == null or col.disabled or col.shape == null:
+			continue
+		var shape_in_point := global_transform.affine_inverse() * col.global_transform
+		out.append({"shape": col.shape, "xform": grip_from_point * shape_in_point})
+	return out
+
+
+## Where the grip frame (palm anchor, grip basis) sits in the WRIST frame of
+## the bind - built from the bind joints with the same metacarpal convention
+## the runtime and the editor ghost use, so all three agree by construction.
+func _grip_frame_in_wrist(rel: Array) -> Transform3D:
+	var wrist_p := Vector3.ZERO
+	var index_p: Vector3 = (rel[XRHandTracker.HAND_JOINT_INDEX_FINGER_METACARPAL] as Transform3D).origin
+	var pinky_p: Vector3 = (rel[XRHandTracker.HAND_JOINT_PINKY_FINGER_METACARPAL] as Transform3D).origin
+	var palm_p: Vector3 = (rel[XRHandTracker.HAND_JOINT_PALM] as Transform3D).origin
+	var forward := (index_p - wrist_p).normalized()
+	var across := pinky_p - index_p
+	var up := forward.cross(across.normalized()).normalized()
+	return Transform3D(Basis(up.cross(-forward).normalized(), up, -forward).orthonormalized(), palm_p)
+
+
+## Signed distance from a point to a shape's surface (negative = inside).
+## Analytic for the primitives the samples use; unknown shapes are skipped.
+func _surface_distance(point: Vector3, shapes: Array) -> float:
+	var best := INF
+	for entry in shapes:
+		var q: Vector3 = (entry["xform"] as Transform3D).affine_inverse() * point
+		var shape: Shape3D = entry["shape"]
+		var d := INF
+		if shape is SphereShape3D:
+			d = q.length() - (shape as SphereShape3D).radius
+		elif shape is CapsuleShape3D:
+			var cap := shape as CapsuleShape3D
+			var half := maxf(cap.height * 0.5 - cap.radius, 0.0)
+			var on_axis := Vector3(0.0, clampf(q.y, -half, half), 0.0)
+			d = q.distance_to(on_axis) - cap.radius
+		elif shape is CylinderShape3D:
+			var cyl := shape as CylinderShape3D
+			var radial := Vector2(q.x, q.z).length() - cyl.radius
+			var axial := absf(q.y) - cyl.height * 0.5
+			if radial <= 0.0 and axial <= 0.0:
+				d = maxf(radial, axial)
+			else:
+				d = Vector2(maxf(radial, 0.0), maxf(axial, 0.0)).length()
+		elif shape is BoxShape3D:
+			var half_size: Vector3 = (shape as BoxShape3D).size * 0.5
+			var outside := (q.abs() - half_size).maxf(0.0)
+			var inside := minf(maxf(q.abs().x - half_size.x, maxf(q.abs().y - half_size.y, q.abs().z - half_size.z)), 0.0)
+			d = outside.length() + inside
+		best = minf(best, d)
+	return best
 
 
 static var _bind_cache := {}
@@ -324,7 +457,11 @@ func _pose_skeleton(skeleton: Skeleton3D) -> void:
 	var bind := _build_bind(skeleton, joint_bone, wrist_rest)
 	var curl_axes: Array = math.measure_curl_axes(bind)
 	var posed: Array
-	if _BUILTIN.has(preview_pose):
+	if preview_pose == AUTO_POSE:
+		# The same solve the runtime runs, against the same scene shapes - the
+		# ghost previews the FITTED grip on the actual item.
+		posed = math.fk_pose(bind, curl_axes, _fit_curls(bind, curl_axes, math))
+	elif _BUILTIN.has(preview_pose):
 		posed = math.fk_pose(bind, curl_axes, _BUILTIN[preview_pose])
 	else:
 		var gesture := _find_pose(preview_pose, math)
