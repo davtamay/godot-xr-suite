@@ -35,6 +35,15 @@ from pathlib import Path
 
 import cv2
 import mediapipe as mp
+from mediapipe.tasks.python import BaseOptions
+from mediapipe.tasks.python.vision import (HandLandmarker, HandLandmarkerOptions,
+                                           RunningMode)
+
+# MediaPipe 1.x replaced the old `mp.solutions.hands` module with the Tasks
+# API, which loads an explicit model file instead of bundling one. The model
+# is a download, so it stays out of the repo like the library itself - point
+# GRIP_LANDMARKER_MODEL at it, or drop hand_landmarker.task beside this script.
+DEFAULT_MODEL = "hand_landmarker.task"
 
 
 def landmarks_from_image(path, want_hand):
@@ -76,6 +85,22 @@ def landmarks_from_webcam(want_hand, camera=0):
         cv2.destroyAllWindows()
 
 
+def _model_path():
+    import os
+    override = os.environ.get("GRIP_LANDMARKER_MODEL")
+    if override and Path(override).exists():
+        return override
+    for candidate in (Path(__file__).with_name(DEFAULT_MODEL),
+                      Path.cwd() / DEFAULT_MODEL,
+                      Path("C:/ws/xr/testbed") / DEFAULT_MODEL):
+        if candidate.exists():
+            return str(candidate)
+    sys.exit(
+        "hand_landmarker.task not found. Download it once: "
+        "  curl -L -o hand_landmarker.task https://storage.googleapis.com/"
+        "mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task")
+
+
 def _detect(image, want_hand, still):
     """World landmarks for the requested hand, or None.
 
@@ -84,26 +109,28 @@ def _detect(image, want_hand, still):
     picture. The suite retargets onto the playing hand's own bone lengths, so
     approximate scale is fine - proportions are what matter.
     """
-    with mp.solutions.hands.Hands(
-        static_image_mode=still,
-        max_num_hands=2,
-        min_detection_confidence=0.5,
-        model_complexity=1,
-    ) as hands:
-        result = hands.process(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
-        if not result.multi_hand_world_landmarks:
+    options = HandLandmarkerOptions(
+        base_options=BaseOptions(model_asset_path=_model_path()),
+        running_mode=RunningMode.IMAGE,
+        num_hands=2,
+        min_hand_detection_confidence=0.4,
+    )
+    with HandLandmarker.create_from_options(options) as landmarker:
+        frame = mp.Image(image_format=mp.ImageFormat.SRGB,
+                         data=cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+        result = landmarker.detect(frame)
+        if not result.hand_world_landmarks:
             return None
         index = 0
         # MediaPipe labels the hand as seen in the image; an un-mirrored photo
         # of a right hand reads "Right". Pick the one asked for when both are
         # visible, rather than whichever was detected first.
-        if result.multi_handedness and want_hand:
-            for i, handed in enumerate(result.multi_handedness):
-                if handed.classification[0].label.lower() == want_hand:
+        if result.handedness and want_hand:
+            for i, handed in enumerate(result.handedness):
+                if handed[0].category_name.lower() == want_hand:
                     index = i
                     break
-        marks = result.multi_hand_world_landmarks[index]
-        return [[p.x, p.y, p.z] for p in marks.landmark]
+        return [[p.x, p.y, p.z] for p in result.hand_world_landmarks[index]]
 
 
 def main():
