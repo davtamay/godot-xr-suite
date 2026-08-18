@@ -72,6 +72,20 @@ extends Node3D
 ## per-finger freedom exists rather than a single frozen hand.
 @export_flags("Thumb", "Index", "Middle", "Ring", "Pinky") var free_fingers := 0
 
+## Fingers that stay EXTENDED to reach a control rather than wrapping the body.
+## This is what makes a held spray can read as a spray can: photographs of the
+## real grip all show three fingers round the body, the thumb opposite, and the
+## index laid along the barrel onto the actuator - it never wraps. Curling every
+## finger onto the surface, which is what fitting alone does, produces a uniform
+## pipe-grip that holds the object without looking like anyone holding THAT
+## object. Pair with the object's business end at the index side, which is where
+## the auto-placed frame puts it.
+@export_flags("Thumb", "Index", "Middle", "Ring", "Pinky") var reach_fingers := 0
+
+## How straight a reaching finger stays. Not zero: a finger laid on a cap has a
+## slight bend, and a perfectly straight one reads as a pointing hand.
+@export_range(0.0, 0.6, 0.01) var reach_curl := 0.16
+
 ## AUTHORING AID (editor only): show a translucent reference HAND gripping the
 ## object exactly as it will at runtime (same grip convention). Move/rotate this
 ## grab point until the hand holds the object naturally - then it's correct
@@ -145,6 +159,10 @@ const _FIT_PAD := 0.008
 ## 2-4 cm - which extended curls reach (1.3 -> 3.2 cm, 1.5 -> 1.9 cm).
 const _FIT_CURL_MAX := 1.7
 const _FIT_STEPS := 24
+## The thumb's FK spans 1.7 rad where the fingers span 3.6, so the same curl
+## number turns it more than twice as far - past roughly this it folds through
+## the palm rather than onto the object, whatever the contact test says.
+const _FIT_THUMB_MAX := 0.85
 
 
 ## Expose preview_pose as a dropdown of the built-in grips + every SAVED pose.
@@ -244,6 +262,15 @@ func _held_joints(hand: int) -> Array:
 	var rel: Array = _bind_cache[hand]["rel"]
 	var axes: Array = _bind_cache[hand]["curl_axes"]
 	if preview_pose == AUTO_POSE:
+		# A grip RECORDED against this object wins over fitting it. Auto-fit
+		# curls each finger around one hinge until it touches the collider,
+		# which closes plausibly but never humanly - no splay, no thumb rolling
+		# across the barrel, no per-joint variation. A recording has all three
+		# because a real hand made it against the real shape. Fitting is the
+		# fallback that keeps every un-recorded prop working.
+		var recorded := _recorded_grip_for_object(math)
+		if recorded != null:
+			return _snap_to_surface(math.pose_joints(rel, axes, recorded, hand), rel)
 		return math.fk_pose(rel, axes, _fit_curls(rel, axes, math))
 	if _BUILTIN.has(preview_pose):
 		return math.fk_pose(rel, axes, _BUILTIN[preview_pose])
@@ -263,8 +290,11 @@ func grip_transform() -> Transform3D:
 	var body := _collision_body()
 	if body == null:
 		return global_transform
-	var local := _auto_grip_in_body(body)
-	return body.global_transform * local if local != null else global_transform
+	var frames: Variant = _auto_grip_in_body(body)
+	if frames == null or (frames as Array).is_empty():
+		return global_transform
+	var chosen: int = clampi(_frame_choice, 0, (frames as Array).size() - 1)
+	return body.global_transform * ((frames as Array)[chosen] as Transform3D)
 
 
 func _collision_body() -> CollisionObject3D:
@@ -321,8 +351,106 @@ func _auto_grip_in_body(body: CollisionObject3D) -> Variant:
 	# Fist axis points along the barrel (thumb toward one end); fingers run
 	# tangentially. Which tangent sign wraps and which curls away is
 	# handedness, so it is MEASURED below rather than derived.
-	var forward := axis.cross(radial).normalized() * _wrap_flip
-	return Transform3D(_grip_basis(axis, forward), palm)
+	# ORIENTATION IS AUTHORED, POSITION IS SOLVED - and the split is where it
+	# is because of what each source can actually know. A collider knows where
+	# its surface is, so the palm lands on it and the 13.6 cm anchor drift
+	# cannot come back. A collider does NOT know that a spray can is held
+	# nozzle-up with the index on the trigger; that is intent, and no amount
+	# of geometry recovers it.
+	#
+	# Scoring orientations by finger contact was tried and is wrong at the
+	# objective: many orientations wrap a cylinder equally well and most of
+	# them look nothing like a hand holding a can, so the scorer keeps
+	# choosing plausible-to-arithmetic, absurd-to-a-person. Contact measures
+	# whether fingers reach, never whether the hold reads.
+	# Where the can must LIE for this hand to be holding it, measured off the
+	# hand instead of argued about. Wrap your hand round a can and the four
+	# fingers stack ALONG it - index at the top, pinky at the bottom - so the
+	# barrel's axis runs in the index->pinky direction, and the barrel's centre
+	# sits off the palm toward where the curled fingers close. Both are read
+	# from the bind skeleton below. I had the axis on "up out of the fist",
+	# which is why every attempt came out rolled a quarter turn: that axis
+	# points out of the SIDE of a hand holding a can, not along it.
+	var wrap := _measure_wrap_frame()
+	if wrap.is_empty():
+		return [Transform3D(transform.basis.orthonormalized(), palm)]
+
+	# The can expressed in the hand's frame: its own +Y (the cylinder axis)
+	# laid along the measured stack direction, centred where the fingers close.
+	var can_axis: Vector3 = wrap["axis"]
+	var toward: Vector3 = wrap["toward"]
+	# ROLL about the barrel is a third degree of freedom, and deriving it from
+	# where the fingers close only fixed which side of the palm the object sits
+	# on - its FACING stayed arbitrary, and landed a quarter turn off, aiming
+	# along the hand's +X (out to the right) instead of forward. The convention
+	# already in this file answers it: -Z is the aim direction, for grab points
+	# and grip poses alike, so an object's -Z lines up with the hand's -Z and a
+	# spray can points where the hand points.
+	var front := Vector3.BACK - can_axis * Vector3.BACK.dot(can_axis)
+	if front.length_squared() < 0.000001:
+		# Barrel already along the aim axis: nothing to align, so fall back to
+		# the finger-closure direction rather than picking a roll at random.
+		front = toward
+	front = front.normalized()
+	var side := can_axis.cross(front).normalized()
+	if side.length_squared() < 0.000001:
+		return [Transform3D(transform.basis.orthonormalized(), palm)]
+	var can_in_hand := Transform3D(
+			Basis(side, can_axis, front).orthonormalized(),
+			toward * radius)
+	# The grab point IS the hand's frame in the object's coordinates, so it is
+	# that relationship inverted - then carried into the shape's own frame, in
+	# case the collider is not at the body's origin.
+	return [shape_xform * can_in_hand.affine_inverse()]
+
+
+## The barrel a wrapped hand forms, in GRIP space: which way it runs, and which
+## way it sits from the palm. Measured off the bundled hand's bind skeleton
+## with the fingers curled, so it describes this hand rather than a convention.
+func _measure_wrap_frame() -> Dictionary:
+	var math := _pose_math()
+	if math == null:
+		return {}
+	if _bind_cache.is_empty():
+		_bind_cache = math.load_bind_skeletons()
+	if not _bind_cache.has(1):
+		return {}
+	var rel: Array = _bind_cache[1]["rel"]
+	var to_grip := _grip_frame_in_wrist(rel).affine_inverse()
+
+	# The stack direction: the line the fingers are arrayed along, which is the
+	# barrel's axis. Pointing PINKY->INDEX, not the other way, and the sign is
+	# not arbitrary: an object's own +Y is its business end (a can's nozzle, a
+	# torch's lamp), and you hold those with the working end at the INDEX side
+	# because the index is the finger that reaches the trigger. Signed toward
+	# the pinky instead, every object comes out nozzle-down - which is exactly
+	# how it presented.
+	var index_mc: Vector3 = to_grip * (rel[XRHandTracker.HAND_JOINT_INDEX_FINGER_METACARPAL] as Transform3D).origin
+	var pinky_mc: Vector3 = to_grip * (rel[XRHandTracker.HAND_JOINT_PINKY_FINGER_METACARPAL] as Transform3D).origin
+	var axis := (index_mc - pinky_mc)
+	if axis.length_squared() < 0.000001:
+		return {}
+	axis = axis.normalized()
+
+	# Where the barrel sits: curl the fingers and take where their tips close.
+	# The palm is the grip origin, so the direction to that closure - with the
+	# stack component removed - is the direction the held object lies in.
+	var curled: Array = math.fk_pose(rel, _bind_cache[1]["curl_axes"],
+			{"thumb": 0.6, "index": 1.1, "middle": 1.2, "ring": 1.2, "pinky": 1.2})
+	var chains: Array = math.FINGER_CHAINS
+	var closure := Vector3.ZERO
+	var counted := 0
+	for f in range(1, chains.size()):
+		var tip: int = chains[f][chains[f].size() - 1]
+		closure += to_grip * (curled[tip] as Transform3D).origin
+		counted += 1
+	if counted == 0:
+		return {}
+	closure /= float(counted)
+	var toward := closure - axis * closure.dot(axis)
+	if toward.length_squared() < 0.000001:
+		return {}
+	return {"axis": axis, "toward": toward.normalized()}
 
 
 ## Assemble the grip basis the way the runtime and the editor ghost both do,
@@ -345,6 +473,81 @@ func _round_shape_radius(shape: Shape3D) -> float:
 	return maxf(_round_shape_size(shape), 0.001)
 
 
+## Name a grip recorded for THIS object would be saved under. Derived from the
+## scene file the object came from, so the recording station and the grab point
+## agree without either storing a reference to the other - record a grip for
+## spray_can.tscn and every spray can in every scene picks it up.
+func recorded_grip_name() -> String:
+	var scene_path := ""
+	var cursor: Node = self
+	while cursor != null:
+		if not cursor.scene_file_path.is_empty():
+			scene_path = cursor.scene_file_path
+			break
+		cursor = cursor.get_parent()
+	if scene_path.is_empty():
+		return ""
+	return "grip_" + scene_path.get_file().get_basename()
+
+
+## Settle an imported or recorded grip onto THIS object's actual surface.
+##
+## A grip from a photograph carries the things a solver cannot invent - splay,
+## thumb opposition, per-joint variation - and, because a single image has no
+## reliable absolute depth, gets the distances approximately. A grip from
+## another object's recording has the same problem for a different reason. So
+## take the human structure from the pose and the dimensions from the collider:
+## move each fingertip the small amount that puts it ON the surface, and carry
+## the joints above it along in proportion, which bends the finger rather than
+## detaching it.
+##
+## Deliberately gentle. Anything past a couple of centimetres is not a depth
+## error, it is a different grip, and dragging it into contact would destroy
+## the pose that made importing worth doing.
+const _SNAP_LIMIT := 0.022
+
+func _snap_to_surface(joints: Array, rel: Array) -> Array:
+	if not auto_place or joints.is_empty():
+		return joints
+	var shapes := _collect_fit_shapes(rel)
+	if shapes.is_empty():
+		return joints
+	var math := _pose_math()
+	if math == null:
+		return joints
+	var out := joints.duplicate()
+	for chain in math.FINGER_CHAINS:
+		var tip: int = chain[chain.size() - 1]
+		var tip_pose: Transform3D = out[tip]
+		var distance := _surface_distance(tip_pose.origin, shapes)
+		if not is_finite(distance) or absf(distance) > _SNAP_LIMIT or absf(distance) < 0.001:
+			continue
+		# Toward the surface along the steepest descent of the distance field,
+		# sampled rather than differentiated analytically - the shapes are a
+		# mixed set and a numeric gradient handles all of them alike.
+		var step := 0.0015
+		var gradient := Vector3(
+				_surface_distance(tip_pose.origin + Vector3(step, 0, 0), shapes) - distance,
+				_surface_distance(tip_pose.origin + Vector3(0, step, 0), shapes) - distance,
+				_surface_distance(tip_pose.origin + Vector3(0, 0, step), shapes) - distance)
+		if gradient.length_squared() < 0.000000001:
+			continue
+		var correction := -gradient.normalized() * (distance - _FIT_PAD)
+		# Distribute along the finger: the tip takes the whole correction, each
+		# joint above it proportionally less, so the finger flexes instead of
+		# translating off its knuckle.
+		for i in range(1, chain.size()):
+			var share := float(i) / float(chain.size() - 1)
+			var pose: Transform3D = out[chain[i]]
+			out[chain[i]] = Transform3D(pose.basis, pose.origin + correction * share)
+	return out
+
+
+func _recorded_grip_for_object(math: Object) -> Object:
+	var wanted := recorded_grip_name()
+	return null if wanted.is_empty() else _find_pose(wanted, math)
+
+
 ## ---- Auto-fit: curl each finger onto the object's collision shapes ---------
 
 ## Per-finger curls that wrap THIS object: sweep each finger's curl and stop
@@ -352,20 +555,23 @@ func _round_shape_radius(shape: Shape3D) -> float:
 ## sampled rather than binary-searched on purpose - contact distance is not
 ## monotonic once a finger passes a surface tangentially, and 24 FK poses are
 ## effectively free.
-## Which way round the barrel the fingers wrap is handedness, and deriving it
-## has been wrong often enough in this stack to be worth measuring instead:
-## solve the fit both ways and keep whichever actually reaches the surface.
-## The wrong sign curls the fingers into open air, so contact discriminates
-## cleanly - and the answer costs one extra fit, once, at grab time.
-func _wrap_sign(rel: Array, axes: Array, math: Object) -> float:
-	var forward_contact := _fit_contact(rel, axes, math, 1.0)
-	var reverse_contact := _fit_contact(rel, axes, math, -1.0)
-	return 1.0 if forward_contact <= reverse_contact else -1.0
+## Pick the candidate frame whose fingers close on the most surface. Costs one
+## fit per candidate, once, at grab time - and replaces a guess that has been
+## wrong in two different ways with a number.
+func _choose_frame(rel: Array, axes: Array, math: Object, count: int) -> int:
+	var best := 0
+	var best_contact := INF
+	for candidate in count:
+		var contact := _fit_contact(rel, axes, math, candidate)
+		if contact < best_contact:
+			best_contact = contact
+			best = candidate
+	return best
 
 
-## Total fingertip-to-surface distance for one wrap direction: lower wraps.
-func _fit_contact(rel: Array, axes: Array, math: Object, sign: float) -> float:
-	_wrap_flip = sign
+## Total fingertip-to-surface distance for one candidate frame: lower wraps.
+func _fit_contact(rel: Array, axes: Array, math: Object, candidate: int) -> float:
+	_frame_choice = candidate
 	var shapes := _collect_fit_shapes(rel)
 	if shapes.is_empty():
 		return INF
@@ -380,14 +586,12 @@ func _fit_contact(rel: Array, axes: Array, math: Object, sign: float) -> float:
 	return total
 
 
-## Set while a fit is being evaluated, so _collect_fit_shapes expresses the
-## object in the grip frame that wrap direction implies.
-var _wrap_flip := 1.0
+## Which candidate frame grip_transform() currently reports - set while the
+## candidates are being scored, then left on the winner.
+var _frame_choice := 0
 
 
 func _fit_curls(rel: Array, axes: Array, math: Object) -> Dictionary:
-	if auto_place:
-		_wrap_flip = _wrap_sign(rel, axes, math)
 	var shapes := _collect_fit_shapes(rel)
 	if shapes.is_empty():
 		return _BUILTIN["Relaxed Grip"]
@@ -395,6 +599,10 @@ func _fit_curls(rel: Array, axes: Array, math: Object) -> Dictionary:
 	var names: Array = math.FINGER_NAMES
 	var curls := {}
 	for f in names.size():
+		if (reach_fingers & (1 << f)) != 0:
+			# Reaching, not wrapping: laid along the barrel toward the control.
+			curls[names[f]] = reach_curl
+			continue
 		# The thumb's FK spans 1.7 rad against the fingers' 3.6, so the same
 		# sweep range covers a proportionally similar arc.
 		curls[names[f]] = _fit_one_finger(rel, axes, math, chains[f], names[f], shapes)
@@ -405,18 +613,27 @@ func _fit_one_finger(rel: Array, axes: Array, math: Object, chain: Array, finger
 	var best_curl := 0.35
 	var best_distance := INF
 	var previous := INF
+	var curl_max: float = _FIT_THUMB_MAX if finger == "thumb" else _FIT_CURL_MAX
 	for step in _FIT_STEPS + 1:
-		var curl := 0.05 + (_FIT_CURL_MAX - 0.05) * float(step) / float(_FIT_STEPS)
+		var curl := 0.05 + (curl_max - 0.05) * float(step) / float(_FIT_STEPS)
 		var posed: Array = math.fk_pose(rel, axes, {finger: curl})
-		# The three distal joints, not just the tip: a wrap contacts along the
-		# finger, and a tip-only test lets the middle of the finger clip in.
+		# Sampled ALONG the bones, not just at the joints. A joint-only test
+		# lets a bone pass clean through a surface between its two ends, which
+		# is exactly how the thumb - whose FK spans a shorter arc, so it turns
+		# further per unit curl - drove itself into the can while every sampled
+		# point still read clear.
 		var distance := INF
 		for i in range(maxi(chain.size() - 3, 1), chain.size()):
-			distance = minf(distance, _surface_distance((posed[chain[i]] as Transform3D).origin, shapes))
+			var here: Vector3 = (posed[chain[i]] as Transform3D).origin
+			distance = minf(distance, _surface_distance(here, shapes))
+			if i > 0:
+				var previous_joint: Vector3 = (posed[chain[i - 1]] as Transform3D).origin
+				for t in [0.33, 0.66]:
+					distance = minf(distance, _surface_distance(previous_joint.lerp(here, t), shapes))
 		if distance <= _FIT_PAD:
 			# Contact: settle halfway back toward the previous (clear) sample
 			# so the finger rests ON the pad rather than inside the surface.
-			return curl if previous > _FIT_PAD * 2.0 else curl - (_FIT_CURL_MAX - 0.05) / float(_FIT_STEPS) * 0.5
+			return curl if previous > _FIT_PAD * 2.0 else curl - (curl_max - 0.05) / float(_FIT_STEPS) * 0.5
 		if distance < best_distance:
 			best_distance = distance
 			best_curl = curl
