@@ -22,13 +22,20 @@ const FINGER_CHAINS := [
 
 const PRESET_DIR := "res://addons/godot_xr_hands/runtime/gesture_studio/presets"
 const USER_DIR := "user://gestures"
+## Grips that SHIP with the project. user:// is where authoring lands - and
+## on web that is browser storage, private to one browser on one machine, so
+## a grip recorded on Link would never reach a player. Move finished grips
+## here and they travel with the export like any other resource.
+const PROJECT_DIR := "res://grips"
 
 
 ## Every saved pose (XRHandGesture .tres) from the shipped presets and the
 ## user's recordings: [{name, resource}].
 static func list_poses() -> Array:
 	var out: Array = []
-	for dir_path in [PRESET_DIR, USER_DIR]:
+	# Project grips before user ones: a shipped grip is the authored answer,
+	# and a stale local recording should not silently override it.
+	for dir_path in [PRESET_DIR, PROJECT_DIR, USER_DIR]:
 		var dir := DirAccess.open(dir_path)
 		if dir == null:
 			continue
