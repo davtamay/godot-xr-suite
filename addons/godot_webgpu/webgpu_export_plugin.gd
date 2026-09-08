@@ -211,9 +211,12 @@ func _merge_shader_cache(pck_path: String) -> int:
 		var rel: String = str(e[0]).trim_prefix("res://")
 		if not rel.begins_with(".godot/shader_cache/"):
 			continue
-		# Classes the host renderer bakes itself are byte-identical; skip them.
-		var cls := rel.get_slice("/", 2)
-		if cls.find("Mobile") < 0 and DirAccess.dir_exists_absolute(host_cache.path_join(cls)):
+		# Skip only what the host already baked, file by file. Judging by class
+		# was too coarse: a class the host also bakes (the skeleton and canvas
+		# SDF shaders, say) still has group files of its own under the other
+		# renderer, because the defines differ and the group file is named by
+		# their hash, and those were dropped along with the duplicates.
+		if FileAccess.file_exists(host_cache.path_join(rel.trim_prefix(".godot/shader_cache/"))):
 			continue
 		f.seek(file_base + int(e[1]))
 		add_file("res://" + rel, f.get_buffer(int(e[2])), false)
