@@ -11,6 +11,9 @@ const STATUS := "webgpu/status"
 const SHADER_BAKER := "shader_baker/enabled"
 const FALLBACK := "webgpu/bake_mobile_fallback"
 const FALLBACK_ENV := "GODOT_WEBGPU_FALLBACK_BAKE"
+# A custom template built against an engine build profile carries that profile
+# beside it, written by misc/webgpu_scripts/build-web-profiled.sh.
+const PROFILE_SUFFIX := ".build"
 
 var editor_plugin: EditorPlugin
 var _last_on := false
@@ -145,6 +148,7 @@ func _export_begin(
 	ProjectSettings.set_setting("rendering/webgpu/bake_fp16_shader_variants", bake_fp16 == null or bool(bake_fp16))
 	if method == "forward_plus" and _is_on(FALLBACK) and OS.get_environment(FALLBACK_ENV) == "":
 		_bake_mobile_fallback()
+	_check_build_profile()
 
 
 func _project_rendering_method() -> String:
@@ -262,3 +266,83 @@ func _update_current_preset_status(status_text: String) -> bool:
 		preset.set(STATUS, status_text)
 		preset.notify_property_list_changed()
 	return true
+
+
+## Reports classes this project now needs that its template was built without.
+##
+## A template built against a build profile has the engine's unused half
+## compiled out, which makes it much smaller and ties it to one project: the
+## classes it left out are gone, so a project that has grown since fails when
+## the scene loads, with no sign of it at export time. The template says so
+## itself by carrying its profile beside it, so this costs nothing on an
+## ordinary template.
+func _check_build_profile() -> void:
+	var preset := get_export_preset()
+	if preset == null:
+		return
+	var template := str(preset.get("custom_template/release"))
+	if template.is_empty():
+		return
+	var profile_path := template + PROFILE_SUFFIX
+	if not FileAccess.file_exists(profile_path):
+		return
+
+	var stale := _stale_profile_classes(profile_path)
+	if stale.is_empty():
+		print_verbose("WebGPU: build profile still fits this project.")
+		return
+	push_error(
+		"WebGPU: this project now uses %d class(es) its template was built without: %s. "
+		% [stale.size(), ", ".join(stale)]
+		+ "The export will fail to load them. Rebuild the template: "
+		+ "bash misc/webgpu_scripts/build-web-profiled.sh <project>"
+	)
+
+
+## Re-runs the editor's own detection and returns the classes the stored
+## profile disables that the project has since started using.
+##
+## Detection writes into the build-profile dialog's working copy, which is the
+## only way to reach it; a profile left unsaved in that dialog is replaced.
+func _stale_profile_classes(profile_path: String) -> PackedStringArray:
+	var stale := PackedStringArray()
+	var text := FileAccess.get_file_as_string(profile_path)
+	if text.is_empty():
+		return stale
+	var data: Variant = JSON.parse_string(text)
+	if typeof(data) != TYPE_DICTIONARY:
+		push_warning("WebGPU: could not read the template's build profile at %s." % profile_path)
+		return stale
+	var disabled: Array = (data as Dictionary).get("disabled_classes", [])
+	if disabled.is_empty():
+		return stale
+
+	var base: Control = EditorInterface.get_base_control() if Engine.is_editor_hint() else null
+	if base == null:
+		# A headless export cannot reach the editor's detection. Loading the
+		# export is the check that still applies, and it is the stronger one.
+		return stale
+	var manager := _find_node_of_class(base, "EditorBuildProfileManager")
+	if manager == null or not manager.has_method("detect_from_project"):
+		push_warning("WebGPU: this editor cannot re-check the template's build profile.")
+		return stale
+
+	manager.detect_from_project()
+	var fresh: Object = manager.get_current_profile()
+	if fresh == null:
+		return stale
+	for entry in disabled:
+		var class_name_string := str(entry)
+		if ClassDB.class_exists(class_name_string) and not fresh.is_class_disabled(class_name_string):
+			stale.append(class_name_string)
+	return stale
+
+
+func _find_node_of_class(node: Node, wanted: String) -> Node:
+	if node.get_class() == wanted:
+		return node
+	for child in node.get_children():
+		var found := _find_node_of_class(child, wanted)
+		if found != null:
+			return found
+	return null

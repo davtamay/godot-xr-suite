@@ -104,6 +104,23 @@ gives small download *and* small VRAM *and* broad compatibility. It pairs with
 adding ETC2/ASTC (+ Basis transcode) to the WebGPU driver's format table (BC-only
 today) — the right long-term fix for headset VRAM.
 
+## Stripped templates: the build-profile check
+
+Godot's web template carries the whole engine — every class registered, both
+renderers, every server — whether or not your project touches any of it. A
+custom template built against an engine *build profile* leaves the unused half
+out. Measured on a 48-light gallery: **40.5 MB of wasm down to 26.8, and 7.11 MB
+of brotli down to 4.99.** Same frame, same console.
+
+The catch is that such a template fits **one project at one moment**: the
+classes it left out are gone from the binary, so the day you add a node it does
+not have, the scene fails to load — and nothing at export time says so.
+
+So when this preset's `custom_template/release` has a `.build` file beside it
+(which `misc/webgpu_scripts/build-web-profiled.sh` writes when it builds one),
+exporting re-runs the editor's own detection and names any class the project has
+started using since. An ordinary template has no such file and pays nothing.
+
 ## Contents
 
 ```text
