@@ -41,10 +41,36 @@ func _ready() -> void:
 	_xr_cam = get_node_or_null("WebXRRig/XROrigin3D/XRCamera3D") as XRCamera3D
 	_flat_cam = _find_scene_camera(_xr_cam)
 	if _flat_cam and _xr_cam:
-		_xr_cam.current = false
-		var flat_ctrl := get_node_or_null("WebXRRig/FlatscreenCamera")
-		if flat_ctrl:
-			flat_ctrl.set("enabled", false)  # let the scene's own camera drive flat
+		_adopt_scene_camera()
+	elif _xr_cam:
+		# A child's _ready runs before its parent's, so a scene that builds its
+		# camera in the root's _ready has no camera yet at this point. Look once
+		# more after the whole tree has readied; without this the flat camera
+		# stays current in-session and the eye buffer never renders (GL logs a
+		# view_count mismatch every frame).
+		_late_find_scene_camera.call_deferred()
+
+
+func _late_find_scene_camera() -> void:
+	if _flat_cam != null or _xr_cam == null:
+		return
+	_flat_cam = _find_scene_camera(_xr_cam)
+	if _flat_cam:
+		_adopt_scene_camera()
+
+
+func _adopt_scene_camera() -> void:
+	# A scene streamed in while a session is already running must not show
+	# the flat camera for even one frame: the renderer draws whatever camera
+	# is current, so that frame is the scene camera's authored view, tilted
+	# and head-locked, and it stays up for as long as the scene's first
+	# frame takes to compile. Start on the camera the session already
+	# calls for.
+	_was_xr = get_viewport().use_xr
+	_xr_cam.current = _was_xr
+	var flat_ctrl := get_node_or_null("WebXRRig/FlatscreenCamera")
+	if flat_ctrl:
+		flat_ctrl.set("enabled", false)  # let the scene's own camera drive flat
 
 
 func _process(_delta: float) -> void:

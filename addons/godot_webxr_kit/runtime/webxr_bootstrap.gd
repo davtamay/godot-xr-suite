@@ -247,6 +247,9 @@ func _on_session_started() -> void:
         _webxr.set_fixed_foveation(fixed_foveation)
     get_viewport().use_xr = true
     _set_status("%s session started. Reference space: %s. Enabled features: %s." % [_session_label(_active_session_mode), _webxr.reference_space_type, _webxr.enabled_features])
+    # Always on the console (not print_verbose): the granted feature set is the
+    # first thing to check when a scene's perception features stay silent.
+    print("WebXR session: mode=%s reference_space=%s enabled_features=%s" % [_active_session_mode, _webxr.reference_space_type, _webxr.enabled_features])
     session_started.emit(_active_session_mode)
 
 func _on_session_ended() -> void:
