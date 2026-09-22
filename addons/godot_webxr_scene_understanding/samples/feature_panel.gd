@@ -184,34 +184,34 @@ func _make_row(source_name: String) -> Array:
 func _on_mesh_show(pressed: bool) -> void:
 	var b = _mesh_bridge()
 	if b == null:
-		_state_label.text = "Room mesh bridge missing."
+		_set_state("Room mesh bridge missing.")
 		return
 	if pressed:
 		b.set_occlusion(false)
 	b.set_visualize(pressed)
-	_state_label.text = b.get_status()
+	_set_state(b.get_status())
 	_sync()
 
 func _on_mesh_occlude(pressed: bool) -> void:
 	var b = _mesh_bridge()
 	if b == null:
-		_state_label.text = "Room mesh bridge missing."
+		_set_state("Room mesh bridge missing.")
 		return
 	if pressed:
 		b.set_visualize(false)
 	b.set_occlusion(pressed)
-	_state_label.text = b.get_status()
+	_set_state(b.get_status())
 	_sync()
 
 func _on_depth_show(pressed: bool) -> void:
 	var b = _depth_bridge()
 	if b == null:
-		_state_label.text = "Depth bridge missing."
+		_set_state("Depth bridge missing.")
 		return
 	if pressed:
 		_set_depth_occlude(false)  # Show and Occlude are exclusive.
 	b.set_visualize(pressed)
-	_state_label.text = b.get_status()
+	_set_state(b.get_status())
 	_sync()
 
 # Depth occlusion = the live depth-mesh punch (dynamic, occludes a moving hand).
@@ -219,12 +219,12 @@ func _on_depth_show(pressed: bool) -> void:
 func _on_depth_occlude(pressed: bool) -> void:
 	var b = _depth_bridge()
 	if b == null:
-		_state_label.text = "Depth bridge missing."
+		_set_state("Depth bridge missing.")
 		return
 	if pressed:
 		b.set_visualize(false)  # exclusive with Show
 	_set_depth_occlude(pressed)
-	_state_label.text = b.get_status()
+	_set_state(b.get_status())
 	_sync()
 
 # Hard = the depth-mesh punch (crisp). Soft = per-object occlusion: the depth
@@ -249,26 +249,26 @@ func _on_occ_mode_pressed() -> void:
 	_depth_soft = not _depth_soft
 	if was_on:
 		_set_depth_occlude(true)
-	_state_label.text = "Depth occlude: %s." % ("SOFT per-object (feathered edges)" if _depth_soft else "HARD mesh punch (crisp)")
+	_set_state("Depth occlude: %s." % ("SOFT per-object (feathered edges)" if _depth_soft else "HARD mesh punch (crisp)"))
 	_sync()
 
 func _on_labels_toggled(pressed: bool) -> void:
 	var b = _mesh_bridge()
 	if b == null:
-		_state_label.text = "Room mesh bridge missing."
+		_set_state("Room mesh bridge missing.")
 		return
 	b.set_labels(pressed)
-	_state_label.text = b.get_status()
+	_set_state(b.get_status())
 	_sync()
 
 
 func _on_hit_test_toggled(pressed: bool) -> void:
 	var manager = _hit_test_manager()
 	if manager == null:
-		_state_label.text = "Hit Test + Anchors manager missing."
+		_set_state("Hit Test + Anchors manager missing.")
 		return
 	manager.set_enabled(pressed)
-	_state_label.text = manager.get_status()
+	_set_state(manager.get_status())
 	_sync()
 
 ## Cycle the depth sensor grid Low -> ... -> Max -> Low. Higher = sharper
@@ -286,7 +286,7 @@ func _on_res_pressed() -> void:
 		count = b.RES_LEVELS.size()
 		current = b.res_level
 	b.set_resolution_level((current + 1) % count)
-	_state_label.text = "Depth resolution: %s. Higher = sharper but heavier (esp. the CPU-depth path)." % b.resolution_label()
+	_set_state("Depth resolution: %s. Higher = sharper but heavier (esp. the CPU-depth path)." % b.resolution_label())
 	_sync()
 
 ## ---- helpers ----
@@ -421,3 +421,9 @@ func _sync() -> void:
 		_hit_test_btn.self_modulate = NA_COLOR
 	else:
 		_reflect(_hit_test_btn, hit_manager.is_enabled())
+
+## The status text is the only readout the headset user sees; echoing it
+## to the console lets a serve-side tap read the same words.
+func _set_state(message: String) -> void:
+	_state_label.text = message
+	print("PERCEPTION status: %s" % message)
