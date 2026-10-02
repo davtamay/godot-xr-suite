@@ -55,6 +55,14 @@ const GROUP_SESSION_UI := "xr_session_ui"
 ## WebGPU fork does); silently skipped on stock Godot templates and on
 ## browsers without WebXR Layers fixed foveation.
 @export_range(0.0, 1.0, 0.01) var fixed_foveation := 1.0
+## Multiplier on the render resolution the browser recommends for a session:
+## below 1.0 renders fewer pixels (frame time for sharpness), above 1.0 more,
+## up to the device's native resolution. Read when a session starts. On the
+## web a "?xrscale=0.8" page parameter overrides it, for comparing values on
+## a headset without re-exporting. Needs an engine build exposing
+## WebXRInterface.render_target_size_multiplier (the WebGPU fork does);
+## silently skipped on stock Godot templates.
+@export_range(0.25, 2.0, 0.05) var render_scale := 1.0
 ## Snap the camera back to the design forward when a session ends. XR leaves
 ## the camera at your last head orientation, which on the flat page can face
 ## you away from the scene and its UI. Turn off for apps that deliberately
@@ -70,6 +78,7 @@ const GROUP_SESSION_UI := "xr_session_ui"
 const HIGHLIGHT_MATERIAL := preload("res://addons/godot_webxr_kit/runtime/highlight_material.tres")
 
 var _webxr: XRInterface
+var _applied_render_scale := 1.0
 var _vr_supported := false
 var _ar_supported := false
 var _vr_support_checked := false
@@ -212,6 +221,11 @@ func _start_xr_session(session_mode: String) -> void:
     _webxr.required_features = _required_features_for(session_mode)
     _webxr.optional_features = _optional_features_for(session_mode)
 
+    _applied_render_scale = 1.0
+    if _webxr.has_method("set_render_target_size_multiplier"):
+        _applied_render_scale = _session_render_scale()
+        _webxr.set_render_target_size_multiplier(_applied_render_scale)
+
     _set_status("Requesting %s session..." % _session_label(session_mode))
     if not _webxr.initialize():
         _requested_session_mode = ""
@@ -228,6 +242,27 @@ func _maybe_offer_session() -> void:
     _webxr.required_features = _required_features_for(offer_session_mode)
     _webxr.optional_features = _optional_features_for(offer_session_mode)
     _webxr.offer_session()
+
+
+func _session_render_scale() -> float:
+    var scale := render_scale
+    if OS.has_feature("web") and Engine.has_singleton("JavaScriptBridge"):
+        var js_bridge = Engine.get_singleton("JavaScriptBridge")
+        var from_url = js_bridge.eval("parseFloat(new URLSearchParams(window.location.search).get('xrscale'))", true)
+        if (from_url is float or from_url is int) and float(from_url) > 0.0:
+            scale = float(from_url)
+    return clampf(scale, 0.25, 2.0)
+
+
+func _report_render_target_size() -> void:
+    # The size is only known once the first frame has a pose, so read it a
+    # moment into the session. One console line: it is what tells a tester
+    # whether the browser honoured the requested scale.
+    await get_tree().create_timer(1.0).timeout
+    if _webxr == null or not get_viewport().use_xr:
+        return
+    var size: Vector2 = _webxr.get_render_target_size()
+    print("WebXR render target: %dx%d per eye, render_scale=%.2f" % [int(size.x), int(size.y), _applied_render_scale])
 
 
 func _on_session_offer_accepted() -> void:
@@ -250,6 +285,7 @@ func _on_session_started() -> void:
     # Always on the console (not print_verbose): the granted feature set is the
     # first thing to check when a scene's perception features stay silent.
     print("WebXR session: mode=%s reference_space=%s enabled_features=%s" % [_active_session_mode, _webxr.reference_space_type, _webxr.enabled_features])
+    _report_render_target_size()
     session_started.emit(_active_session_mode)
 
 func _on_session_ended() -> void:
