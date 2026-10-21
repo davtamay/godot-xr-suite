@@ -118,15 +118,65 @@ static func snapshot_from_mediapipe(landmarks: Array) -> PackedVector3Array:
 	return out
 
 
+## Which hand a snapshot GEOMETRICALLY is, independent of any label it carries.
+##
+## The signed volume of index-knuckle x pinky-knuckle . thumb-tip about the
+## wrist. It is a determinant, so it survives rotation and FLIPS under
+## reflection - which is exactly the property that distinguishes a left hand
+## from a right one no matter how the hand is oriented. Measured against this
+## suite's own bind skeletons: right reads +0.239, left -0.240.
+##
+## Positive is RIGHT. That is not a convention chosen here, it is a reading
+## taken from the known hands; handedness in this stack is measured against a
+## reference, never derived from axis reasoning.
+static func measure_chirality(snapshot: PackedVector3Array) -> float:
+	if snapshot.size() < XRHandTracker.HAND_JOINT_MAX:
+		return 0.0
+	var wrist := snapshot[XRHandTracker.HAND_JOINT_WRIST]
+	var index := (snapshot[XRHandTracker.HAND_JOINT_INDEX_FINGER_PHALANX_PROXIMAL] - wrist).normalized()
+	var pinky := (snapshot[XRHandTracker.HAND_JOINT_PINKY_FINGER_PHALANX_PROXIMAL] - wrist).normalized()
+	var thumb := (snapshot[XRHandTracker.HAND_JOINT_THUMB_TIP] - wrist).normalized()
+	return index.cross(pinky).dot(thumb)
+
+
+## The snapshot as the requested hand, mirroring it if it is the other one.
+##
+## Every upstream source has its own handedness convention and at least one
+## gets it wrong silently. MediaPipe labels handedness assuming a MIRRORED
+## selfie image, so an ordinary photograph of a right hand is reported "Left"
+## - and a tool that overrides that label to the hand the user asked for ships
+## left-hand geometry tagged right. Nothing downstream can then tell: playback
+## only mirrors when the label disagrees with the hand being posed, so a wrong
+## label means no mirror, and the grip renders inside out.
+##
+## Measuring the geometry closes that hole for every source at once.
+static func normalized_for_hand(snapshot: PackedVector3Array, hand := 1) -> PackedVector3Array:
+	var chirality := measure_chirality(snapshot)
+	if absf(chirality) < 0.001:
+		return snapshot
+	var is_right := chirality > 0.0
+	if is_right == (hand == 1):
+		return snapshot
+	var flipped := PackedVector3Array()
+	flipped.resize(snapshot.size())
+	for i in snapshot.size():
+		var p := snapshot[i]
+		flipped[i] = Vector3(-p.x, p.y, p.z)
+	return flipped
+
+
 ## Build a grip resource from a snapshot. Named so a grab point finds it: the
 ## suite looks up "grip_<object scene name>", which is the same name the
 ## recording station saves under - import and record are interchangeable.
+##
+## The snapshot is reconciled with `hand` first, so the resource's data and its
+## `recorded_hand` label can never disagree whatever the source believed.
 static func gesture_from_snapshot(snapshot: PackedVector3Array, grip_name: String, hand := 1) -> XRHandGesture:
 	if snapshot.size() < XRHandTracker.HAND_JOINT_MAX:
 		return null
 	var gesture := XRHandGesture.new()
 	gesture.gesture_name = grip_name
-	gesture.joint_snapshot = snapshot
+	gesture.joint_snapshot = normalized_for_hand(snapshot, hand)
 	gesture.recorded_hand = hand
 	return gesture
 

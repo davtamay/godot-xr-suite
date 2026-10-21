@@ -122,15 +122,55 @@ def _detect(image, want_hand, still):
         if not result.hand_world_landmarks:
             return None
         index = 0
-        # MediaPipe labels the hand as seen in the image; an un-mirrored photo
-        # of a right hand reads "Right". Pick the one asked for when both are
-        # visible, rather than whichever was detected first.
+        # Prefer a hand MediaPipe itself labels as the one asked for, but do
+        # not trust the label: it is assigned assuming a MIRRORED (selfie)
+        # image, so an ordinary photograph of a right hand is reported "Left".
+        # Selecting on the label alone silently returned whichever hand was
+        # detected first and then stamped the requested name on it.
         if result.handedness and want_hand:
             for i, handed in enumerate(result.handedness):
                 if handed[0].category_name.lower() == want_hand:
                     index = i
                     break
-        return [[p.x, p.y, p.z] for p in result.hand_world_landmarks[index]]
+        points = [[p.x, p.y, p.z] for p in result.hand_world_landmarks[index]]
+
+        # Settle handedness by MEASURING the landmarks, which no convention can
+        # confuse, and mirror if they are the other hand. Says so out loud: a
+        # mirrored capture is worth knowing about, since it usually means the
+        # photo was not a selfie.
+        is_right = _chirality(points) > 0.0
+        if is_right != (want_hand == "right"):
+            print(f"note: landmarks measure as the other hand "
+                  f"(MediaPipe said {result.handedness[index][0].category_name}); "
+                  f"mirroring into the {want_hand} hand.")
+            points = [[-x, y, z] for x, y, z in points]
+        return points
+
+
+def _chirality(points):
+    """Signed volume of index-knuckle x pinky-knuckle . thumb-tip about the wrist.
+
+    A determinant: invariant under rotation, flips under reflection. Positive
+    is a right hand, read off this suite's own bind skeletons (right +0.239,
+    left -0.240) rather than argued from axis conventions.
+    """
+    import math
+
+    def sub(a, b):
+        return [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+
+    def unit(v):
+        n = math.sqrt(sum(c * c for c in v))
+        return [c / n for c in v] if n > 1e-9 else v
+
+    wrist = points[0]
+    index = unit(sub(points[5], wrist))
+    pinky = unit(sub(points[17], wrist))
+    thumb = unit(sub(points[4], wrist))
+    cross = [index[1] * pinky[2] - index[2] * pinky[1],
+             index[2] * pinky[0] - index[0] * pinky[2],
+             index[0] * pinky[1] - index[1] * pinky[0]]
+    return sum(c * t for c, t in zip(cross, thumb))
 
 
 def main():
