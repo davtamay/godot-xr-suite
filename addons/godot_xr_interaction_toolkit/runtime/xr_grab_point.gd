@@ -270,6 +270,13 @@ func _held_joints(hand: int) -> Array:
 		# fallback that keeps every un-recorded prop working.
 		var recorded := _recorded_grip_for_object(math)
 		if recorded != null:
+			# Deliberately NOT curled onto the object first. Closing an
+			# imported grip finger-by-finger was tried and measured: it bought
+			# 3 mm of position while pulling every fingertip ~6 mm INSIDE the
+			# barrel, and drove the pose to a 121-degree mean flex against 118
+			# for a plain analytic curl - i.e. it spent the photograph and
+			# returned a generic fist. The snap below moves tips millimetres
+			# onto the surface, which is the correction a photo actually needs.
 			return _snap_to_surface(math.pose_joints(rel, axes, recorded, hand), rel)
 		return math.fk_pose(rel, axes, _fit_curls(rel, axes, math))
 	if _BUILTIN.has(preview_pose):
@@ -347,7 +354,23 @@ func _auto_grip_in_body(body: CollisionObject3D) -> Variant:
 	# Palm ON the surface. The fingers curl from here around the barrel: at a
 	# 3.2 cm radius the far side is ~6.4 cm away and a full curl reaches
 	# ~5.7 cm, which is why a wrap closes at all.
-	var palm: Vector3 = shape_xform.origin + radial * radius
+	# ALONG the axis: hold it where it is used, not at its middle.
+	#
+	# The solver knew which END is the business end - that is what signs the
+	# axis - but put the palm on the shape's ORIGIN, so the hand sat at the
+	# barrel's waist and the index came to rest 5.5 cm short of the nozzle on
+	# a 17 cm can. Nothing downstream can recover that: the finger stagger a
+	# real grip carries spans about 3 cm, so no pose reaches a trigger the
+	# palm was parked away from.
+	#
+	# Placing it by where the INDEX lands rather than by a fraction of the
+	# length keeps it true for a short can and a long one alike.
+	var along := 0.0
+	var half := _round_shape_half_length(best.shape)
+	if half > 0.0:
+		var index_axial: float = _index_axial_offset()
+		along = clampf(half - index_axial, -half, half)
+	var palm: Vector3 = shape_xform.origin + radial * radius + axis * along
 	# Fist axis points along the barrel (thumb toward one end); fingers run
 	# tangentially. Which tangent sign wraps and which curls away is
 	# handedness, so it is MEASURED below rather than derived.
@@ -395,9 +418,16 @@ func _auto_grip_in_body(body: CollisionObject3D) -> Variant:
 	var side := can_axis.cross(front).normalized()
 	if side.length_squared() < 0.000001:
 		return [Transform3D(transform.basis.orthonormalized(), palm)]
+	# Slide the hand toward the business end by moving the CAN the other way in
+	# hand space - this transform is the can expressed relative to the palm, so
+	# the object's centre dropping by `along` is the hand rising by it.
+	#
+	# (The `palm` vector above is only read by the two fallback returns below;
+	# the solved path is built entirely from this transform, so an offset
+	# applied there does nothing at all.)
 	var can_in_hand := Transform3D(
 			Basis(side, can_axis, front).orthonormalized(),
-			toward * radius)
+			toward * radius - can_axis * along)
 	# The grab point IS the hand's frame in the object's coordinates, so it is
 	# that relationship inverted - then carried into the shape's own frame, in
 	# case the collider is not at the body's origin.
@@ -450,13 +480,54 @@ func _measure_wrap_frame() -> Dictionary:
 	var toward := closure - axis * closure.dot(axis)
 	if toward.length_squared() < 0.000001:
 		return {}
-	return {"axis": axis, "toward": toward.normalized()}
+	var index_tip: int = chains[1][chains[1].size() - 1]
+	var index_axial: float = (to_grip * (curled[index_tip] as Transform3D).origin).dot(axis)
+	return {"axis": axis, "toward": toward.normalized(), "index_axial": index_axial}
 
 
 ## Assemble the grip basis the way the runtime and the editor ghost both do,
 ## so a solved placement is expressed in the one convention everything reads.
 func _grip_basis(up: Vector3, forward: Vector3) -> Basis:
 	return Basis(up.cross(-forward).normalized(), up, -forward).orthonormalized()
+
+
+## Half the length of a round shape along its own axis - how far the business
+## end sits from the centre.
+func _round_shape_half_length(shape: Shape3D) -> float:
+	if shape is SphereShape3D:
+		return (shape as SphereShape3D).radius
+	if shape is CapsuleShape3D:
+		return (shape as CapsuleShape3D).height * 0.5
+	if shape is CylinderShape3D:
+		return (shape as CylinderShape3D).height * 0.5
+	return -1.0
+
+
+## Where the index fingertip sits along the finger-stack axis, relative to the
+## palm, for the pose that will ACTUALLY be rendered.
+##
+## Taken from the authored grip when there is one, not from a generic curled
+## fist: the two disagree by about 3 cm, and using the fist's value overshot
+## the can entirely - it put the fingertip 3 cm above the cap, in mid air.
+## Safe from recursion: posing joints needs only the bind skeleton and the
+## gesture, never the placement this feeds.
+func _index_axial_offset() -> float:
+	var wrap := _measure_wrap_frame()
+	var fallback := float(wrap.get("index_axial", 0.0))
+	var math := _pose_math()
+	if math == null or not wrap.has("axis"):
+		return fallback
+	var recorded := _recorded_grip_for_object(math)
+	if recorded == null or not _bind_cache.has(1):
+		return fallback
+	var rel: Array = _bind_cache[1]["rel"]
+	var posed: Array = math.pose_joints(rel, _bind_cache[1]["curl_axes"], recorded, 1)
+	if posed.is_empty():
+		return fallback
+	var chains: Array = math.FINGER_CHAINS
+	var tip: int = chains[1][chains[1].size() - 1]
+	var to_grip := _grip_frame_in_wrist(rel).affine_inverse()
+	return (to_grip * (posed[tip] as Transform3D).origin).dot(wrap["axis"] as Vector3)
 
 
 func _round_shape_size(shape: Shape3D) -> float:
