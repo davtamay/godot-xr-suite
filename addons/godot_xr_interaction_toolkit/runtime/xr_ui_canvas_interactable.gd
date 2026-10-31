@@ -178,6 +178,10 @@ func poke_end(source_id: int) -> void:
 ## while the source is in front of the surface, clamped onto the surface
 ## (z = 0) once it pushes past it. Vector3.INF whenever the source is off the
 ## face entirely - outside the panel rectangle or outside the working z-band.
+func is_poke_pressed(source_id: int) -> bool:
+	return _poke_evaluator != null and _poke_evaluator.is_source_pressed(source_id)
+
+
 func get_poke_pin(source_id: int) -> Vector3:
 	return _poke_pins.get(source_id, Vector3.INF)
 

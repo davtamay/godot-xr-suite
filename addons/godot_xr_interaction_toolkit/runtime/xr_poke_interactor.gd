@@ -85,6 +85,18 @@ func is_poking(hand: int) -> bool:
 	return hand >= 0 and hand < 2 and not _active[hand].is_empty()
 
 
+## True while this hand is actually PRESSING something, not merely within reach
+## of it. is_poking opens 12 cm out on purpose, so a hand resting beside a panel
+## reads as poking; anything that must yield to a real touch asks this instead.
+func is_pressing(hand: int) -> bool:
+	if hand < 0 or hand >= 2:
+		return false
+	for target in _active[hand]:
+		if is_instance_valid(target) and target.has_method("is_poke_pressed") and target.is_poke_pressed(hand):
+			return true
+	return false
+
+
 ## True only while this hand is aiming a teleport. Poke is gated on TELEPORT
 ## exclusivity and NOT on NEAR, because NEAR is derived from the GRAB
 ## interactor's hover -- and poke targets are not grab interactables.

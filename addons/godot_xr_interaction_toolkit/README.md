@@ -140,6 +140,59 @@ The reel projection axis is captured once, at grab. Earlier it tracked the live
 ray direction, which made aiming and reeling the same input — pulling your arm
 back also tilted the ray, so the object slewed sideways while you wound it in.
 
+### Gaze and pinch
+
+`XRGazeInteractor` is one session-wide far pointer for devices with no
+controllers: the eyes choose a target and a pinch from either hand commits.
+Add it anywhere in a scene with a rig. It finds the input adapter itself and
+requests `gaze-tracking` and `eye-tracking` through the feature-provider
+contract, both optional, so a browser without gaze still grants the session.
+It is opt-in rather than part of the rig because requested features have a
+cost, and an app that never uses gaze should not ask for eye tracking.
+
+It extends `XRRayInteractor`, so targets need no gaze code. Grabbables,
+mechanisms and UI panels work as they do under a hand ray, and `far_grab_mode`
+still decides what a grab does.
+
+The priority, in order:
+
+1. An active near grab or touch on either hand yields gaze. A pinch from a hand
+   with a near target also goes to that target, so one pinch never takes two
+   objects.
+2. A tracked gaze source owns far targeting, and hand and controller rays stand
+   down (`XRRayInteractor.suppress_on_gaze`).
+3. When the source disconnects, those rays resume at once.
+4. A lost pose clears the target immediately but keeps ownership for
+   `tracking_loss_grace_seconds` (5 s), so a blink does not flash rays on.
+
+While something is held, the ray stops following the eyes and moves with the
+committing hand's position delta, so you can look around without dragging the
+object, and the object does not snap to the hand.
+
+Targeting takes the object under the ray first. A look that lands beside one
+takes the closest within `cone_angle_degrees` (5) that has line of sight, and a
+target must hold the most time in `dwell_window_seconds` (0.15) to take over.
+UI panels are ray-only, because a cone hit would click the panel's centre.
+The gaze direction runs through a One Euro filter (`filter_min_cutoff` 1.5,
+`filter_beta` 0.05). `max_gaze_distance` is 30 m.
+
+Production gaze has no cursor, so make sure targets show hover feedback.
+Interaction Feedback does this by default. `show_debug_reticle` adds a reticle
+during development.
+
+Missing gaze never falls back to head pose. `head_directed_preview` is an
+explicit development option for trying the flow on a headset without eye
+tracking; it checks the plumbing, not eye-tracking accuracy.
+
+To test without a headset, press **G** in the desktop simulator to make the
+mouse the eyes, or drive it with the actuator's `gaze` action
+(`{type:"gaze", at:[x,y,z]}`, `tracked:false`, `connected:false`). Both publish
+a tracker named `gaze`. `samples/gaze_pinch_demo.tscn` is the worked example.
+
+The gaze source under WebXR is `targetRayMode: "gaze"`. That shape is measured
+only in IWER emulation so far, not on Meta VR Glasses, and `gaze-tracking` is
+Meta's path rather than a published WebXR module.
+
 ### Poke feel
 
 `XRPokeProfile` is one resource carrying a project's whole poke feel: press

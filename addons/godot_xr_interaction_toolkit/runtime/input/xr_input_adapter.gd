@@ -23,6 +23,13 @@ func get_aim_pose(_hand: int) -> Dictionary:
 func get_grip_pose(hand: int) -> Dictionary:
     return get_aim_pose(hand)
 
+## The session's eye-gaze source: {connected: bool, tracked: bool}, and while
+## tracked also {origin: Vector3, direction: Vector3, basis: Basis} in GLOBAL
+## space. connected with tracked false is a source that exists but has no pose
+## this frame, which is not the same thing as no source at all.
+func get_gaze_state() -> Dictionary:
+    return {"connected": false, "tracked": false}
+
 func is_hand_active(hand: int) -> bool:
     return not get_aim_pose(hand).is_empty()
 

@@ -16,6 +16,10 @@ const XRHandTrackerResolver := preload("res://addons/godot_xr_interaction_toolki
 ## and a synthesized bare-hand pinch never fight over the same hand.
 const HARDWARE_SELECT := "hardware"
 const SYNTHETIC_SELECT := "synthetic"
+## Where a gaze pose is read from when no platform source names one: what the
+## remote actuator and the desktop simulator publish, at the level a runtime
+## would. The pose is origin-local, like every tracker pose.
+const GAZE_TRACKER := &"gaze"
 
 @export_group("Rig")
 @export var xr_origin_path: NodePath
@@ -594,6 +598,26 @@ func get_source_kind(hand_id: int) -> int:
 	if hand_tracked:
 		return SourceKind.HAND
 	return SourceKind.NONE
+
+
+func get_gaze_state() -> Dictionary:
+	return _gaze_state_from(XRServer.get_tracker(GAZE_TRACKER) as XRPositionalTracker)
+
+
+func _gaze_state_from(tracker: XRPositionalTracker) -> Dictionary:
+	if tracker == null or _origin == null:
+		return {"connected": false, "tracked": false}
+	var pose := tracker.get_pose(&"default")
+	if pose == null or not pose.has_tracking_data:
+		return {"connected": true, "tracked": false}
+	var xf := _origin.global_transform * pose.transform
+	return {
+		"connected": true,
+		"tracked": true,
+		"origin": xf.origin,
+		"direction": (-xf.basis.z).normalized(),
+		"basis": xf.basis.orthonormalized(),
+	}
 
 
 func _controller_aim_pose(hand_id: int) -> Dictionary:

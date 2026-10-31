@@ -44,6 +44,10 @@ extends "res://addons/godot_xr_interaction_toolkit/runtime/xr_base_interactor.gd
 ## Hide the ray while THIS hand is aiming a teleport - teleport and the far
 ## selection ray are mutually exclusive (no two lines from one hand at once).
 @export var suppress_on_teleport := true
+## Hide the ray while eye gaze owns far targeting (see XRGazeInteractor). The
+## hand then only commits; it does not aim as well. Comes back the moment gaze
+## disconnects, or when a lost pose outlives gaze's grace period.
+@export var suppress_on_gaze := true
 ## During near interaction the ray is HIDDEN (0, default) - clean, no line
 ## while you poke. Set > 0 to instead SHRINK the ray to a stub of that length
 ## at the hand (Unity Near-Far look) rather than hiding it fully.
@@ -185,7 +189,7 @@ func _update_ray(delta := 0.0) -> void:
     if _selected != null and _adapter != null and not _adapter.is_select_down(hand):
         _release_select()
 
-    var pose: Dictionary = _adapter.get_aim_pose(hand) if _adapter else {}
+    var pose: Dictionary = _aim_pose()
 
     var linked_suppressed := _is_suppressed_by_linked_interactor()
     var held_near := _held_object_is_in_hand()
@@ -245,8 +249,7 @@ func _update_ray(delta := 0.0) -> void:
     # so it describes last frame's ray -- a frame of lag on a range estimate is
     # immaterial, and it avoids a circular dependency with the pose we just
     # asked for. has_method because adapters here are duck-typed.
-    if _adapter != null and _adapter.has_method("set_aim_endpoint"):
-        _adapter.set_aim_endpoint(hand, end)
+    _report_aim_endpoint(end)
 
     var hovered = null
     if hit_anything and _manager:
@@ -296,6 +299,15 @@ func _update_ray(delta := 0.0) -> void:
     _last_ray_origin = origin
     _last_ray_direction = direction
     _has_last_ray_pose = true
+
+## Where this ray points from this frame. Overridable so a ray can aim from
+## something other than the adapter's hand or controller.
+func _aim_pose() -> Dictionary:
+    return _adapter.get_aim_pose(hand) if _adapter else {}
+
+func _report_aim_endpoint(end: Vector3) -> void:
+    if _adapter != null and _adapter.has_method("set_aim_endpoint"):
+        _adapter.set_aim_endpoint(hand, end)
 
 func _intersect(origin: Vector3, direction: Vector3) -> Dictionary:
     var query := PhysicsRayQueryParameters3D.create(origin, origin + direction * max_distance)
@@ -459,6 +471,11 @@ func _held_object_is_in_hand() -> bool:
 
 
 func _is_suppressed_by_linked_interactor() -> bool:
+    # Ahead of the arbiter: which mode a HAND is in says nothing about which far
+    # pointer the session has, and gaze replaces every hand's ray at once.
+    if suppress_on_gaze and _gaze_owns_far():
+        return true
+
     # The arbiter owns this decision: one rule in one place. The shipped rig
     # carries one, which is why the suppress_on_* exports below are no longer
     # wired there. They remain for scenes that build their own rig without an
@@ -489,6 +506,12 @@ func _is_suppressed_by_linked_interactor() -> bool:
     if suppress_on_linked_hover and _suppress_interactor.has_method("get_hovered") and _suppress_interactor.get_hovered() != null:
         return true
     return false
+
+func _gaze_owns_far() -> bool:
+    if not is_inside_tree():
+        return false
+    var gaze := get_tree().get_first_node_in_group("xr_gaze_interactor")
+    return gaze != null and gaze.has_method("owns_far_targeting") and gaze.owns_far_targeting()
 
 func _is_poking() -> bool:
     if _poke_interactor == null or not is_instance_valid(_poke_interactor):

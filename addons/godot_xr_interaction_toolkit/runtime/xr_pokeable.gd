@@ -174,6 +174,10 @@ func is_pressed() -> bool:
 	return _evaluator != null and _evaluator.is_pressed()
 
 
+func is_poke_pressed(hand: int) -> bool:
+	return _evaluator != null and _evaluator.is_source_pressed(hand)
+
+
 ## The world-space point where the source currently registers on this face:
 ## the raw point while the source is in front of the surface, clamped onto
 ## the surface (z = 0) once the source pushes past it. Vector3.INF whenever

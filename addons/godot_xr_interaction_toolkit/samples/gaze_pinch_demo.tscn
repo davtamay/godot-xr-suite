@@ -1,0 +1,140 @@
+[gd_scene load_steps=19 format=3]
+
+[ext_resource type="Script" path="res://addons/godot_xr_interaction_toolkit/samples/gaze_pinch_demo.gd" id="1_demo"]
+[ext_resource type="PackedScene" path="res://addons/godot_webxr_kit/xr_prefab.tscn" id="2_prefab"]
+[ext_resource type="Script" path="res://addons/godot_xr_interaction_toolkit/runtime/xr_gaze_interactor.gd" id="3_gaze"]
+[ext_resource type="PackedScene" uid="uid://bwrn3q4s5qp63" path="res://addons/godot_xr_interaction_toolkit/grabbable.tscn" id="4_grabbable"]
+[ext_resource type="PackedScene" path="res://addons/godot_xr_interaction_toolkit/xr_ui_panel.tscn" id="5_panel"]
+[ext_resource type="Script" path="res://addons/godot_xr_interaction_toolkit/runtime/xr_font_bake_anchor.gd" id="6_fontbake"]
+
+[sub_resource type="Environment" id="Env"]
+background_mode = 1
+background_color = Color(0.09, 0.11, 0.14, 1)
+ambient_light_source = 2
+ambient_light_color = Color(0.7, 0.75, 0.82, 1)
+ambient_light_energy = 0.5
+
+[sub_resource type="PlaneMesh" id="FloorMesh"]
+size = Vector2(10, 10)
+
+[sub_resource type="StandardMaterial3D" id="FloorMat"]
+albedo_color = Color(0.2, 0.24, 0.3, 1)
+roughness = 0.9
+
+[sub_resource type="BoxShape3D" id="FloorShape"]
+size = Vector3(10, 0.08, 10)
+
+[sub_resource type="BoxMesh" id="WallMesh"]
+size = Vector3(1.2, 0.9, 0.06)
+
+[sub_resource type="BoxShape3D" id="WallShape"]
+size = Vector3(1.2, 0.9, 0.06)
+
+[sub_resource type="BoxMesh" id="CubeMesh"]
+size = Vector3(0.24, 0.24, 0.24)
+
+[sub_resource type="StandardMaterial3D" id="CubeMat"]
+albedo_color = Color(0.25, 0.65, 0.95, 1)
+roughness = 0.45
+
+[sub_resource type="SphereMesh" id="SphereMesh"]
+radius = 0.14
+height = 0.28
+
+[sub_resource type="StandardMaterial3D" id="SphereMat"]
+albedo_color = Color(0.95, 0.6, 0.22, 1)
+roughness = 0.45
+
+[sub_resource type="BoxMesh" id="BlockMesh"]
+size = Vector3(0.1, 0.1, 0.1)
+
+[sub_resource type="StandardMaterial3D" id="BlockMat"]
+albedo_color = Color(0.45, 0.85, 0.5, 1)
+roughness = 0.45
+
+[node name="GazePinchDemo" type="Node3D"]
+script = ExtResource("1_demo")
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = SubResource("Env")
+
+[node name="Sun" type="DirectionalLight3D" parent="."]
+transform = Transform3D(0.86, -0.35, 0.37, 0, 0.73, 0.69, -0.51, -0.59, 0.62, 0, 3, 0)
+
+[node name="Floor" type="MeshInstance3D" parent="." groups=["ar_passthrough_hidden"]]
+mesh = SubResource("FloorMesh")
+surface_material_override/0 = SubResource("FloorMat")
+
+[node name="FloorBody" type="StaticBody3D" parent="."]
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="FloorBody"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.04, 0)
+shape = SubResource("FloorShape")
+
+[node name="FlatCamera" type="Camera3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.6, 0)
+current = true
+fov = 70.0
+
+[node name="XRPrefab" parent="." instance=ExtResource("2_prefab")]
+
+[node name="GazeInteractor" type="Node3D" parent="."]
+script = ExtResource("3_gaze")
+
+[node name="AttractCube" parent="." instance=ExtResource("4_grabbable")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.9, 1.5, -2.6)
+
+[node name="Mesh" parent="AttractCube" index="0"]
+mesh = SubResource("CubeMesh")
+surface_material_override/0 = SubResource("CubeMat")
+
+[node name="FixedSphere" parent="." instance=ExtResource("4_grabbable")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.9, 1.5, -2.6)
+far_grab_mode = 1
+
+[node name="Mesh" parent="FixedSphere" index="0"]
+mesh = SubResource("SphereMesh")
+surface_material_override/0 = SubResource("SphereMat")
+
+[node name="HiddenCube" parent="." instance=ExtResource("4_grabbable")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.75, -2.9)
+
+[node name="Mesh" parent="HiddenCube" index="0"]
+mesh = SubResource("CubeMesh")
+surface_material_override/0 = SubResource("CubeMat")
+
+[node name="Wall" type="StaticBody3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.75, -2.2)
+
+[node name="WallMeshInstance" type="MeshInstance3D" parent="Wall"]
+mesh = SubResource("WallMesh")
+surface_material_override/0 = SubResource("FloorMat")
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Wall"]
+shape = SubResource("WallShape")
+
+[node name="NearBlock" parent="." instance=ExtResource("4_grabbable")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.45, 0.95, -0.45)
+
+[node name="Mesh" parent="NearBlock" index="0"]
+mesh = SubResource("BlockMesh")
+surface_material_override/0 = SubResource("BlockMat")
+
+[node name="Panel" parent="." instance=ExtResource("5_panel")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 2.2, -3)
+
+[node name="StatusLabel" type="Label3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.25, -2)
+pixel_size = 0.0012
+billboard = 1
+text = "no gaze source - hand rays stay in charge"
+font_size = 32
+outline_size = 8
+
+[node name="FontBakeAnchor" type="Label3D" parent="."]
+script = ExtResource("6_fontbake")
+
+[editable path="AttractCube"]
+[editable path="FixedSphere"]
+[editable path="HiddenCube"]
+[editable path="NearBlock"]
