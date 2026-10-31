@@ -116,6 +116,36 @@ static func fk_pose(bind: Array, curl_axes: Array, curls: Dictionary) -> Array:
 	return out
 
 
+## Moves the named fingers of `base` toward other poses, leaving the rest of the
+## hand alone: {finger_name: {joints: <wrist-relative pose>, weight: 0..1}}.
+##
+## By ROTATION, keeping every bone at its length in `base`. Interpolating joint
+## positions would change bone lengths along the way, and the conditioning chain
+## low-passes those over seconds (see microgesture_pose): the blend would look
+## right to a camera and reach the recognizers late or never.
+##
+## Returns a new array; the inputs are left untouched.
+static func blend_pose(base: Array, targets: Dictionary) -> Array:
+	var out := base.duplicate()
+	for f in FINGER_CHAINS.size():
+		var target: Dictionary = targets.get(FINGER_NAMES[f], {})
+		if target.is_empty():
+			continue
+		var to: Array = target["joints"]
+		var weight := clampf(float(target.get("weight", 1.0)), 0.0, 1.0)
+		var chain: Array = FINGER_CHAINS[f]
+		for i in range(1, chain.size()):
+			var from_joint: Transform3D = base[chain[i]]
+			var to_joint: Transform3D = to[chain[i]]
+			var from_bone: Vector3 = from_joint.origin - (base[chain[i - 1]] as Transform3D).origin
+			var to_bone: Vector3 = to_joint.origin - (to[chain[i - 1]] as Transform3D).origin
+			var direction := from_bone.normalized().slerp(to_bone.normalized(), weight).normalized()
+			var parent: Transform3D = out[chain[i - 1]]
+			out[chain[i]] = Transform3D(from_joint.basis.slerp(to_joint.basis, weight),
+					parent.origin + direction * from_bone.length())
+	return out
+
+
 ## Recorded snapshots are POSITIONS only, in the recorder's wrist frame; align
 ## both wrist frames the SAME way (removing the free chirality sign), reframe the
 ## positions, then RETARGET each authored bind frame onto the recorded bone
