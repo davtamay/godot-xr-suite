@@ -203,7 +203,10 @@ func _tick_queue() -> void:
 	# moved. Measured before this republish existed - hover entered on drive
 	# frame 64 and exited on 66 with the hand held still. So hold what was
 	# last driven and re-publish it, exactly like a device would.
-	_step_fades(get_process_delta_time())
+	# A paused scene holds its hands too, and a stepped one moves them with it,
+	# or a stepped drive would watch a fade run on real time.
+	if not get_tree().paused:
+		_step_fades(get_process_delta_time())
 	_resolve_pins()
 	for hand in _held_aim:
 		if _move.is_empty() or int(_move.get("hand", -1)) != hand:
@@ -240,9 +243,10 @@ func _tick_queue() -> void:
 		_wait_frames -= 1
 		return
 	if _queue.is_empty():
-		# Done fires HERE, not on the last apply: a queue ending in a wait
-		# or a move is only finished once that tail action has played out.
-		if _applied > 0 and not _done_sent:
+		# Done fires HERE, not on the last apply: a queue ending in a wait,
+		# a move or a free-running fade is only finished once that tail
+		# action has played out. A fade frozen by a pause never will.
+		if _applied > 0 and not _done_sent and (_fade.is_empty() or get_tree().paused):
 			_done_sent = true
 			get_tree().paused = false
 			_send({"type": "done", "applied": _applied})
@@ -628,7 +632,8 @@ func _with_fingers(hand: int, base: Array, fingers: Dictionary) -> Array:
 
 
 ## Takes a pose at once, or fades to it over `seconds` while the queue waits, the
-## way a move holds it.
+## way a move holds it. `block: false` lets the queue run on, so a hand can close
+## while it reaches, two hands can fade together, and a fade can be read partway.
 func _show_pose(hand: int, joints: Array, pose_name: String, action: Dictionary) -> void:
 	var seconds := float(action.get("seconds", 0.0))
 	if seconds <= 0.0 or not _hand_state.has(hand):
@@ -638,7 +643,8 @@ func _show_pose(hand: int, joints: Array, pose_name: String, action: Dictionary)
 		_fade[hand] = {"from": _hand_state[hand]["joints"], "to": joints, "elapsed": 0.0,
 				"seconds": seconds, "easing": str(action.get("easing", "minimum-jerk"))}
 		_hand_state[hand]["pose"] = pose_name
-		_wait_seconds = seconds
+		if bool(action.get("block", true)):
+			_wait_seconds = seconds
 	_publish_hand(hand)
 
 
