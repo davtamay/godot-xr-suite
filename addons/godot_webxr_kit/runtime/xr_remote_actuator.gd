@@ -89,6 +89,21 @@ var _hand_trackers := {}
 var _hand_state := {}
 ## Microgesture motions in flight, per hand.
 var _micro := {}
+## Pose fades in flight, per hand: {from, to, elapsed, seconds, easing}.
+var _fade := {}
+## Pinned hand points, per hand: {anchor, target}. The named point stays on
+## `target` while the hand changes shape around it: a pinch closes onto the thing
+## it was placed on instead of dragging the grasp point away.
+var _pin := {}
+## Hand orientation set by directions rather than by an aim point.
+var _held_basis := {}
+var _grasp_points := {}
+## Process frames left to run in a `step`, with the tree otherwise paused.
+var _step_left := 0
+## Named property captures for `diff`, oldest first.
+var _snapshots := {}
+const _MAX_SNAPSHOTS := 20
+const _CURL_POSES := ["open", "fist", "point", "pinch", "grip"]
 var _origin: XROrigin3D = null
 
 
@@ -188,6 +203,8 @@ func _tick_queue() -> void:
 	# moved. Measured before this republish existed - hover entered on drive
 	# frame 64 and exited on 66 with the hand held still. So hold what was
 	# last driven and re-publish it, exactly like a device would.
+	_step_fades(get_process_delta_time())
+	_resolve_pins()
 	for hand in _held_aim:
 		if _move.is_empty() or int(_move.get("hand", -1)) != hand:
 			_publish_pose(hand, _last_pos[clampi(hand, 0, 1)], _held_aim[hand])
@@ -202,6 +219,12 @@ func _tick_queue() -> void:
 		_publish_hand(hand)
 	if not _held_gaze.is_empty():
 		_publish_gaze()
+	if _step_left > 0:
+		_step_left -= 1
+		if _step_left == 0:
+			get_tree().paused = true
+			_send_reading("stepped")
+		return
 	if not _move.is_empty():
 		_step_move()
 		return
@@ -221,6 +244,7 @@ func _tick_queue() -> void:
 		# or a move is only finished once that tail action has played out.
 		if _applied > 0 and not _done_sent:
 			_done_sent = true
+			get_tree().paused = false
 			_send({"type": "done", "applied": _applied})
 		return
 	_done_sent = false
@@ -240,8 +264,24 @@ func _apply(action: Dictionary) -> void:
 			var hand := int(action.get("hand", 1))
 			var pos := _vec(action.get("position", [0, 1.4, 0]))
 			var aim_at := _vec(action["aim"]) if action.has("aim") else pos
-			if bool(action.get("tip", false)):
-				pos = _anchor_for_tip(hand, pos)
+			if action.has("orient"):
+				_held_basis[hand] = _orient_basis(hand, action["orient"], pos)
+			elif action.has("aim"):
+				_held_basis.erase(hand)
+			if action.has("anchor"):
+				var pin_anchor := str(action["anchor"])
+				if not _can_anchor(hand, pin_anchor):
+					return
+				# Orientation first: where the wrist goes depends on it.
+				_publish_pose(hand, pos, aim_at)
+				_pin[hand] = {"anchor": pin_anchor, "target": pos}
+				pos = _wrist_for(hand, pin_anchor, pos)
+				if not action.has("aim"):
+					aim_at = pos
+			else:
+				_pin.erase(hand)
+				if bool(action.get("tip", false)):
+					pos = _anchor_for_tip(hand, pos)
 			_publish_pose(hand, pos, aim_at)
 			_last_pos[clampi(hand, 0, 1)] = pos
 			_held_aim[clampi(hand, 0, 1)] = aim_at
@@ -254,10 +294,25 @@ func _apply(action: Dictionary) -> void:
 				"aim": _vec(action["aim"]) if action.has("aim") else Vector3.INF,
 				"frames": maxi(2, int(action.get("frames", 30))),
 				"step": 0,
+				"easing": str(action.get("easing", "smooth")),
 			}
+			_pin.erase(mhand)
 			if action.has("seconds"):
 				_move["seconds"] = maxf(0.05, float(action["seconds"]))
 				_move["elapsed"] = 0.0
+			if action.has("aim"):
+				_held_basis.erase(mhand)
+			if action.has("orient"):
+				_move["basis_from"] = _hand_world_basis(mhand)
+				_move["basis_to"] = _orient_basis(mhand, action["orient"], _vec(action.get("to", [0, 1.4, 0])))
+			if action.has("anchor"):
+				var move_anchor := str(action["anchor"])
+				if not _can_anchor(mhand, move_anchor):
+					_move = {}
+					return
+				_move["anchor"] = move_anchor
+				_move["anchor_from"] = _hand_world(mhand) * _anchor_local(mhand, move_anchor)
+				_move["anchor_to"] = _vec(action.get("to", [0, 1.4, 0]))
 		"view":
 			# Move the VIEWPOINT. A drive moves hands; without this the camera
 			# stays wherever the rig was left, so a station being worked on can be
@@ -310,14 +365,8 @@ func _apply(action: Dictionary) -> void:
 			# not tell a two-hand scale from an ordinary one-hand grab - both
 			# report exactly `grabbed`. Reporting the property makes that state
 			# assertable instead of assumed.
-			var report_root := get_tree().current_scene if get_tree().current_scene else get_tree().root
 			var report_path := str(action.get("path", ""))
-			var subject: Node = report_root.get_node_or_null(NodePath(report_path))
-			if subject == null:
-				# Fall back to a name search: hints and dumps quote paths
-				# relative to whichever root they walked, and a drive should not
-				# fail because two roots disagree about a prefix.
-				subject = report_root.find_child(report_path.get_file(), true, false)
+			var subject := _find_node(report_path)
 			if subject == null:
 				_send({"type": "event", "error": "report: no node at %s" % report_path})
 				return
@@ -377,6 +426,11 @@ func _apply(action: Dictionary) -> void:
 				if joints.is_empty():
 					_send({"type": "event", "error": "no gesture named '%s' - see list_gestures" % pose_name})
 					return
+			elif action.has("fingers") and not action.has("pose") and not action.has("curls") and _hand_state.has(hhand):
+				# Fingers alone reshape the hand already being held, including
+				# one still fading toward its pose.
+				joints = _fade[hhand]["to"] if _fade.has(hhand) else _hand_state[hhand]["joints"]
+				pose_name = str(_hand_state[hhand]["pose"])
 			else:
 				var curls: Dictionary = action.get("curls", {})
 				if action.has("pose"):
@@ -390,8 +444,39 @@ func _apply(action: Dictionary) -> void:
 					# selected ~5 s late, i.e. never within a normal hold.
 					# Same root cause and same cure as the microgesture.
 					joints = _pose_math.pinch_pose(joints)
-			_hand_state[hhand] = {"joints": joints, "pose": pose_name}
-			_publish_hand(hhand)
+			if action.has("fingers"):
+				joints = _with_fingers(hhand, joints, action["fingers"])
+				if joints.is_empty():
+					return
+			_show_pose(hhand, joints, pose_name, action)
+		"hand_state":
+			# What the hand IS, as a number: where its points are and which way
+			# it faces, read from the joints being published. A pose that looks
+			# right in a capture says nothing a case can assert on.
+			var state_hand := int(action.get("hand", 1))
+			if not _hand_state.has(state_hand):
+				_send({"type": "event", "error": "hand_state: no hand pose has been driven on hand %d" % state_hand})
+				return
+			_send_reading("hand_state%s %s" % [
+				("[%s]" % str(action["label"])) if action.has("label") else "",
+				JSON.stringify(_read_hand(state_hand))], str(state_hand))
+		"pause":
+			# Stops the scene, not this node: the drive has to keep running to
+			# inspect a paused world and to step it.
+			process_mode = Node.PROCESS_MODE_ALWAYS
+			get_tree().paused = true
+			_send_reading("paused")
+		"step":
+			process_mode = Node.PROCESS_MODE_ALWAYS
+			_step_left = maxi(1, int(action.get("frames", 1)))
+			get_tree().paused = false
+		"resume":
+			get_tree().paused = false
+			_send_reading("resumed")
+		"snapshot":
+			_take_snapshot(action)
+		"diff":
+			_send_diff(str(action.get("from", "")), str(action.get("to", "")))
 		"gaze":
 			# The eyes, as a runtime would serve them: a tracker with a pose, no
 			# buttons. `at` is where to look; tracked:false keeps the source but
@@ -451,10 +536,20 @@ func _step_move() -> void:
 	else:
 		t = float(_move.step) / float(_move.frames)
 	t = clampf(t, 0.0, 1.0)
-	var e := t * t * (3.0 - 2.0 * t)
+	var e := ease_value(str(_move.get("easing", "smooth")), t)
+	var moving := int(_move.hand)
+	if _move.has("basis_to"):
+		_held_basis[moving] = (_move.basis_from as Basis).slerp(_move.basis_to, e)
 	var pos: Vector3 = (_move.from as Vector3).lerp(_move.to, e)
 	var aim: Vector3 = _move.aim
-	_publish_pose(int(_move.hand), pos, aim if aim.is_finite() else pos)
+	_publish_pose(moving, pos, aim if aim.is_finite() else pos)
+	if _move.has("anchor"):
+		var along: Vector3 = (_move.anchor_from as Vector3).lerp(_move.anchor_to, e)
+		pos = _wrist_for(moving, str(_move.anchor), along)
+		_publish_pose(moving, pos, aim if aim.is_finite() else pos)
+	# The joints follow from here, or the hand would stay put and jump on
+	# arrival while its controller pose travelled.
+	_last_pos[clampi(moving, 0, 1)] = pos
 	_move.step += 1
 	# Both paths must hand the destination over to the HELD pose, or the next
 	# frame's republish restores where the hand was before the move and it
@@ -465,9 +560,289 @@ func _step_move() -> void:
 	else:
 		done = _move.step > int(_move.frames)
 	if done:
-		_last_pos[clampi(int(_move.hand), 0, 1)] = _move.to
-		_held_aim[clampi(int(_move.hand), 0, 1)] = aim if aim.is_finite() else _move.to
+		if _move.has("anchor"):
+			_pin[moving] = {"anchor": _move.anchor, "target": _move.anchor_to}
+		else:
+			_last_pos[clampi(moving, 0, 1)] = _move.to
+		_held_aim[clampi(moving, 0, 1)] = aim if aim.is_finite() else _last_pos[clampi(moving, 0, 1)]
 		_move = {}
+
+
+## How a timed drive moves through its span. `smooth` is what moves have always
+## used. `minimum-jerk` is the start and stop of a human reach.
+static func ease_value(easing: String, t: float) -> float:
+	var c := clampf(t, 0.0, 1.0)
+	match easing:
+		"linear":
+			return c
+		"minimum-jerk":
+			return c * c * c * (10.0 + c * (-15.0 + 6.0 * c))
+		_:
+			return c * c * (3.0 - 2.0 * c)
+
+
+func _send_reading(text: String, node := "") -> void:
+	_send({"type": "event", "signal": text, "node": node, "frame": _drive_frame,
+			"engine_frame": Engine.get_process_frames()})
+
+
+func _find_node(path: String) -> Node:
+	var root := get_tree().current_scene if get_tree().current_scene else get_tree().root
+	var found: Node = root.get_node_or_null(NodePath(path))
+	if found == null:
+		# Fall back to a name search: hints and dumps quote paths relative to
+		# whichever root they walked, and a drive should not fail because two
+		# roots disagree about a prefix.
+		found = root.find_child(path.get_file(), true, false)
+	return found
+
+
+## A named pose as joints: the curl poses, then the gesture library.
+func _named_pose(hand: int, pose_name: String) -> Array:
+	if pose_name in _CURL_POSES:
+		var joints: Array = _pose_math.fk_pose(_bind[hand]["rel"], _bind[hand]["curl_axes"], _curls_for(pose_name))
+		return _pose_math.pinch_pose(joints) if pose_name == "pinch" else joints
+	return _gesture_joints(hand, pose_name)
+
+
+## `fingers` = {ring: "fist", index: {to: "point", weight: 0.5}, thumb: {curl: 0.2}}.
+## Empty on any name it cannot resolve, after saying which.
+func _with_fingers(hand: int, base: Array, fingers: Dictionary) -> Array:
+	var targets := {}
+	for finger in fingers:
+		if not (finger in _pose_math.FINGER_NAMES):
+			_send({"type": "event", "error": "no finger named '%s'" % finger})
+			return []
+		var spec: Variant = fingers[finger]
+		var target: Dictionary = spec if spec is Dictionary else {"to": spec}
+		var to: Array = []
+		if target.has("curl"):
+			to = _pose_math.fk_pose(_bind[hand]["rel"], _bind[hand]["curl_axes"], {finger: float(target["curl"])})
+		else:
+			to = _named_pose(hand, str(target.get("to", "")))
+		if to.is_empty():
+			_send({"type": "event", "error": "no pose named '%s' for %s" % [target.get("to", ""), finger]})
+			return []
+		targets[finger] = {"joints": to, "weight": float(target.get("weight", 1.0))}
+	return _pose_math.blend_pose(base, targets)
+
+
+## Takes a pose at once, or fades to it over `seconds` while the queue waits, the
+## way a move holds it.
+func _show_pose(hand: int, joints: Array, pose_name: String, action: Dictionary) -> void:
+	var seconds := float(action.get("seconds", 0.0))
+	if seconds <= 0.0 or not _hand_state.has(hand):
+		_fade.erase(hand)
+		_hand_state[hand] = {"joints": joints, "pose": pose_name}
+	else:
+		_fade[hand] = {"from": _hand_state[hand]["joints"], "to": joints, "elapsed": 0.0,
+				"seconds": seconds, "easing": str(action.get("easing", "minimum-jerk"))}
+		_hand_state[hand]["pose"] = pose_name
+		_wait_seconds = seconds
+	_publish_hand(hand)
+
+
+func _step_fades(delta: float) -> void:
+	for hand in _fade.keys():
+		var fade: Dictionary = _fade[hand]
+		fade["elapsed"] = float(fade["elapsed"]) + delta
+		var t := float(fade["elapsed"]) / float(fade["seconds"])
+		if t >= 1.0:
+			_hand_state[hand]["joints"] = fade["to"]
+			_fade.erase(hand)
+			continue
+		var weight := ease_value(str(fade["easing"]), t)
+		var targets := {}
+		for finger in _pose_math.FINGER_NAMES:
+			targets[finger] = {"joints": fade["to"], "weight": weight}
+		_hand_state[hand]["joints"] = _pose_math.blend_pose(fade["from"], targets)
+
+
+func _resolve_pins() -> void:
+	for hand in _pin:
+		if _hand_state.has(hand) and (_move.is_empty() or int(_move.get("hand", -1)) != hand):
+			# Publish first: the solve reads the hand's facing from the tracker,
+			# and the desktop simulator writes that tracker every frame too.
+			_publish_pose(hand, _last_pos[clampi(hand, 0, 1)], _held_aim.get(clampi(hand, 0, 1), _last_pos[clampi(hand, 0, 1)]))
+			_last_pos[clampi(hand, 0, 1)] = _wrist_for(hand, str(_pin[hand]["anchor"]), _pin[hand]["target"])
+
+
+func _can_anchor(hand: int, anchor: String) -> bool:
+	if not _ensure_hands() or not _hand_state.has(hand):
+		_send({"type": "event", "error": "anchor needs a hand pose: drive a `hand` action on hand %d first" % hand})
+		return false
+	if not _anchor_local(hand, anchor).is_finite():
+		_send({"type": "event", "error": "no hand anchor named '%s'" % anchor})
+		return false
+	return true
+
+
+## The named point in the hand's own frame, in its current shape. Any WebXR joint
+## name works, plus index-tip, thumb-tip and grasp. `grasp` is where the thumb and
+## index meet in a full pinch, so it stays put while the hand closes: place it on
+## an object, pinch, and both fingertips arrive there with the wrist still.
+func _anchor_local(hand: int, anchor: String) -> Vector3:
+	var joints: Array = _hand_state[hand]["joints"]
+	match anchor:
+		"index-tip":
+			return (joints[XRHandTracker.HAND_JOINT_INDEX_FINGER_TIP] as Transform3D).origin
+		"thumb-tip":
+			return (joints[XRHandTracker.HAND_JOINT_THUMB_TIP] as Transform3D).origin
+		"palm":
+			return (joints[XRHandTracker.HAND_JOINT_PALM] as Transform3D).origin
+		"grasp":
+			if not _grasp_points.has(hand):
+				var pinch := _named_pose(hand, "pinch")
+				_grasp_points[hand] = ((pinch[XRHandTracker.HAND_JOINT_INDEX_FINGER_TIP] as Transform3D).origin
+						+ (pinch[XRHandTracker.HAND_JOINT_THUMB_TIP] as Transform3D).origin) * 0.5
+			return _grasp_points[hand]
+	var by_name: Dictionary = _pose_math.joint_name_map()
+	if by_name.has(anchor):
+		return (joints[by_name[anchor]] as Transform3D).origin
+	return Vector3.INF
+
+
+## The hand's wrist-relative frame in the world, as it is being published.
+func _hand_world(hand: int) -> Transform3D:
+	return Transform3D(_hand_world_basis(hand) * (_bind[hand]["align"] as Basis), _last_pos[clampi(hand, 0, 1)])
+
+
+## Where the hand has to be for the named point to land on `target`.
+func _wrist_for(hand: int, anchor: String, target: Vector3) -> Vector3:
+	return target - (_hand_world_basis(hand) * (_bind[hand]["align"] as Basis)) * _anchor_local(hand, anchor)
+
+
+func _read_hand(hand: int) -> Dictionary:
+	var world := _hand_world(hand)
+	var joints: Array = _hand_state[hand]["joints"]
+	var at := func(joint: int) -> Vector3: return world * (joints[joint] as Transform3D).origin
+	var as_list := func(v: Vector3) -> Array: return [snappedf(v.x, 0.0001), snappedf(v.y, 0.0001), snappedf(v.z, 0.0001)]
+	var wrist: Vector3 = at.call(XRHandTracker.HAND_JOINT_WRIST)
+	var points := {
+		"wrist": as_list.call(wrist),
+		"grasp": as_list.call(world * _anchor_local(hand, "grasp")),
+		"thumb-tip": as_list.call(at.call(XRHandTracker.HAND_JOINT_THUMB_TIP)),
+		"index-tip": as_list.call(at.call(XRHandTracker.HAND_JOINT_INDEX_FINGER_TIP)),
+		"middle-tip": as_list.call(at.call(XRHandTracker.HAND_JOINT_MIDDLE_FINGER_TIP)),
+		"ring-tip": as_list.call(at.call(XRHandTracker.HAND_JOINT_RING_FINGER_TIP)),
+		"pinky-tip": as_list.call(at.call(XRHandTracker.HAND_JOINT_PINKY_FINGER_TIP)),
+	}
+	# Measured from the joints, so a case checks the hand and not the request.
+	var middle: Vector3 = at.call(XRHandTracker.HAND_JOINT_MIDDLE_FINGER_METACARPAL)
+	var index: Vector3 = at.call(XRHandTracker.HAND_JOINT_INDEX_FINGER_METACARPAL)
+	var pinky: Vector3 = at.call(XRHandTracker.HAND_JOINT_PINKY_FINGER_METACARPAL)
+	return {
+		"pose": _hand_state[hand]["pose"],
+		"fading": _fade.has(hand),
+		"pinned": str(_pin[hand]["anchor"]) if _pin.has(hand) else "",
+		"points": points,
+		"axes": {"fingers": as_list.call((middle - wrist).normalized()), "thumb": as_list.call((index - pinky).normalized())},
+	}
+
+
+## Eye, forward and right of the body: the head's yaw, ignoring pitch and roll, so
+## a named direction means the same thing wherever the head is looking.
+func _head_frame() -> Dictionary:
+	var camera := get_viewport().get_camera_3d() if get_viewport() != null else null
+	var eye := camera.global_position if camera != null else Vector3(0, 1.6, 0)
+	var forward := -camera.global_basis.z if camera != null else Vector3.FORWARD
+	forward.y = 0.0
+	forward = forward.normalized() if forward.length_squared() > 0.000001 else Vector3.FORWARD
+	return {"eye": eye, "forward": forward, "right": forward.cross(Vector3.UP).normalized()}
+
+
+func _direction(value: Variant, from: Vector3) -> Vector3:
+	if value is Array:
+		return _vec(value).normalized()
+	var head := _head_frame()
+	match str(value):
+		"up":
+			return Vector3.UP
+		"down":
+			return Vector3.DOWN
+		"forward":
+			return head["forward"]
+		"back":
+			return -(head["forward"] as Vector3)
+		"right":
+			return head["right"]
+		"left":
+			return -(head["right"] as Vector3)
+		"toward-head":
+			return ((head["eye"] as Vector3) - from).normalized()
+		"away-from-head":
+			return (from - (head["eye"] as Vector3)).normalized()
+	_send({"type": "event", "error": "no direction named '%s'" % str(value)})
+	return Vector3.FORWARD
+
+
+## The tracker frame looks down -Z with the palm toward -Y.
+func _palm_basis(fingers: Vector3, palm: Vector3) -> Basis:
+	var z := -fingers
+	var up := (-palm - z * (-palm).dot(z)).normalized()
+	return Basis(up.cross(z), up, z)
+
+
+## `orient` = {fingers, palm}, {fingers, thumb}, or "auto" for a relaxed reach
+## toward `at`. Directions are vectors or names; see _direction.
+func _orient_basis(hand: int, orient: Variant, at: Vector3) -> Basis:
+	if orient is String:
+		return _reach_basis(hand, at)
+	var spec: Dictionary = orient
+	var fingers := _direction(spec.get("fingers", "forward"), at)
+	if not spec.has("thumb"):
+		return _palm_basis(fingers, _direction(spec.get("palm", "down"), at))
+	# The thumb side is -X on a right hand and +X on a left one.
+	var thumb := _direction(spec["thumb"], at)
+	var side := -thumb if hand == XRInputAdapter.Hand.RIGHT else thumb
+	var z := -fingers
+	var x := (side - z * side.dot(z)).normalized()
+	return Basis(x, z.cross(x), z)
+
+
+## Fingers along the forearm from an estimated shoulder and elbow, palm down and
+## rolled a little toward thumb-up, as a relaxed arm reaches.
+func _reach_basis(hand: int, at: Vector3) -> Basis:
+	var head := _head_frame()
+	var eye: Vector3 = head["eye"]
+	var forward: Vector3 = head["forward"]
+	var right: Vector3 = head["right"]
+	var outward := 0.18 if hand == XRInputAdapter.Hand.RIGHT else -0.18
+	var shoulder := eye + right * outward + Vector3.DOWN * 0.25 - forward * 0.05
+	var elbow := shoulder + Vector3.DOWN * 0.25 + forward * 0.12
+	var medial := -right if hand == XRInputAdapter.Hand.RIGHT else right
+	return _palm_basis((at - elbow).normalized(), Vector3.DOWN + medial * tan(deg_to_rad(15.0)))
+
+
+## Captures `properties` of every node in `paths` under `label`. A property that
+## cannot be read is recorded as such, so a diff shows it rather than skips it.
+func _take_snapshot(action: Dictionary) -> void:
+	var label := str(action.get("label", "snapshot"))
+	var values := {}
+	for path in action.get("paths", []):
+		var node := _find_node(str(path))
+		for property in action.get("properties", ["position"]):
+			var key := "%s:%s" % [path, property]
+			var read: Variant = node.get_indexed(NodePath(str(property))) if node != null else null
+			values[key] = str(read) if read != null else "<missing>"
+	_snapshots.erase(label)
+	_snapshots[label] = values
+	while _snapshots.size() > _MAX_SNAPSHOTS:
+		_snapshots.erase(_snapshots.keys()[0])
+	_send_reading("snapshot[%s] %d values" % [label, values.size()])
+
+
+func _send_diff(from_label: String, to_label: String) -> void:
+	if not _snapshots.has(from_label) or not _snapshots.has(to_label):
+		_send({"type": "event", "error": "diff: no snapshot named '%s'" % (to_label if _snapshots.has(from_label) else from_label)})
+		return
+	var before: Dictionary = _snapshots[from_label]
+	var after: Dictionary = _snapshots[to_label]
+	var changed := {}
+	for key in after:
+		if not before.has(key) or before[key] != after[key]:
+			changed[key] = [before.get(key, "<absent>"), after[key]]
+	_send_reading("diff[%s->%s] %s" % [from_label, to_label, JSON.stringify(changed)])
 
 
 func _apply_gaze(action: Dictionary) -> void:
@@ -516,7 +891,9 @@ func _publish_pose(hand: int, pos: Vector3, aim_target: Vector3) -> void:
 	if tracker == null:
 		return
 	var basis := Basis()
-	if not aim_target.is_equal_approx(pos):
+	if _held_basis.has(hand):
+		basis = _held_basis[hand]
+	elif not aim_target.is_equal_approx(pos):
 		basis = Basis.looking_at(aim_target - pos, Vector3.UP)
 	var xform := _to_play_space(Transform3D(basis, pos))
 	for pose_name in [&"default", &"aim", &"grip"]:
