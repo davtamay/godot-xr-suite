@@ -45,6 +45,7 @@ extends Node
 @export var endpoint := ""
 
 const _HAND_TRACKERS: Array[StringName] = [&"left_hand", &"right_hand"]
+const _GAZE_TRACKER := &"gaze"
 
 var _ws: WebSocketPeer = null
 var _queue: Array = []
@@ -73,6 +74,8 @@ var _held_aim := {}
 ## set once by a drive was erased before locomotion sampled it, and teleport
 ## passed or failed by a race (about two runs in three).
 var _held_input := {}
+## Last driven gaze, {at, tracked}, re-published every frame for the same reason.
+var _held_gaze := {}
 
 ## Synthetic hand state, built only when a drive asks for hands.
 const _POSE_MATH_PATH := "res://addons/godot_xr_hands/runtime/xr_hand_pose_math.gd"
@@ -197,6 +200,8 @@ func _tick_queue() -> void:
 				tracker.set_input(action_name, _held_input[hand][action_name])
 	for hand in _hand_state:
 		_publish_hand(hand)
+	if not _held_gaze.is_empty():
+		_publish_gaze()
 	if not _move.is_empty():
 		_step_move()
 		return
@@ -387,6 +392,11 @@ func _apply(action: Dictionary) -> void:
 					joints = _pose_math.pinch_pose(joints)
 			_hand_state[hhand] = {"joints": joints, "pose": pose_name}
 			_publish_hand(hhand)
+		"gaze":
+			# The eyes, as a runtime would serve them: a tracker with a pose, no
+			# buttons. `at` is where to look; tracked:false keeps the source but
+			# loses its pose; connected:false removes the source.
+			_apply_gaze(action)
 		"microgesture":
 			# A motion, not a pose: the thumb travels along the index finger
 			# and the recognizer reads the path. Same helper the desktop
@@ -458,6 +468,36 @@ func _step_move() -> void:
 		_last_pos[clampi(int(_move.hand), 0, 1)] = _move.to
 		_held_aim[clampi(int(_move.hand), 0, 1)] = aim if aim.is_finite() else _move.to
 		_move = {}
+
+
+func _apply_gaze(action: Dictionary) -> void:
+	if not bool(action.get("connected", true)):
+		_held_gaze = {}
+		var tracker := XRServer.get_tracker(_GAZE_TRACKER) as XRControllerTracker
+		if tracker != null:
+			XRServer.remove_tracker(tracker)
+			_owned_trackers.erase(tracker)
+		return
+	if action.has("at"):
+		_held_gaze["at"] = _vec(action["at"])
+	_held_gaze["tracked"] = bool(action.get("tracked", true))
+	_publish_gaze()
+
+
+func _publish_gaze() -> void:
+	var tracker := XRServer.get_tracker(_GAZE_TRACKER) as XRControllerTracker
+	if tracker == null:
+		tracker = XRControllerTracker.new()
+		tracker.name = _GAZE_TRACKER
+		XRServer.add_tracker(tracker)
+		_owned_trackers.append(tracker)
+	var camera := get_viewport().get_camera_3d() if get_viewport() != null else null
+	if not bool(_held_gaze.get("tracked", true)) or camera == null or not _held_gaze.has("at"):
+		tracker.invalidate_pose(&"default")
+		return
+	var eye := camera.global_position
+	var basis := Basis.looking_at((_held_gaze["at"] as Vector3) - eye, Vector3.UP)
+	tracker.set_pose(&"default", _to_play_space(Transform3D(basis, eye)), Vector3.ZERO, Vector3.ZERO, XRPose.XR_TRACKING_CONFIDENCE_HIGH)
 
 
 ## Tracker-level pose publication, identical to the headless simulator's:

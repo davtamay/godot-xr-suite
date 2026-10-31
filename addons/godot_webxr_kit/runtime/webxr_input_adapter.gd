@@ -15,6 +15,20 @@ var _webxr
 # controller-derived ray. Value = the input source's tracker.
 var _transient_trackers := {}
 
+# The persistent gaze source (Meta VR Glasses): targetRayMode 'gaze', no select
+# events, no gamepad, in a generic slot from 2 up. Searched at a slow rate and
+# checked every frame once found, so a device with no gaze pays only the scan.
+const _GAZE_TARGET_RAY_MODE := 1
+const _FIRST_GENERIC_SLOT := 2
+const _LAST_SLOT := 15
+const _GAZE_SCAN_MSEC := 500
+const _GAZE_BRIDGE := "GodotWebXRGazeBridge"
+var _gaze_slot := -1
+var _gaze_next_scan_msec := 0
+var _gaze_seen := false
+var _gaze_listed := false
+var _gaze_bridge_installed := false
+
 
 func _ready() -> void:
 	_resolve_rig()
@@ -98,6 +112,73 @@ func _transient_aim_pose(hand_id: int) -> Dictionary:
 		"direction": (-xf.basis.z).normalized(),
 		"basis": xf.basis.orthonormalized(),
 	}
+
+
+## The glue drops a source for any frame getPose() returns null and removes its
+## tracker, so from here a blink looks exactly like the source being unplugged.
+## The two must stay apart: a blink keeps gaze in charge for a grace period, a
+## disconnect hands far targeting back at once. Only the browser's own list can
+## tell them apart, so while a source that was seen has no slot,
+## session.inputSources decides.
+func get_gaze_state() -> Dictionary:
+	if _webxr == null:
+		return super()
+	# Ending a session stops updating input sources but leaves their trackers, so
+	# the last gaze pose would read as live on the flat page.
+	if not _webxr.is_initialized():
+		_gaze_slot = -1
+		_gaze_seen = false
+		_gaze_listed = false
+		return super()
+	_install_gaze_bridge()
+	if _gaze_slot >= 0 and not _webxr.is_input_source_active(_gaze_slot):
+		_gaze_slot = -1
+		_gaze_next_scan_msec = 0
+	var now := Time.get_ticks_msec()
+	if _gaze_slot < 0 and now >= _gaze_next_scan_msec:
+		_gaze_next_scan_msec = now + _GAZE_SCAN_MSEC
+		_gaze_slot = _find_gaze_slot()
+		if _gaze_slot >= 0:
+			_gaze_seen = true
+			_gaze_listed = true
+		else:
+			_gaze_listed = _gaze_seen and _browser_lists_gaze_source()
+			_gaze_seen = _gaze_listed
+	if _gaze_slot >= 0:
+		return _gaze_state_from(_webxr.get_input_source_tracker(_gaze_slot))
+	if _gaze_listed:
+		return {"connected": true, "tracked": false}
+	# Not the browser's: the actuator can publish on a device with no gaze.
+	return super()
+
+
+func _find_gaze_slot() -> int:
+	for slot in range(_FIRST_GENERIC_SLOT, _LAST_SLOT + 1):
+		if _webxr.get_input_source_target_ray_mode(slot) == _GAZE_TARGET_RAY_MODE:
+			return slot
+	return -1
+
+
+## Installed on first use, so a scene without a gaze block never wraps the frame.
+func _install_gaze_bridge() -> void:
+	if _gaze_bridge_installed:
+		return
+	_gaze_bridge_installed = true
+	XRWebJSHook.install(_GAZE_BRIDGE, "{session: null}", "", "bridge.session = frame.session;")
+
+
+func _browser_lists_gaze_source() -> bool:
+	return bool(JavaScriptBridge.eval("""
+(function () {
+	const bridge = window.%s;
+	const session = bridge && bridge.session;
+	if (!session) { return false; }
+	for (const source of session.inputSources) {
+		if (source.targetRayMode === 'gaze') { return true; }
+	}
+	return false;
+}())
+""" % _GAZE_BRIDGE, true))
 
 
 func _on_squeezestart(input_source_id: int) -> void:

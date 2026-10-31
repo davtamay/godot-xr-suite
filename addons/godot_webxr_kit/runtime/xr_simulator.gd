@@ -16,6 +16,10 @@ extends Node
 ##   T (hold, release) .. push right thumbstick forward = teleport aim; release commits
 ##   Z / C .............. snap turn left / right
 ##   Mouse cursor ....... aims the right controller ray
+##   G .................. mouse GAZE: the cursor is where the eyes look, for an
+##                        XRGazeInteractor. Pinch or grab with either hand as
+##                        usual; a second press disconnects the source, so hand
+##                        rays resume.
 ##   X .................. switch to SIMULATED HANDS (Unity XR Device
 ##                        Simulator-style): fake XRHandTracker joints from the
 ##                        gesture presets (soft-loaded from godot_xr_hands).
@@ -53,6 +57,7 @@ const _HAND_MODEL_PATHS := [
 	"res://addons/godot_xr_hands/models/generic_hand/right.glb",
 ]
 const _FINGER_NAMES := ["thumb", "index", "middle", "ring", "pinky"]
+const _GAZE_TRACKER := &"gaze"
 
 ## Master switch (runtime): off = never activates.
 @export var enabled := true
@@ -94,6 +99,8 @@ var _pose_key_down := -1
 var _current_pose: Array = [PackedVector3Array(), PackedVector3Array()]
 var _hand_visual: Node3D
 var _openxr_was_processing := true
+var _gaze_tracker: XRControllerTracker
+var _gaze_key_down := false
 
 
 func _ready() -> void:
@@ -143,6 +150,7 @@ func _process(delta: float) -> void:
 		_update_inputs(delta)
 	else:
 		_update_hand_poses(delta)
+	_update_gaze()
 	_update_common_keys()
 
 
@@ -181,6 +189,7 @@ func _activate() -> void:
 
 
 func _deactivate() -> void:
+	_set_gaze(false)
 	_remove_controller_trackers()
 	_remove_hand_trackers()
 	_mode = SimMode.CONTROLLER
@@ -328,7 +337,33 @@ func _update_inputs(delta: float) -> void:
 	right.set_input(&"thumbstick", stick)
 
 
+func _set_gaze(on: bool) -> void:
+	if on and _gaze_tracker == null and XRServer.get_tracker(_GAZE_TRACKER) == null:
+		_gaze_tracker = XRControllerTracker.new()
+		_gaze_tracker.name = _GAZE_TRACKER
+		XRServer.add_tracker(_gaze_tracker)
+	elif not on and _gaze_tracker != null:
+		XRServer.remove_tracker(_gaze_tracker)
+		_gaze_tracker = null
+	_update_help_text()
+
+
+func _update_gaze() -> void:
+	if _gaze_tracker == null or _camera == null:
+		return
+	var mouse := get_viewport().get_mouse_position()
+	var eye := _camera.project_ray_origin(mouse)
+	var basis := _basis_looking(eye, eye + _camera.project_ray_normal(mouse))
+	_gaze_tracker.set_pose(&"default", _origin.global_transform.affine_inverse() * Transform3D(basis, eye),
+			Vector3.ZERO, Vector3.ZERO, XRPose.XR_TRACKING_CONFIDENCE_HIGH)
+
+
 func _update_common_keys() -> void:
+	var gaze_key := Input.is_physical_key_pressed(KEY_G)
+	if gaze_key and not _gaze_key_down:
+		_set_gaze(_gaze_tracker == null)
+	_gaze_key_down = gaze_key
+
 	var help_key := Input.is_physical_key_pressed(KEY_H)
 	if help_key and not _help_key_down:
 		show_help = not show_help
@@ -749,6 +784,7 @@ func _update_help_text() -> void:
 		]
 		for i in range(1, _pose_library.size()):
 			rows.append([str(i), "pose: %s (again = open)" % _pose_library[i]["name"]])
+	rows.append(["G", "gaze off: mouse stops being the eyes" if _gaze_tracker != null else "gaze on: mouse is the eyes"])
 	rows.append(["H", "hide this help"])
 	for row in rows:
 		var key := Label.new()

@@ -19,6 +19,13 @@ const UNBOUNDED := "unbounded"
 
 ## Input.
 const HAND_TRACKING := "hand-tracking"
+## Eye gaze has two spellings and neither is in a published WebXR module yet:
+## gaze-tracking is what Quest Browser accepts, eye-tracking is the W3C draft
+## name. XRGazeInteractor requests both, as optional features. It lives in the
+## toolkit, which cannot depend on this kit, so it spells them itself; keep the
+## two in step.
+const GAZE_TRACKING := "gaze-tracking"
+const EYE_TRACKING := "eye-tracking"
 
 ## Real-world understanding.
 const DEPTH_SENSING := "depth-sensing"
