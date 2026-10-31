@@ -124,6 +124,11 @@ static func fk_pose(bind: Array, curl_axes: Array, curls: Dictionary) -> Array:
 ## low-passes those over seconds (see microgesture_pose): the blend would look
 ## right to a camera and reach the recognizers late or never.
 ##
+## Each joint's turn is taken relative to its PARENT and the finger is rebuilt
+## outward from the knuckle. Relative to the wrist, a curling finger's outer joints
+## turn past 180 degrees, and slerp takes the short way round, so a fade swings
+## them backward through its middle while both of its ends look right.
+##
 ## Returns a new array; the inputs are left untouched.
 static func blend_pose(base: Array, targets: Dictionary) -> Array:
 	var out := base.duplicate()
@@ -134,15 +139,22 @@ static func blend_pose(base: Array, targets: Dictionary) -> Array:
 		var to: Array = target["joints"]
 		var weight := clampf(float(target.get("weight", 1.0)), 0.0, 1.0)
 		var chain: Array = FINGER_CHAINS[f]
+		var root_from: Transform3D = base[chain[0]]
+		var root_to: Transform3D = to[chain[0]]
+		out[chain[0]] = Transform3D(root_from.basis.slerp(root_to.basis, weight), root_from.origin.lerp(root_to.origin, weight))
 		for i in range(1, chain.size()):
+			var from_parent: Transform3D = base[chain[i - 1]]
+			var to_parent: Transform3D = to[chain[i - 1]]
 			var from_joint: Transform3D = base[chain[i]]
 			var to_joint: Transform3D = to[chain[i]]
-			var from_bone: Vector3 = from_joint.origin - (base[chain[i - 1]] as Transform3D).origin
-			var to_bone: Vector3 = to_joint.origin - (to[chain[i - 1]] as Transform3D).origin
+			var from_turn := from_parent.basis.inverse() * from_joint.basis
+			var to_turn := to_parent.basis.inverse() * to_joint.basis
+			var from_bone := from_parent.basis.inverse() * (from_joint.origin - from_parent.origin)
+			var to_bone := to_parent.basis.inverse() * (to_joint.origin - to_parent.origin)
 			var direction := from_bone.normalized().slerp(to_bone.normalized(), weight).normalized()
 			var parent: Transform3D = out[chain[i - 1]]
-			out[chain[i]] = Transform3D(from_joint.basis.slerp(to_joint.basis, weight),
-					parent.origin + direction * from_bone.length())
+			out[chain[i]] = Transform3D(parent.basis * from_turn.slerp(to_turn, weight),
+					parent.origin + parent.basis * direction * from_bone.length())
 	return out
 
 

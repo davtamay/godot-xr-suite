@@ -15,6 +15,8 @@ var _failures: Array[String] = []
 func _process(_delta: float) -> bool:
 	_test_easing()
 	_test_blend()
+	_test_blend_midway(0)
+	_test_blend_midway(1)
 	if _failures.is_empty():
 		print("XR actuator language: PASS")
 		quit(0)
@@ -85,6 +87,39 @@ func _test_blend() -> void:
 
 	# The inputs are held poses, republished every frame.
 	_check((open[ring_tip] as Transform3D).is_equal_approx(PoseMath.fk_pose(bind, axes, {})[ring_tip]), "blend must not change its input")
+
+
+## Blending between two curls has to BE the curl between them, at every weight
+## and on both hands. Checks at the ends of a fade cannot see a finger that swings
+## backward through the middle: joints past 180 degrees in wrist space do, if the
+## turn is interpolated there rather than relative to the parent joint.
+func _test_blend_midway(hand: int) -> void:
+	var skeletons: Dictionary = PoseMath.load_bind_skeletons()
+	var bind: Array = skeletons[hand]["rel"]
+	var axes: Array = skeletons[hand]["curl_axes"]
+	var names: Array = PoseMath.FINGER_NAMES
+	var curls_to := {}
+	for finger in names:
+		curls_to[finger] = 1.0 if finger != "thumb" else 0.9
+	var start: Array = PoseMath.fk_pose(bind, axes, {"thumb": 0.0, "index": 0.0, "middle": 0.0, "ring": 0.0, "pinky": 0.0})
+	var end: Array = PoseMath.fk_pose(bind, axes, curls_to)
+	for weight in [0.25, 0.5, 0.75]:
+		var targets := {}
+		var curls_mid := {}
+		for finger in names:
+			targets[finger] = {"joints": end, "weight": weight}
+			curls_mid[finger] = curls_to[finger] * weight
+		var blended: Array = PoseMath.blend_pose(start, targets)
+		var expected: Array = PoseMath.fk_pose(bind, axes, curls_mid)
+		for chain in PoseMath.FINGER_CHAINS:
+			for joint in chain:
+				var got: Transform3D = blended[joint]
+				var want: Transform3D = expected[joint]
+				var off := got.origin.distance_to(want.origin)
+				_check(off < 0.0005, "hand %d joint %d is %.4f m off the curl at weight %.2f" % [hand, joint, off, weight])
+				var turn := (got.basis.get_rotation_quaternion().inverse() * want.basis.get_rotation_quaternion()).get_angle()
+				turn = minf(turn, TAU - turn)
+				_check(turn < 0.01, "hand %d joint %d is %.1f degrees off the curl at weight %.2f" % [hand, joint, rad_to_deg(turn), weight])
 
 
 func _bone(pose: Array, chain: Array, i: int) -> Vector3:
