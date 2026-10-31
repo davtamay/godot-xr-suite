@@ -1,6 +1,10 @@
 extends SceneTree
 
 const VALID := XRHandTracker.HAND_JOINT_FLAG_POSITION_VALID
+## Thumb tip to index tip during a microgesture, in palm widths: real motion stays
+## at 0.9 or above. At or below the recognizer's pinch_veto_distance the same
+## frames read as a pinch and nothing fires.
+const TIPS_APART := 1.0
 
 func _init() -> void:
     var failures: Array[String] = []
@@ -106,9 +110,9 @@ func _test_thumb_microgestures(failures: Array[String]) -> void:
     swipe.microgesture_performed.connect(func(direction: int, _hand: int, _confidence: float) -> void:
         swipe_events.append(direction)
     )
-    swipe.process_features(1, _micro_features(1000000, Vector3.ZERO, 0.5, 0.2, 0.45))
-    swipe.process_features(1, _micro_features(1080000, Vector3(0.24, 0.0, 0.01), 0.5, 0.2, 0.72))
-    swipe.process_features(1, _micro_features(1120000, Vector3(0.24, 0.0, 0.01), 0.5, 0.8, 0.72))
+    swipe.process_features(1, _micro_features(1000000, Vector3.ZERO, TIPS_APART, 0.2, 0.45))
+    swipe.process_features(1, _micro_features(1080000, Vector3(0.24, 0.0, 0.01), TIPS_APART, 0.2, 0.72))
+    swipe.process_features(1, _micro_features(1120000, Vector3(0.24, 0.0, 0.01), TIPS_APART, 0.8, 0.72))
     if swipe_events != [XRThumbMicrogestureRecognizer.Direction.LEFT]:
         failures.append("palm-local thumb travel did not produce one left swipe")
     swipe.free()
@@ -118,9 +122,9 @@ func _test_thumb_microgestures(failures: Array[String]) -> void:
     early_swipe.gesture_performed.connect(func(direction: int, _hand: int, _confidence: float) -> void:
         early_events.append(direction)
     )
-    early_swipe.process_features(1, _micro_features(1500000, Vector3.ZERO, 0.5, 0.2, 0.45))
-    early_swipe.process_features(1, _micro_features(1580000, Vector3.ZERO, 0.5, 0.2, 0.95))
-    early_swipe.process_features(1, _micro_features(1660000, Vector3.ZERO, 0.5, 0.2, 0.95))
+    early_swipe.process_features(1, _micro_features(1500000, Vector3.ZERO, TIPS_APART, 0.2, 0.45))
+    early_swipe.process_features(1, _micro_features(1580000, Vector3.ZERO, TIPS_APART, 0.2, 0.95))
+    early_swipe.process_features(1, _micro_features(1660000, Vector3.ZERO, TIPS_APART, 0.2, 0.95))
     if early_events != [XRMicrogestureSource.Gesture.LEFT]:
         failures.append("high-confidence swipe did not commit once before release")
     early_swipe.free()
@@ -130,8 +134,8 @@ func _test_thumb_microgestures(failures: Array[String]) -> void:
     tap.microgesture_performed.connect(func(direction: int, _hand: int, _confidence: float) -> void:
         tap_events.append(direction)
     )
-    tap.process_features(1, _micro_features(2000000, Vector3(0.1, 0.0, 0.1), 0.5, 0.2))
-    tap.process_features(1, _micro_features(2080000, Vector3(0.105, 0.0, 0.1), 0.5, 0.8))
+    tap.process_features(1, _micro_features(2000000, Vector3(0.1, 0.0, 0.1), TIPS_APART, 0.2))
+    tap.process_features(1, _micro_features(2080000, Vector3(0.105, 0.0, 0.1), TIPS_APART, 0.8))
     if tap_events != [XRThumbMicrogestureRecognizer.Direction.TAP]:
         failures.append("short thumb contact did not produce one tap")
     tap.free()
@@ -259,12 +263,12 @@ func _test_handedness_normalization(failures: Array[String]) -> void:
     )
     # Toward the fingertip is mirrored anatomically, but must produce the same
     # wearer-relative LEFT event for both hands.
-    recognizer.process_features(1, _micro_features(5000000, Vector3.ZERO, 0.5, 0.2, 0.45))
-    recognizer.process_features(1, _micro_features(5080000, Vector3.ZERO, 0.5, 0.2, 0.72))
-    recognizer.process_features(1, _micro_features(5120000, Vector3.ZERO, 0.5, 0.8, 0.72))
-    recognizer.process_features(0, _micro_features(6000000, Vector3.ZERO, 0.5, 0.2, 0.45))
-    recognizer.process_features(0, _micro_features(6080000, Vector3.ZERO, 0.5, 0.2, 0.18))
-    recognizer.process_features(0, _micro_features(6120000, Vector3.ZERO, 0.5, 0.8, 0.18))
+    recognizer.process_features(1, _micro_features(5000000, Vector3.ZERO, TIPS_APART, 0.2, 0.45))
+    recognizer.process_features(1, _micro_features(5080000, Vector3.ZERO, TIPS_APART, 0.2, 0.72))
+    recognizer.process_features(1, _micro_features(5120000, Vector3.ZERO, TIPS_APART, 0.8, 0.72))
+    recognizer.process_features(0, _micro_features(6000000, Vector3.ZERO, TIPS_APART, 0.2, 0.45))
+    recognizer.process_features(0, _micro_features(6080000, Vector3.ZERO, TIPS_APART, 0.2, 0.18))
+    recognizer.process_features(0, _micro_features(6120000, Vector3.ZERO, TIPS_APART, 0.8, 0.18))
     var expected := [
         [XRMicrogestureSource.Gesture.LEFT, 1],
         [XRMicrogestureSource.Gesture.LEFT, 0],
