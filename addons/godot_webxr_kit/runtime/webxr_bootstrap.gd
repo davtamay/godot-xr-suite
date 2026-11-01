@@ -46,6 +46,9 @@ const GROUP_SESSION_UI := "xr_session_ui"
 ## and restored on exit. Put screen-space UI (CanvasLayer HUDs) here:
 ## Godot composites the 2D canvas into each eye's view otherwise.
 @export var session_hide_group := GROUP_SESSION_HIDDEN
+## When a session fails on a WebGPU page, show a button that reloads on WebGL.
+## Needs the renderer-aware HTML shell, because only that reads the preference.
+@export var offer_webgl_retry := true
 ## Fixed foveation level requested from the browser compositor for the
 ## projection layer: 0.0 = off (full resolution everywhere), 1.0 = maximum
 ## (lowest resolution at the periphery, best performance). Rendering the
@@ -93,6 +96,7 @@ var _base_scale := Vector3.ONE
 var _base_material: Material
 var _highlight_material: StandardMaterial3D
 var _last_session_failed := false
+var _webgl_retry_button: Button
 var _requested_session_mode := ""
 var _active_session_mode := ""
 var _base_transparent_bg := false
@@ -328,7 +332,22 @@ func _on_session_failed(message: String) -> void:
     _active_session_mode = ""
     _set_status("WEBXR FAILED: " + message)
     _show_browser_failure("WEBXR FAILED: " + message)
+    if offer_webgl_retry and WebXRRenderer.can_retry_on_webgl():
+        _offer_webgl_retry()
     session_failed.emit(message)
+
+
+# A canvas stays locked to its first context type, so WebGL means a reload. That
+# drops the app's state and still needs a click to enter, so it is the user's
+# choice rather than something the failure does on its own.
+func _offer_webgl_retry() -> void:
+    if _webgl_retry_button != null or _status_label == null:
+        return
+    _set_status("This browser could not start a WebGPU session. WebGL can still run this scene.")
+    _webgl_retry_button = Button.new()
+    _webgl_retry_button.text = "Retry on WebGL"
+    _webgl_retry_button.pressed.connect(func(): WebXRRenderer.switch_to("webgl"))
+    _status_label.get_parent().add_child(_webgl_retry_button)
 
 func _connect_webxr_input_signal(signal_name: StringName, callback: Callable) -> void:
     if not _webxr.has_signal(signal_name):

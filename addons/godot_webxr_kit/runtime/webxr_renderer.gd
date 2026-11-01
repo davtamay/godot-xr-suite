@@ -133,6 +133,18 @@ static func switch_to(mode: String) -> void:
         return
     js.eval("try{localStorage.setItem('%s','%s');}catch(e){}; location.reload();" % [PREF_KEY, mode], true)
 
+## True when a failed WebGPU session has somewhere to go: this page runs on
+## WebGPU, and the shell that honors the preference loaded it. That shell is the
+## only thing that defines __godotWebGPUCapable. Without it a reload just boots
+## WebGPU again, so a retry button would lead back to the same failure.
+static func can_retry_on_webgl() -> bool:
+    if not is_webgpu():
+        return false
+    var js = _js()
+    if js == null:
+        return false
+    return bool(js.eval("('__godotWebGPUCapable' in window)", true))
+
 ## A short human-readable coverage note for a menu label. `renderer` is
 ## "webgl" or "webgpu"; the WebGPU note reflects THIS browser's depth support.
 static func coverage_note(renderer: String) -> String:
