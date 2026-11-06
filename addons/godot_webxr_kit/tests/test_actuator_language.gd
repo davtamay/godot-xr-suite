@@ -14,6 +14,7 @@ var _failures: Array[String] = []
 
 func _process(_delta: float) -> bool:
 	_test_easing()
+	_test_endpoints()
 	_test_blend()
 	_test_blend_midway(0)
 	_test_blend_midway(1)
@@ -47,6 +48,16 @@ func _test_easing() -> void:
 	var near_start: float = Actuator.ease_value("minimum-jerk", 0.001)
 	_check(near_start < 0.00001, "minimum-jerk leaves rest slowly, got %f" % near_start)
 
+
+# The token must reach the operator in the query, and nothing else in a URL may
+# change: a full URL is an author's own choice and passes through as written.
+func _test_endpoints() -> void:
+	_check(Actuator.endpoint_url("127.0.0.1:9777") == "ws://127.0.0.1:9777", "a bare host:port")
+	_check(Actuator.endpoint_url("ab12cd34@127.0.0.1:9777") == "ws://127.0.0.1:9777/drive?t=ab12cd34",
+			"token@host:port, got %s" % Actuator.endpoint_url("ab12cd34@127.0.0.1:9777"))
+	_check(Actuator.endpoint_url("wss://example.test/operator?p=1&t=x") == "wss://example.test/operator?p=1&t=x",
+			"a full URL is taken as it is")
+	_check(Actuator.endpoint_url("@127.0.0.1:9777") == "ws://@127.0.0.1:9777", "an empty token is not a token")
 
 func _test_blend() -> void:
 	var skeletons: Dictionary = PoseMath.load_bind_skeletons()

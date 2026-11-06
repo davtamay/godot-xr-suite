@@ -11,15 +11,22 @@ extends Node
 ##
 ## SECURITY: this is a development tool - an input channel into your app.
 ## It activates ONLY when BOTH are true: [member enabled] is on, and the
-## run names an operator endpoint (URL param `?operator=host:port` on web,
-## `--operator=host:port` on the command line elsewhere). It connects OUT
-## to the operator; nothing ever listens inside the app. Ship scenes with
+## run names an operator endpoint (URL param `?operator=token@port` on web,
+## `--operator=token@host:port` on the command line elsewhere). It connects
+## OUT to the operator; nothing ever listens inside the app. Ship scenes with
 ## [member enabled] off.
+##
+## The token is the operator's credential for one drive. The operator refuses
+## a socket that does not present it, so a page someone else opened, or a
+## second app on the same machine, cannot take a drive meant for this one or
+## read its event stream.
 ##
 ## Protocol (JSON text frames):
 ##   app -> {"type":"hello","scene":...}   on connect
 ##   ctl -> {"type":"actions","actions":[...]}   pose/move/input/wait,
-##          the same action dictionaries the headless simulate_input takes
+##          the same action dictionaries the headless simulate_input takes.
+##          pose and move may name a `target` instead of a position: the
+##          node answers drive_hint() with where a hand should be.
 ##   app -> {"type":"event",...}           every interaction signal, live,
 ##          plus anything a `report` action reads back out of the scene
 ##   app -> {"type":"done","applied":N}    when the queue empties
@@ -34,9 +41,10 @@ extends Node
 ##
 ## NOTE for browser use: an https page may only open wss:// sockets, so the
 ## operator endpoint must speak TLS on a certificate this headset already
-## accepted - the practical route is the serve relay (planned), not a raw
-## host:port. Native (Link) and headless runs connect over plain ws://
-## today, which is what the headless verification exercises.
+## accepted. The route is the serve relay: `?operator=token@port` opens
+## wss://<this page's origin>/operator?p=port&t=token, which the serve bridges
+## to the operator on its own machine. Native (Link) and headless runs connect
+## over plain ws:// to a loopback operator.
 
 ## Master switch. Off = this node does nothing at all.
 @export var enabled := false
@@ -121,13 +129,25 @@ func _ready() -> void:
 	if target.is_empty():
 		return
 	_ws = WebSocketPeer.new()
-	var url := target if target.begins_with("ws") else "ws://%s" % target
+	var url := endpoint_url(target)
 	var err := _ws.connect_to_url(url)
 	if err != OK:
-		push_warning("XRRemoteActuator: cannot connect to %s (error %d)" % [url, err])
+		push_warning("XRRemoteActuator: cannot connect to %s (error %d)" % [url.get_slice("?", 0), err])
 		_ws = null
 		return
 	set_process(true)
+
+
+## The socket URL for an endpoint: `host:port`, `token@host:port`, or a full
+## ws(s):// URL taken as it is. The token travels in the query, where the
+## operator checks it before it accepts the socket at all.
+static func endpoint_url(target: String) -> String:
+	if target.begins_with("ws://") or target.begins_with("wss://"):
+		return target
+	var at := target.find("@")
+	if at > 0:
+		return "ws://%s/drive?t=%s" % [target.substr(at + 1), target.substr(0, at).uri_encode()]
+	return "ws://%s" % target
 
 
 ## The endpoint from the RUN itself: `?operator=` on web, `--operator=`
@@ -162,8 +182,15 @@ func _run_arg_endpoint() -> String:
 			else:
 				return raw
 		var host := str(JavaScriptBridge.eval("location.host", true))
-		var op_port := raw if raw.is_valid_int() else "8470"
-		return "wss://%s/operator?p=%s" % [host, op_port]
+		# token@port: the token rides to the operator through the relay.
+		var token := raw.get_slice("@", 0) if raw.contains("@") else ""
+		var op_port := raw.get_slice("@", 1) if raw.contains("@") else raw
+		if not op_port.is_valid_int():
+			op_port = "8470"
+		var relay := "wss://%s/operator?p=%s" % [host, op_port]
+		if not token.is_empty():
+			relay += "&t=%s" % token.uri_encode()
+		return relay
 	# Both the engine args and the user args (after `--`): a windowed Play
 	# launch passes it as a user arg so it never collides with an engine
 	# option, while a bare native run may pass it directly.
@@ -191,6 +218,10 @@ func _process(_delta: float) -> void:
 					_queue.append_array(parsed.get("actions", []))
 			_tick_queue()
 		WebSocketPeer.STATE_CLOSED:
+			if not _signals_wired:
+				# Never opened: the operator refused the socket or was not there.
+				push_warning("XRRemoteActuator: the operator did not accept the connection. "
+						+ "Check the port, and that the endpoint carries this drive's token (token@host:port).")
 			_ws = null
 			set_process(false)
 
@@ -267,7 +298,17 @@ func _apply(action: Dictionary) -> void:
 		"pose":
 			var hand := int(action.get("hand", 1))
 			var pos := _vec(action.get("position", [0, 1.4, 0]))
-			var aim_at := _vec(action["aim"]) if action.has("aim") else pos
+			if action.has("target"):
+				var placed: Variant = _target_point(action)
+				if placed == null:
+					return
+				pos = placed
+			var aim_at := pos
+			if action.has("aim"):
+				var aimed: Variant = _aim_point(action["aim"])
+				if aimed == null:
+					return
+				aim_at = aimed
 			if action.has("orient"):
 				_held_basis[hand] = _orient_basis(hand, action["orient"], pos)
 			elif action.has("aim"):
@@ -291,11 +332,25 @@ func _apply(action: Dictionary) -> void:
 			_held_aim[clampi(hand, 0, 1)] = aim_at
 		"move":
 			var mhand := int(action.get("hand", 1))
+			# Read when the move starts, so a target follows an object that has
+			# moved since the drive was written.
+			var to_point := _vec(action.get("to", [0, 1.4, 0]))
+			if action.has("target"):
+				var reached: Variant = _target_point(action)
+				if reached == null:
+					return
+				to_point = reached
+			var move_aim := Vector3.INF
+			if action.has("aim"):
+				var move_aimed: Variant = _aim_point(action["aim"])
+				if move_aimed == null:
+					return
+				move_aim = move_aimed
 			_move = {
 				"hand": mhand,
 				"from": _vec(action["from"]) if action.has("from") else _last_pos[clampi(mhand, 0, 1)],
-				"to": _anchor_for_tip(mhand, _vec(action.get("to", [0, 1.4, 0]))) if bool(action.get("tip", false)) else _vec(action.get("to", [0, 1.4, 0])),
-				"aim": _vec(action["aim"]) if action.has("aim") else Vector3.INF,
+				"to": _anchor_for_tip(mhand, to_point) if bool(action.get("tip", false)) else to_point,
+				"aim": move_aim,
 				"frames": maxi(2, int(action.get("frames", 30))),
 				"step": 0,
 				"easing": str(action.get("easing", "smooth")),
@@ -308,7 +363,7 @@ func _apply(action: Dictionary) -> void:
 				_held_basis.erase(mhand)
 			if action.has("orient"):
 				_move["basis_from"] = _hand_world_basis(mhand)
-				_move["basis_to"] = _orient_basis(mhand, action["orient"], _vec(action.get("to", [0, 1.4, 0])))
+				_move["basis_to"] = _orient_basis(mhand, action["orient"], to_point)
 			if action.has("anchor"):
 				var move_anchor := str(action["anchor"])
 				if not _can_anchor(mhand, move_anchor):
@@ -316,7 +371,7 @@ func _apply(action: Dictionary) -> void:
 					return
 				_move["anchor"] = move_anchor
 				_move["anchor_from"] = _hand_world(mhand) * _anchor_local(mhand, move_anchor)
-				_move["anchor_to"] = _vec(action.get("to", [0, 1.4, 0]))
+				_move["anchor_to"] = to_point
 		"view":
 			# Move the VIEWPOINT. A drive moves hands; without this the camera
 			# stays wherever the rig was left, so a station being worked on can be
@@ -590,8 +645,93 @@ func _send_reading(text: String, node := "") -> void:
 			"engine_frame": Engine.get_process_frames()})
 
 
+func _scene_root() -> Node:
+	return get_tree().current_scene if get_tree().current_scene else get_tree().root
+
+
+## Where a named target wants a hand, plus any offset. The target says it
+## through drive_hint(); `at` picks one of its points (point, approach, release,
+## to). Measuring a point by hand is what drives used to do, and a measured
+## point goes stale the moment a scene moves.
+func _target_point(action: Dictionary) -> Variant:
+	var point: Variant = _hint_point(str(action.get("target", "")), str(action.get("at", "point")))
+	if point == null:
+		return null
+	return (point as Vector3) + (_vec(action["offset"]) if action.has("offset") else Vector3.ZERO)
+
+
+## An aim is a point [x, y, z] or a target's name.
+func _aim_point(value: Variant) -> Variant:
+	if typeof(value) == TYPE_STRING:
+		return _hint_point(str(value), "point")
+	return _vec(value)
+
+
+func _hint_point(target_name: String, at: String) -> Variant:
+	var subject := _hint_node(target_name)
+	if subject == null:
+		return null
+	var hint: Dictionary = subject.call("drive_hint")
+	if hint.is_empty():
+		_send({"type": "event", "error": "target %s asks not to be driven: its drive_hint() is empty" % target_name})
+		return null
+	if typeof(hint.get(at)) != TYPE_VECTOR3:
+		var offered := PackedStringArray()
+		for key in hint:
+			if typeof(hint[key]) == TYPE_VECTOR3:
+				offered.append(str(key))
+		_send({"type": "event", "error": "target %s has no %s point; it offers %s" % [target_name, at, ", ".join(offered)]})
+		return null
+	var point: Vector3 = hint[at]
+	_send_reading("target %s.%s=[%.3f, %.3f, %.3f]" % [target_name, at, point.x, point.y, point.z],
+			String(_scene_root().get_path_to(subject)))
+	return point
+
+
+## The node a target names: a path from the scene root, or a name found once in
+## the scene. That node answers drive_hint(), or holds exactly one node that
+## does. Anything else is an error that says what was found. Nothing falls back
+## to a node origin: an origin is a guess about where to hold something, and the
+## guess this replaces was routinely tens of millimetres wrong.
+func _hint_node(target_name: String) -> Node:
+	var root := _scene_root()
+	var found: Array[Node] = []
+	if target_name.contains("/"):
+		var at_path := root.get_node_or_null(NodePath(target_name))
+		if at_path != null:
+			found.append(at_path)
+	else:
+		found.append_array(root.find_children(target_name, "", true, false))
+	if found.is_empty():
+		_send({"type": "event", "error": "target: no node %s in the scene" % target_name})
+		return null
+	if found.size() > 1:
+		var paths := PackedStringArray()
+		for node in found:
+			paths.append(String(root.get_path_to(node)))
+		_send({"type": "event", "error": "target %s is ambiguous: %s - name it by path" % [target_name, ", ".join(paths)]})
+		return null
+	var subject: Node = found[0]
+	if subject.has_method("drive_hint"):
+		return subject
+	var inner: Array[Node] = []
+	for child in subject.find_children("*", "", true, false):
+		if child.has_method("drive_hint"):
+			inner.append(child)
+	if inner.size() == 1:
+		return inner[0]
+	if inner.is_empty():
+		_send({"type": "event", "error": "target %s has no drive_hint(): a drive names interactables" % target_name})
+	else:
+		var names := PackedStringArray()
+		for node in inner:
+			names.append(String(root.get_path_to(node)))
+		_send({"type": "event", "error": "target %s holds %d interactables (%s); name one" % [target_name, inner.size(), ", ".join(names)]})
+	return null
+
+
 func _find_node(path: String) -> Node:
-	var root := get_tree().current_scene if get_tree().current_scene else get_tree().root
+	var root := _scene_root()
 	var found: Node = root.get_node_or_null(NodePath(path))
 	if found == null:
 		# Fall back to a name search: hints and dumps quote paths relative to
