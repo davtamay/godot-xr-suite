@@ -134,7 +134,7 @@ func get_gaze_state() -> Dictionary:
 	if _gaze_slot >= 0 and not _webxr.is_input_source_active(_gaze_slot):
 		_gaze_slot = -1
 		_gaze_next_scan_msec = 0
-	var now := Time.get_ticks_msec()
+	var now := XRClock.now_msec()
 	if _gaze_slot < 0 and now >= _gaze_next_scan_msec:
 		_gaze_next_scan_msec = now + _GAZE_SCAN_MSEC
 		_gaze_slot = _find_gaze_slot()

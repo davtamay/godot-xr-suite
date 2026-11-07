@@ -239,6 +239,115 @@ static func mirrored(snapshot: PackedVector3Array) -> PackedVector3Array:
 		flipped[i] = Vector3(-p.x, p.y, p.z)
 	return flipped
 
+
+const _LIBRARY_PATH := "res://addons/godot_xr_hands/runtime/xr_hand_pose_library.gd"
+static var _library: Object = null
+
+
+static func _pose_library() -> Object:
+	if _library == null and ResourceLoader.exists(_LIBRARY_PATH):
+		_library = load(_LIBRARY_PATH)
+	return _library
+
+
+## The tuned poses (see xr_hand_pose_library.gd), plus `microgesture-<keyframe>`
+## for each thumb keyframe a microgesture plays through.
+static func library_names() -> PackedStringArray:
+	var names := PackedStringArray()
+	var lib := _pose_library()
+	if lib == null:
+		return names
+	for pose_name in lib.POSES:
+		names.append(str(pose_name))
+	for keyframe in lib.MICROGESTURE_THUMB:
+		names.append("microgesture-%s" % keyframe)
+	return names
+
+
+static func library_description(pose_name: String) -> String:
+	var lib := _pose_library()
+	if lib == null:
+		return ""
+	if lib.DESCRIPTIONS.has(pose_name):
+		return str(lib.DESCRIPTIONS[pose_name])
+	if pose_name.begins_with("microgesture-"):
+		return "The microgesture pose with the thumb at its %s keyframe." % pose_name.trim_prefix("microgesture-")
+	return ""
+
+
+## A tuned pose as wrist-relative joints on `bind`, for `hand` (0 left, 1 right).
+## Empty when no pose has that name.
+static func library_pose(bind: Array, pose_name: String, hand := 1) -> Array:
+	var lib := _pose_library()
+	if lib == null:
+		return []
+	var flat: Array = []
+	if lib.POSES.has(pose_name):
+		flat = lib.POSES[pose_name]
+	elif pose_name.begins_with("microgesture-") and lib.MICROGESTURE_THUMB.has(pose_name.trim_prefix("microgesture-")):
+		flat = lib.MICROGESTURE_THUMB[pose_name.trim_prefix("microgesture-")]
+	else:
+		return []
+	# The library holds left hands; a mirror makes a right one, and the wrist
+	# frames are aligned afterwards, so which axis it flips does not matter.
+	var pose := _library_positions(lib, flat, hand != 0)
+	var reference := _library_positions(lib, lib.POSES["relaxed"], hand != 0)
+	return pose_from_positions(bind, pose, reference)
+
+
+static func _library_positions(lib: Object, flat: Array, mirror: bool) -> PackedVector3Array:
+	var by_name := joint_name_map()
+	var out := PackedVector3Array()
+	out.resize(XRHandTracker.HAND_JOINT_MAX)
+	for i in (lib.JOINTS as Array).size():
+		var p := Vector3(float(flat[i * 3]), float(flat[i * 3 + 1]), float(flat[i * 3 + 2]))
+		out[by_name[lib.JOINTS[i]]] = Vector3(-p.x, p.y, p.z) if mirror else p
+	var wrist := out[XRHandTracker.HAND_JOINT_WRIST]
+	var middle := out[XRHandTracker.HAND_JOINT_MIDDLE_FINGER_METACARPAL]
+	out[XRHandTracker.HAND_JOINT_PALM] = wrist.lerp(middle, 0.5)
+	return out
+
+
+## Puts a pose given as joint POSITIONS on this skeleton. `reference` is the same
+## source skeleton at rest, which aligns the two wrist frames once for every pose.
+##
+## Each bone keeps the bind's length and takes the source's direction, so a pose
+## made on another hand model never stretches this one's skin. The palm stays
+## the bind's: the four long-finger metacarpals do not move relative to the
+## wrist, so they come from the bind as they are, and only the thumb's base may
+## shift by as much as it shifts in the source. Orientations swing each bind
+## frame onto the posed bone, as recorded poses do (rel_from_recorded).
+static func pose_from_positions(bind: Array, pose: PackedVector3Array, reference: PackedVector3Array) -> Array:
+	var f_ref := measure_wrist_frame(func(j): return reference[j])
+	var f_bind := measure_wrist_frame(func(j): return (bind[j] as Transform3D).origin)
+	var convert := f_bind * f_ref.inverse()
+	var wrist_pose := pose[XRHandTracker.HAND_JOINT_WRIST]
+	var wrist_ref := reference[XRHandTracker.HAND_JOINT_WRIST]
+	var at := PackedVector3Array()
+	at.resize(bind.size())
+	for joint in bind.size():
+		at[joint] = (bind[joint] as Transform3D).origin
+	var out := bind.duplicate()
+	for f in FINGER_CHAINS.size():
+		var chain: Array = FINGER_CHAINS[f]
+		var root: int = chain[0]
+		if f == 0:
+			at[root] += convert * ((pose[root] - wrist_pose) - (reference[root] - wrist_ref))
+		# The long fingers' metacarpal bones belong to the palm.
+		var first_free := 0 if f == 0 else 1
+		for i in range(chain.size() - 1):
+			var joint: int = chain[i]
+			var child: int = chain[i + 1]
+			var bind_bone: Vector3 = (bind[child] as Transform3D).origin - (bind[joint] as Transform3D).origin
+			if i >= first_free:
+				at[child] = at[joint] + (convert * (pose[child] - pose[joint])).normalized() * bind_bone.length()
+			else:
+				at[child] = at[joint] + bind_bone
+			out[joint] = Transform3D(rotation_between(bind_bone, at[child] - at[joint]) * (bind[joint] as Transform3D).basis, at[joint])
+		var tip: int = chain[chain.size() - 1]
+		out[tip] = Transform3D((out[chain[chain.size() - 2]] as Transform3D).basis, at[tip])
+	return out
+
 ## Constants and the bind-skeleton reader, shared by everything that
 ## synthesizes hand joints (the desktop simulator and the remote actuator).
 ## The asset's own bind pose IS the open hand, so poses built from it are

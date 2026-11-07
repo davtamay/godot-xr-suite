@@ -68,7 +68,7 @@ func _process(delta: float) -> void:
     if _pose_source == null:
         return
 
-    var timestamp_usec := Time.get_ticks_usec()
+    var timestamp_usec := XRClock.now_usec()
     for hand in [XRInputAdapter.Hand.LEFT, XRInputAdapter.Hand.RIGHT]:
         _update_hand(hand, timestamp_usec, delta)
 

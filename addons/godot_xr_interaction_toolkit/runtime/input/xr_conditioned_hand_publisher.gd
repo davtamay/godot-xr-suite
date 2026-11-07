@@ -124,7 +124,7 @@ static func publish(hand: int) -> XRHandTracker:
 	# sequence so every consumer of the conditioned tracker -- gesture
 	# recognition first among them -- can observe the event without racing
 	# each other for a one-shot flag.
-	var tracked := _filter.capture(hand, Time.get_ticks_usec(), frame)
+	var tracked := _filter.capture(hand, XRClock.now_usec(), frame)
 	if _filter.consume_discontinuity(hand):
 		XRHandTrackerResolver.note_discontinuity(hand)
 	if not tracked:

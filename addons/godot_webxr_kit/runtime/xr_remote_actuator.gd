@@ -490,19 +490,13 @@ func _apply(action: Dictionary) -> void:
 				# one still fading toward its pose.
 				joints = _fade[hhand]["to"] if _fade.has(hhand) else _hand_state[hhand]["joints"]
 				pose_name = str(_hand_state[hhand]["pose"])
+			elif action.has("pose"):
+				joints = _named_pose(hhand, pose_name)
+				if joints.is_empty():
+					_send({"type": "event", "error": "no pose named '%s' - see list_gestures" % pose_name})
+					return
 			else:
-				var curls: Dictionary = action.get("curls", {})
-				if action.has("pose"):
-					curls = _curls_for(pose_name)
-				joints = _pose_math.fk_pose(_bind[hhand]["rel"], _bind[hhand]["curl_axes"], curls)
-				if pose_name == "pinch":
-					# Close the pinch by ROTATION (thumb solved to the index
-					# tip), not by dragging tip positions: a positional morph
-					# is a bone-length change, and the conditioning chain
-					# low-passes those over seconds - measured as a pinch that
-					# selected ~5 s late, i.e. never within a normal hold.
-					# Same root cause and same cure as the microgesture.
-					joints = _pose_math.pinch_pose(joints)
+				joints = _pose_math.fk_pose(_bind[hhand]["rel"], _bind[hhand]["curl_axes"], action.get("curls", {}))
 			if action.has("fingers"):
 				joints = _with_fingers(hhand, joints, action["fingers"])
 				if joints.is_empty():
@@ -741,10 +735,17 @@ func _find_node(path: String) -> Node:
 	return found
 
 
-## A named pose as joints: the curl poses, then the gesture library.
+## A named pose as joints: the tuned pose library, then the gesture library
+## (shipped presets and Gesture Studio recordings).
 func _named_pose(hand: int, pose_name: String) -> Array:
-	if pose_name in _CURL_POSES:
-		var joints: Array = _pose_math.fk_pose(_bind[hand]["rel"], _bind[hand]["curl_axes"], _curls_for(pose_name))
+	var joints: Array = _pose_math.library_pose(_bind[hand]["rel"], pose_name, hand)
+	if not joints.is_empty():
+		# The pinch is closed by ROTATION (thumb solved to the index tip), not by
+		# dragging tip positions: a positional morph is a bone-length change, and
+		# the conditioning chain low-passes those over seconds - measured as a
+		# pinch that selected ~5 s late, i.e. never within a normal hold. The
+		# solve also sets the gap the select threshold expects, whatever the
+		# hand model's finger lengths do to the library's own.
 		return _pose_math.pinch_pose(joints) if pose_name == "pinch" else joints
 	return _gesture_joints(hand, pose_name)
 
@@ -1279,7 +1280,7 @@ func _publish_hand(hand: int) -> void:
 	var align: Basis = _bind[hand]["align"]
 	# Sub-mm sway mimics tracking jitter; without it the visualizer's
 	# frozen-hand watchdog (built for a real stale-pose bug) hides the hand.
-	var t := float(Time.get_ticks_msec()) * 0.001
+	var t := XRClock.now_seconds()
 	var sway := Vector3(sin(t * 1.3 + hand), sin(t * 1.7), sin(t * 2.1)) * 0.0006
 	var anchor := _to_play_space(Transform3D(_hand_world_basis(hand) * align, pos + sway))
 	# NOTE the pinch is closed rotationally at pose time (pinch_pose) - the

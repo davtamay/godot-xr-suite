@@ -692,7 +692,7 @@ func _update_hand_poses(delta: float) -> void:
 		# bit-identical simulated joints as frozen and hides the hand. The
 		# align basis was measured from the bind skeleton: fingers point along
 		# the view forward, palm down.
-		var sway_time := Time.get_ticks_msec() * 0.001
+		var sway_time := XRClock.now_seconds()
 		var sway := Vector3(sin(sway_time * 1.3 + hand), sin(sway_time * 1.7), sin(sway_time * 2.1)) * 0.0006
 		var anchor_pos := cam * Vector3(0.25 if hand == 1 else -0.25, -0.2, -controller_distance) + sway
 		var view_basis := _basis_looking(anchor_pos, _mouse_target(anchor_pos)) if hand == 1 else cam.basis

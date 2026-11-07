@@ -305,7 +305,7 @@ func _dwell_filtered(candidate: Dictionary) -> Dictionary:
 		return candidate
 	var interactable = _hit_interactable(candidate)
 	var key: int = interactable.get_instance_id() if interactable != null else 0
-	var now := Time.get_ticks_usec() * 0.000001
+	var now := XRClock.now_seconds()
 	_dwell_samples.append({"t": now, "key": key})
 	_dwell_hits[key] = candidate
 	while _dwell_samples.size() > 1 and now - float(_dwell_samples[0]["t"]) > dwell_window_seconds:
