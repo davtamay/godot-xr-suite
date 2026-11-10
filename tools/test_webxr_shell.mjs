@@ -27,5 +27,5 @@ context.selectWebRenderer(config,caps,'webgl');
 assert.deepEqual(Array.from(config.args),['--verbose','--rendering-driver','opengl3','--rendering-method','gl_compatibility']);
 config = {experimentalWebGPU:true,args:['--rendering-method','forward_plus','--rendering-driver','opengl3']};
 context.selectWebRenderer(config,caps,'webgpu');
-assert.deepEqual(Array.from(config.args),['--rendering-method','forward_plus','--rendering-driver','webgpu']);
+assert.deepEqual(Array.from(config.args),['--rendering-method','forward_plus']);
 console.log('PASS: explicit engine driver and rendering-method alignment');

@@ -511,8 +511,8 @@
         if (flags.some(flag => arg.startsWith(flag + '='))) continue;
         args.push(arg);
       }
-      args.push('--rendering-driver', selected === 'webgpu' ? 'webgpu' : 'opengl3');
-      if (selected === 'webgl') args.push('--rendering-method', 'gl_compatibility');
+      // WebGPU keeps the export's baked rendering method and loader defaults.
+      if (selected === 'webgl') args.push('--rendering-driver', 'opengl3', '--rendering-method', 'gl_compatibility');
       config.args = args;
       return { requested: preference || 'auto', selected, webgpuCapable, immersiveWebgpuCapable };
     }
