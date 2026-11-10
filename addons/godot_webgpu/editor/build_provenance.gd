@@ -28,6 +28,8 @@ static func collect(preset: EditorExportPreset, platform: EditorExportPlatform, 
 	if tint.is_empty():
 		tint = OS.get_executable_path().get_base_dir().path_join("tint.exe" if OS.get_name() == "Windows" else "tint")
 	var tint_hash := FileAccess.get_sha256(tint) if FileAccess.file_exists(tint) else ""
+	var tint_fallback := OS.get_environment("GODOT_TINT_PATH_FALLBACK")
+	var tint_fallback_hash := FileAccess.get_sha256(tint_fallback) if FileAccess.file_exists(tint_fallback) else ""
 	var template_hash := FileAccess.get_sha256(template) if FileAccess.file_exists(template) else ""
 	var result := {
 		"schema": 2,
@@ -36,13 +38,15 @@ static func collect(preset: EditorExportPreset, platform: EditorExportPlatform, 
 		"editor_sha256": FileAccess.get_sha256(OS.get_executable_path()),
 		"template_sha256": template_hash,
 		"tint_sha256": tint_hash,
+		"tint_fallback_requested": not tint_fallback.is_empty(),
+		"tint_fallback_sha256": tint_fallback_hash,
 		"demo": demo_state,
 		"suite": suite_state,
 		"engine_source": engine_state,
 		"preset": preset.get_preset_name(),
 		"debug": is_debug,
 		"options": {},
-		"identity_complete": (demo_state.clean or demo_state.get("export_override_verified", false)) and suite_state.clean and engine_state.clean and engine_state.revision == Engine.get_version_info().hash and not template_hash.is_empty() and (not bool(preset.get("webgpu/enabled")) or not tint_hash.is_empty()),
+		"identity_complete": (demo_state.clean or demo_state.get("export_override_verified", false)) and suite_state.clean and engine_state.clean and engine_state.revision == Engine.get_version_info().hash and not template_hash.is_empty() and (not bool(preset.get("webgpu/enabled")) or (not tint_hash.is_empty() and (tint_fallback.is_empty() or not tint_fallback_hash.is_empty()))),
 	}
 	for option in ["webgpu/enabled", "webgpu/bake_fp16_variants", "webgpu/bake_mobile_fallback", "variant/thread_support", "shader_baker/enabled", "webxr/uses_webxr"]:
 		result.options[option] = preset.get(option)
@@ -68,7 +72,8 @@ static func _source_state(path: String) -> Dictionary:
 		var relative := str(override.get("path", ""))
 		if root.ok and root.text.replace("\\", "/") == str(override.get("root", "")) and relative.ends_with("export_presets.cfg") and not relative.contains("..") and not relative.is_absolute_path():
 			var blob := _git(path, PackedStringArray(["rev-parse", "HEAD:" + relative]))
-			if head.text == override.get("revision") and blob.ok and blob.text == override.get("base_blob") and status.text == "M " + relative and FileAccess.get_sha256(root.text.path_join(relative)) == override.get("effective_sha256"):
+			var only_preset_changed: bool = status.text == "M " + relative or status.text == "M " + JSON.stringify(relative)
+			if head.text == override.get("revision") and blob.ok and blob.text == override.get("base_blob") and only_preset_changed and FileAccess.get_sha256(root.text.path_join(relative)) == override.get("effective_sha256"):
 				result["state"] = "verified-export-preset-override"
 				result["export_override_verified"] = true
 				result["export_override"] = override
