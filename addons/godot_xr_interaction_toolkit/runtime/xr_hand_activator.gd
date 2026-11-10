@@ -42,8 +42,15 @@ enum ActivateMode { MOMENTARY, CONTINUOUS }
 @export_range(0.01, 0.5, 0.01) var release_pull := 0.06
 ## Optional: fire on a whole authored pose (a Gesture Studio recording or preset)
 ## instead of a single finger curl. When set, the finger settings are ignored.
-@export var activate_gesture: XRHandGesture:
+# Keep the optional hands addon's class out of the parser dependency graph.
+# Validate assigned resources dynamically so the two-addon bundle can export.
+@export var activate_gesture: Resource:
 	set(value):
+		if value != null:
+			var gesture_path := "res://addons/godot_xr_hands/runtime/gesture_studio/xr_hand_gesture.gd"
+			if not ResourceLoader.exists(gesture_path) or not is_instance_of(value, load(gesture_path)):
+				push_warning("XRHandActivator: activate_gesture requires an XRHandGesture from the optional godot_xr_hands addon.")
+				return
 		activate_gesture = value
 		_rebuild_recognizer()
 ## Only fire while the object is actually held by a hand (the normal case).
