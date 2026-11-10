@@ -1,56 +1,16 @@
 extends Node3D
-## Harvests WebXR depth-sensing data (CPU path) into a live depth mesh.
-##
-## Depth sensing is the LIVE sensor view: per-frame range data covering
-## whatever the headset currently looks at, including moving objects. It
-## complements mesh detection (webxr_mesh_bridge.gd), which serves the
-## platform's persistent reconstructed room geometry. Out of the box today
-## Quest ships mesh detection while Android XR ships depth sensing, so a
-## demo needs both, separately toggleable.
-##
-## Mechanism: a JS hook wraps the session's requestAnimationFrame. On a
-## throttled tick it reads the primary view's XRCPUDepthInformation, samples
-## it on a fixed grid via getDepthInMeters() (which applies the buffer
-## transform and rawValueToMeters for us), unprojects each sample to the
-## session reference space, and publishes the point grid. This node polls
-## the grid and triangulates it into an ArrayMesh, culling triangles across
-## depth discontinuities and coloring vertices by distance.
-##
-## Two layers render: the LIVE SWEEP (the current sensor view, refreshed
-## ~4 Hz, distance-colored - the "scanner beam") and, with `accumulate` on,
-## the persistent SCAN - triangulated surface patches accumulate wherever
-## the sweep touches unscanned space (tracked in a world-anchored 5 cm
-## voxel store), rendered in the same blue as the room-mesh visualization.
-## Looking around progressively reconstructs the room from raw depth. This
-## is the room-scan experience on devices that ship depth sensing but lock
-## mesh detection behind browser flags (Android XR out of the box).
-##
-## The unprojection is exact for WebXR's (possibly asymmetric) perspective
-## projections without a matrix inverse: with column-major projection P and
-## eye depth d (meters), ndc.x = (P[0]*x + P[8]*z)/-z with z = -d, so
-## x = d*(ndc.x + P[8])/P[0] and y = d*(ndc.y + P[9])/P[5].
-##
-## Requires the session to be granted "depth-sensing". cpu-optimized grants
-## (Android XR) read XRCPUDepthInformation directly; gpu-optimized grants on
-## WebGL sessions (Quest) decode the XRWebGLBinding depth texture with a
-## grid-sized shader pass and read it back. get_status() reports honestly
-## which precondition is missing.
-##
-## OCCLUSION PATHS (both fed by THIS bridge's CPU depth harvest - the depth
-## sensor's own texture is not directly bindable in the browser yet):
-##   HARD (set_occlude): the live per-frame depth grid is triangulated into a
-##     mesh drawn with a subtract-blend punch (_punch_instance). Crisp, cheap,
-##     reliable - the default.
-##   SOFT (set_ext_harvest): the depth grid is uploaded as a per-eye texture
-##     array and PUSHED onto occludable objects' neutral occlusion shader
-##     (group 'xr_occludable'), which fades each object to passthrough where
-##     the real world is in front, with a feathered edge (the Meta/Unity
-##     per-object technique). No fullscreen quad, no scene DEPTH_TEXTURE.
-## The old FULLSCREEN sensor occluder (webxr_occluder + webxr_occlusion*.gdshader)
-## was REMOVED: a fullscreen quad can't read scene depth in the XR render path,
-## so it never worked. A future GPU-direct depth path (the engine's dormant
-## wip/gl-depth-texture branch) would remove the CPU roundtrip; until then this
-## bridge is the single source of depth for both occlusion modes.
+
+const GPU_DEPTH := preload("res://addons/godot_webxr_scene_understanding/runtime/webxr_gpu_depth.gd")
+var _gpu_depth := GPU_DEPTH.new()
+var _gpu_mesh_poll := 0.0
+var _gpu_depth_status: Dictionary = {}
+## Live WebXR depth: GPU-optimized WebGPU sessions consume the engine's
+## per-eye, view-normalized textures for soft occlusion without CPU copies.
+## Optional hard occlusion / scans use asynchronous readback with captured pose.
+## CPU-optimized sessions and WebGL retain the throttled JavaScript grid path.
+## Missing GPU eyes are unknown (zero), never substituted with another eye.
+## Requires the session to grant depth-sensing; get_status reports availability.
+## See docs/webgpu-gpu-depth.md in the engine for formats, lifetime and tests.
 
 const MESH_MATERIAL := preload("res://addons/godot_webxr_scene_understanding/runtime/depth_mesh_material.tres")
 ## Scan accumulation draws depth-test-free at a high queue priority so the
@@ -800,6 +760,7 @@ func _sync_harvest() -> void:
 	Engine.get_singleton("JavaScriptBridge").eval("window.GodotWebXRDepthBridge && (window.GodotWebXRDepthBridge.harvest = %s);" % ("true" if active else "false"), true)
 	set_process(active)
 	if not active:
+		_gpu_depth.clear()
 		_mesh_instance.mesh = null
 		_punch_instance.mesh = null
 
@@ -820,15 +781,21 @@ func _clear_scan() -> void:
 ## The granted depth usage ('cpu-optimized' / 'gpu-optimized' / '') for
 ## availability displays.
 func get_usage() -> String:
+	if _gpu_depth.active:
+		return "gpu-optimized"
 	if not _installed:
 		return ""
 	return str(Engine.get_singleton("JavaScriptBridge").eval("window.GodotWebXRDepthBridge ? String(window.GodotWebXRDepthBridge.usage || '') : '';", true))
 
 func get_status() -> String:
+	if _gpu_depth.active:
+		return "Depth LIVE on GPU: %d views, %dx%d, meters. Scan meshes use asynchronous readback." % [_gpu_depth.info.view_count, _gpu_depth.info.width, _gpu_depth.info.height]
 	if not _installed:
 		return "Depth sensing: web only."
 	if _webxr == null or not _webxr.is_initialized():
 		return "Depth sensing: waiting for an immersive session."
+	if not _gpu_depth_status.is_empty() and _gpu_depth_status.get("status", "") not in ["cpu_depth", "webgl_session"]:
+		return "GPU depth: %s. Missing eye data is not reused." % _gpu_depth_status.get("status", "unavailable")
 	var features := str(_webxr.get("enabled_features"))
 	if not features.contains("depth-sensing"):
 		return "Depth sensing: not granted by the browser (on some devices it hides behind chrome://flags WebXR Incubations)."
@@ -882,6 +849,9 @@ func _on_session_started() -> void:
 	_sync_render()
 
 func _on_session_ended() -> void:
+	_gpu_depth_status = {}
+	_gpu_depth.clear()
+	_push_occlusion(&"occ_enabled", 0.0)
 	_mesh_instance.mesh = null
 	_punch_instance.mesh = null
 	_last_seq = 0
@@ -889,6 +859,8 @@ func _on_session_ended() -> void:
 
 func _process(delta: float) -> void:
 	if not (auto_visualize or occlude_enabled or _ext_harvest):
+		return
+	if _process_gpu_depth(delta):
 		return
 	if _scan_rebuild_cooldown > 0.0:
 		_scan_rebuild_cooldown -= delta
@@ -913,9 +885,60 @@ func _process(delta: float) -> void:
 	if auto_visualize or occlude_enabled:
 		_rebuild_mesh(data)
 
+## GPU path consumes per-eye normalized textures directly. Mesh readback is
+## optional and asynchronous; a captured pose travels with its depth frame.
+func _process_gpu_depth(delta: float) -> bool:
+	if _webxr == null or RenderingServer.get_current_rendering_method() == "gl_compatibility":
+		return false
+	var system_info := _webxr.get_system_info()
+	var depth: Dictionary = system_info.get("webxr_depth", {})
+	_gpu_depth_status = depth
+	var status := str(depth.get("status", ""))
+	if status == "cpu_depth" or status == "webgl_session" or status.is_empty():
+		if _gpu_depth.active:
+			_gpu_depth.clear()
+			_env_img0 = null # Force the CPU provider to bind its texture again.
+		return false
+	if not _gpu_depth.update(system_info):
+		_push_occlusion(&"occ_enabled", 0.0)
+		_mesh_instance.mesh = null
+		_punch_instance.mesh = null
+		return true
+	if _ext_harvest:
+		_push_occlusion(&"env_depth", _gpu_depth.texture)
+		_push_occlusion(&"env_size", Vector2(depth.width, depth.height))
+		_push_occlusion(&"depth_uv_flip_y", 0.0)
+		_push_occlusion(&"depth_world_scale", XRServer.world_scale)
+		_push_occlusion(&"eye_select", 1.0)
+		var views: Array = depth.views
+		var space_to_world: Transform3D = XRServer.world_origin * XRServer.get_reference_frame()
+		for index in range(2):
+			var view: Dictionary = views[mini(index, views.size() - 1)]
+			var position: Vector3 = space_to_world * (GPU_DEPTH.view_transform(view).origin * XRServer.world_scale)
+			_push_occlusion(&"eye0_pos" if index == 0 else &"eye1_pos", position)
+		_push_occlusion(&"occ_enabled", 1.0)
+	_gpu_mesh_poll += delta
+	if (auto_visualize or occlude_enabled) and _gpu_mesh_poll >= _poll_interval:
+		_gpu_mesh_poll = 0.0
+		var space_to_local: Transform3D = global_transform.affine_inverse() * XRServer.world_origin * XRServer.get_reference_frame()
+		_gpu_depth.request_mesh(system_info, space_to_local, XRServer.world_scale, _gpu_mesh_received)
+	return true
+
+
+func _gpu_mesh_received(data: Dictionary) -> void:
+	if not _gpu_depth.active or not (auto_visualize or occlude_enabled):
+		return
+	_rebuild_mesh(data)
+	if _scan_dirty:
+		_rebuild_scan_mesh()
+
+
 ## Upload the harvested metres grid as a FORMAT_RF texture for the per-pixel
 ## (Meta-style) occlusion shader. Reuses the Image/ImageTexture across frames.
 func _update_env_depth(data: Dictionary) -> void:
+	_push_occlusion(&"depth_uv_flip_y", 1.0)
+	_push_occlusion(&"depth_world_scale", 1.0)
+	_push_occlusion(&"occ_enabled", 1.0 if _ext_harvest else 0.0)
 	var met_v: Variant = data.get("met", null)
 	if met_v == null:
 		return
@@ -967,9 +990,11 @@ func _grid_to_image(grid: Array, gw: int, gh: int) -> Image:
 
 ## The per-pixel occlusion env-depth texture array (null until the first harvest).
 func get_env_depth_texture() -> Texture:
-	return _env_depth_tex
+	return _gpu_depth.texture if _gpu_depth.active else _env_depth_tex
 
 func get_env_size() -> Vector2:
+	if _gpu_depth.active:
+		return Vector2(_gpu_depth.info.width, _gpu_depth.info.height)
 	return Vector2(_env_img0.get_width(), _env_img0.get_height()) if _env_img0 else Vector2(128, 96)
 
 ## True while the per-object soft occlusion is feeding the env-depth globals.

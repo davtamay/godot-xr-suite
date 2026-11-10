@@ -17,11 +17,10 @@ extends RefCounted
 ## call is safe off-web (returns sensible defaults so a menu still builds in the
 ## editor).
 ##
-## Why a user would switch: today the only WebGPU gap is depth sensing - Quest's
-## XRGPUBinding has no getDepthInformation - so depth scan and occlusion need
-## the WebGL path. webgpu_depth_available() feature-detects that method, so the
-## day a browser ships it the "not available" note disappears with no code
-## change.
+## GPU depth availability is negotiated per session. Feature detection describes
+## the browser API; the runtime depth status also reports CPU fallback, missing
+## data, paused sensing and engine import failures. API presence alone is not
+## proof that a headset delivered valid depth.
 
 const PREF_KEY := "godot_renderer"
 
@@ -62,13 +61,20 @@ static func webgpu_depth_available() -> bool:
     var js = _js()
     if js == null:
         return false
-    var probe := "(function(){try{return !!(window.XRGPUBinding && XRGPUBinding.prototype && ('getDepthInformation' in XRGPUBinding.prototype));}catch(e){return false;}})()"
+    var probe := "(function(){try{return !!(window.XRGPUBinding && XRGPUBinding.prototype && typeof XRGPUBinding.prototype.getDepthInformation === 'function');}catch(e){return false;}})()"
     return bool(js.eval(probe, true))
 
 ## True when the app is on WebGPU AND this browser can't serve depth there, i.e.
 ## depth scan / occlusion are unavailable until the user switches to WebGL.
 static func depth_blocked_here() -> bool:
-    return is_webgpu() and not webgpu_depth_available()
+    if not is_webgpu():
+        return false
+    var xr := XRServer.find_interface("WebXR")
+    if xr and xr.is_initialized():
+        var status := str(xr.get_system_info().get("webxr_depth_status", ""))
+        if status in ["ok", "cpu_depth"]:
+            return false
+    return not webgpu_depth_available()
 
 ## The saved renderer preference: "webgl", "webgpu", or "" (none set yet).
 static func preference() -> String:
@@ -160,7 +166,7 @@ static func coverage_note(renderer: String) -> String:
         return "Recommended. Full features (depth scan, occlusion, room mesh, hands), smooth XR."
     var note := "EXPERIMENTAL - Godot's modern Mobile renderer (PBR, compute, MSAA) running on WebGPU in XR, likely a web first. Held back by today's browsers, not the engine: the WebXR-WebGPU bridge copies every frame to the compositor (WebGL hands frames over directly), so XR framerate is lower, and re-entering a session may need a page reload."
     if not webgpu_depth_available():
-        note += " No depth sensing (depth scan, occlusion) on this browser yet."
+        note += " GPU depth API unavailable; CPU depth may still be granted by the session."
     return note + " It all lights up as browsers optimize - until then, WebGL is the smooth choice."
 
 static func _js():

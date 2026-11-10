@@ -9,6 +9,9 @@ render_mode cull_back, depth_draw_opaque;
 uniform sampler2DArray env_depth : filter_linear, hint_default_black;
 uniform vec2 env_size = vec2(128.0, 96.0);
 uniform float occ_enabled = 0.0;
+// CPU/WebGL grids use the historical flip; normalized WebGPU grids are top-left.
+uniform float depth_uv_flip_y = 1.0;
+uniform float depth_world_scale = 1.0;
 uniform vec3 eye0_pos = vec3(0.0);
 uniform vec3 eye1_pos = vec3(0.0);
 // 0 = projection off-centre sign; 1 = nearest actual eye position.
@@ -32,7 +35,7 @@ void fragment() {
 	ROUGHNESS = roughness;
 	SPECULAR = specular;
 	if (occ_enabled > 0.5) {
-		vec2 uv = vec2(SCREEN_UV.x, 1.0 - SCREEN_UV.y);
+		vec2 uv = vec2(SCREEN_UV.x, mix(SCREEN_UV.y, 1.0 - SCREEN_UV.y, depth_uv_flip_y));
 		float layer;
 		if (eye_select > 0.5) {
 			vec3 cam_pos = INV_VIEW_MATRIX[3].xyz;
@@ -49,7 +52,7 @@ void fragment() {
 				float rm = texture(
 					env_depth,
 					vec3(uv + vec2(float(dx), float(dy)) * texel, layer)
-				).r;
+				).r * depth_world_scale;
 				if (rm > 0.05) {
 					total += 1.0;
 					occ += 1.0 - smoothstep(-margin, margin, rm - v_depth);
