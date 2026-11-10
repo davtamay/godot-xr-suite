@@ -78,7 +78,6 @@
     </div>
   </div>
 
-  <script src="runtime_metrics_overlay.js"></script>
   <script src="$GODOT_URL"></script>
   <script>
     (function installRawWebXRHandBridge() {
@@ -458,6 +457,7 @@
         immersiveVr,
         immersiveAr,
         webgpuApi: hasWebGPU,
+        webxrWebgpu: typeof window.XRGPUBinding === 'function',
         webgpuAdapter,
         webgpuAdapterInfo
       };
@@ -486,6 +486,23 @@
       ].join('');
     }
 
+    // Build capability and browser capability are separate. Stock Godot stays
+    // WebGL-only even when navigator.gpu exists; an explicit unsupported request
+    // fails visibly instead of silently changing the requested renderer.
+    function selectWebRenderer(config, caps, preference) {
+      const webgpuCapable = config.experimentalWebGPU === true && caps.webgpuApi === true;
+      const immersiveWebgpuCapable = webgpuCapable && caps.webxrWebgpu === true;
+      if (preference && preference !== 'webgl' && preference !== 'webgpu') {
+        throw new Error('renderer must be webgl or webgpu');
+      }
+      if (preference === 'webgpu' && !webgpuCapable) {
+        throw new Error('This export/browser cannot run WebGPU. Use renderer=webgl or matching WebGPU templates.');
+      }
+      const selected = preference || (webgpuCapable && !caps.immersiveVr && !caps.immersiveAr ? 'webgpu' : 'webgl');
+      if ('experimentalWebGPU' in config) config.experimentalWebGPU = selected === 'webgpu';
+      return { requested: preference || 'auto', selected, webgpuCapable, immersiveWebgpuCapable };
+    }
+
     async function startGodot() {
       startButton.disabled = true;
       errorEl.textContent = '';
@@ -494,7 +511,16 @@
 
       try {
         await window.CompanyWebCapsReady;
-        const engine = new Engine($GODOT_CONFIG);
+        const config = $GODOT_CONFIG;
+        let savedRenderer = '';
+        try { savedRenderer = localStorage.getItem('godot_renderer') || ''; } catch (_) {}
+        if (!['webgl', 'webgpu'].includes(savedRenderer)) savedRenderer = '';
+        const requested = new URLSearchParams(location.search).get('renderer') || savedRenderer;
+        const selection = selectWebRenderer(config, window.CompanyWebCaps, requested);
+        window.__godotWebGPUCapable = selection.webgpuCapable;
+        window.__godotWebXRWebGPUCapable = selection.immersiveWebgpuCapable;
+        window.__godotRendererSelection = selection;
+        const engine = new Engine(config);
         window.CompanyRuntimeMetrics && window.CompanyRuntimeMetrics.startFrameCapture();
         await engine.startGame({
           canvas,

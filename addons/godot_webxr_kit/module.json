@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "id": "godot_webxr_kit",
+  "name": "Godot WebXR Kit",
+  "version": "1.44.1",
+  "source": {
+    "repository": "https://github.com/davtamay/godot-xr-suite",
+    "path": "addons/godot_webxr_kit",
+    "integration_example": "https://github.com/davtamay/Godot_WebXR"
+  },
+  "authors_metadata": "Existing plugin author credit: OSE. Original source and third-party credits are preserved.",
+  "license": "NOASSERTION",
+  "license_notes": "The source repository has no root license declaration. See LICENSE-NOTICE.md; bundled third-party notices retain their own terms.",
+  "dependencies": {
+    "godot_xr_interaction_toolkit": "1.83.2"
+  },
+  "optional_dependencies": [
+    "godot_xr_hands",
+    "godot_webxr_scene_understanding",
+    "godot_xr_scene_understanding",
+    "godot_webgpu"
+  ],
+  "compatibility": {
+    "standard_godot": "Uses standard Godot XR/GDScript APIs; official 4.7.1 is the compatibility test baseline.",
+    "custom_engine": "Optional WebGPU path requires matching custom editor and templates.",
+    "web": "WebXR-capable browser, secure context and user gesture; permissions/features are runtime-negotiated.",
+    "threads": "Both supported; threaded web requires COOP/COEP and SharedArrayBuffer. Single-threaded does not require SharedArrayBuffer."
+  },
+  "entry_scene": "res://addons/godot_webxr_kit/xr_prefab.tscn",
+  "html_shell": "res://addons/godot_webxr_kit/web/company_webxr_shell.html",
+  "capabilities": [
+    "webxr_sessions",
+    "openxr_adapter",
+    "controller_input",
+    "hand_input",
+    "interaction_toolkit",
+    "optional_simulator_and_actuator"
+  ],
+  "excluded_from_minimal": [
+    "custom_engine",
+    "webgpu_driver",
+    "hand_mesh_assets",
+    "scene_understanding",
+    "android_export_tools",
+    "demo_product_content"
+  ],
+  "documentation": "README.md"
+}

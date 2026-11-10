@@ -1,5 +1,14 @@
 # Godot WebXR Kit
 
+## Portable package and source
+
+This addon comes from [davtamay/godot-xr-suite](https://github.com/davtamay/godot-xr-suite); the integration/demo repository is [davtamay/Godot_WebXR](https://github.com/davtamay/Godot_WebXR). Existing OSE author credits and third-party notices are preserved. Version and dependencies are in `module.json`; generated bundles additionally record the exact source commit and file hashes. See `LICENSE-NOTICE.md` for the repository's undeclared root license and retained third-party terms.
+
+The minimal distribution installs two existing addon folders as one bundle: this runtime kit and `godot_xr_interaction_toolkit`. It includes the interaction toolkit and controller fallback models, but no custom engine, demo content, hand mesh addon, scene-understanding addon, or Android tooling. Standard Godot uses WebGL; installing this package does not add a WebGPU renderer. Fork-specific capabilities are optional and detected at runtime.
+
+For the packaged installation instructions, hosting requirements, optional modules, and validation limits, see the bundle's root README. From the source repository, build it with `python tools/package_webxr.py --output webxr-minimal.zip`.
+
+
 The WebXR platform layer for `godot_xr_interaction_toolkit`. Turns a browser
 WebXR session into the poses and select/activate events the interaction toolkit
 consumes, and provides the browser-side plumbing (custom HTML shell, capability
