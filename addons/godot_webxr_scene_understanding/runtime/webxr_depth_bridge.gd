@@ -897,6 +897,7 @@ func _process_gpu_depth(delta: float) -> bool:
 	if status == "cpu_depth" or status == "webgl_session" or status.is_empty():
 		if _gpu_depth.active:
 			_gpu_depth.clear()
+			_push_occlusion(&"occ_enabled", 0.0)
 			_env_img0 = null # Force the CPU provider to bind its texture again.
 		return false
 	if not _gpu_depth.update(system_info):
