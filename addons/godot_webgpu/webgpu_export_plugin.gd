@@ -18,6 +18,7 @@ const PROFILE_SUFFIX := ".build"
 var editor_plugin: EditorPlugin
 var _last_on := false
 var _last_status_text := ""
+var _export_settings := preload("res://addons/godot_webgpu/editor/export_settings.gd").new()
 
 
 func _get_name() -> String:
@@ -132,23 +133,34 @@ func _export_begin(
 	path: String,
 	flags: int
 ) -> void:
+	_export_settings.restore()
+	if features.has("web"):
+		var provenance = load("res://addons/godot_webgpu/editor/build_provenance.gd")
+		var manifest: Dictionary = provenance.collect(get_export_preset(), get_export_platform(), is_debug)
+		add_file("res://xr_build_provenance.json", JSON.stringify(manifest).to_utf8_buffer(), false)
 	if not _is_on(OPT):
 		return
 	# The web build follows the project's renderer (Forward+ or Mobile); the
 	# engine's own default for the web feature tag is GL Compatibility, which
 	# would silently override it.
 	var method := _project_rendering_method()
-	ProjectSettings.set_setting("rendering/renderer/rendering_method.web", method)
-	ProjectSettings.set_setting("rendering/rendering_device/driver.web", "webgpu")
-	ProjectSettings.set_setting("xr/shaders/enabled", false)
 	# Read by the engine's WebGPU shader baker (skips FP16 variant groups
 	# when false). Transient: set for this export only, defaults to true
 	# when absent so stock projects keep the perf-first behavior.
 	var bake_fp16: Variant = get_option(FP16)
-	ProjectSettings.set_setting("rendering/webgpu/bake_fp16_shader_variants", bake_fp16 == null or bool(bake_fp16))
+	_export_settings.apply({
+		"rendering/renderer/rendering_method.web": method,
+		"rendering/rendering_device/driver.web": "webgpu",
+		"xr/shaders/enabled": false,
+		"rendering/webgpu/bake_fp16_shader_variants": bake_fp16 == null or bool(bake_fp16),
+	})
 	if method == "forward_plus" and _is_on(FALLBACK) and OS.get_environment(FALLBACK_ENV) == "":
 		_bake_mobile_fallback()
 	_check_build_profile()
+
+
+func _export_end() -> void:
+	_export_settings.restore()
 
 
 func _project_rendering_method() -> String:

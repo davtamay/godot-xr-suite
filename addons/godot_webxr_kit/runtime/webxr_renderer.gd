@@ -131,7 +131,15 @@ static func switch_to(mode: String) -> void:
     var js = _js()
     if js == null:
         return
-    js.eval("try{localStorage.setItem('%s','%s');}catch(e){}; location.reload();" % [PREF_KEY, mode], true)
+    # The shell's explicit test URL takes precedence over the saved preference.
+    # Update both so in-app switches and WebGL retry buttons still work.
+    var script := """
+        try { localStorage.setItem('%s', '%s'); } catch (e) {}
+        const rendererURL = new URL(location.href);
+        rendererURL.searchParams.set('renderer', '%s');
+        location.replace(rendererURL.href);
+    """ % [PREF_KEY, mode, mode]
+    js.eval(script, true)
 
 ## True when a failed WebGPU session has somewhere to go: this page runs on
 ## WebGPU, and the shell that honors the preference loaded it. That shell is the
