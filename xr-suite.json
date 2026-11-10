@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "id": "godot_xr_suite",
+  "name": "XR Suite",
+  "version": "1.45.0",
+  "source": {
+    "repository": "https://github.com/davtamay/godot-xr-suite",
+    "integration_example": "https://github.com/davtamay/Godot_WebXR"
+  },
+  "required_modules": [
+    "godot_webxr_kit",
+    "godot_xr_interaction_toolkit"
+  ],
+  "optional_modules": {
+    "hands": [
+      "godot_xr_hands"
+    ],
+    "scene_understanding": [
+      "godot_xr_scene_understanding",
+      "godot_webxr_scene_understanding"
+    ],
+    "webgpu_tools": [
+      "godot_webgpu"
+    ]
+  },
+  "profiles": {
+    "minimal": [],
+    "full": [
+      "hands",
+      "scene_understanding",
+      "webgpu_tools"
+    ]
+  },
+  "license": "NOASSERTION"
+}

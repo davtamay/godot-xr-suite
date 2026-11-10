@@ -1,10 +1,22 @@
-# godot-xr-suite
+# XR Suite
 
 **Cross-platform XR building blocks for Godot 4.x** — WebXR in browsers,
 native OpenXR APKs on headsets, and editor testing through Quest Link /
 SteamVR, drag-and-drop by design. Think Meta's
 Building Blocks or Unity's XRI + XR Hands, but easier: most blocks wire
 themselves the moment you drop them in.
+
+## Install profiles for products
+
+XR Suite is maintained in this repository with one release pipeline. Start with
+**Minimal** (WebXR runtime + interaction toolkit), then opt into hands, scene
+understanding or WebGPU tools as needed. **Full** includes all those optional
+modules. Stable addon paths work across profiles; do not install duplicate copies.
+
+[Company installation, upgrades and provenance](docs/PORTABLE_WEBXR_PACKAGE.md)
+cover the suite release version, component versions and source metadata.
+`xr-suite.json` is the distribution catalog; `tools/release_xr_suite.py` builds
+both standard profiles from the same clean commit.
 
 ## Quick start: define exports, then build
 
