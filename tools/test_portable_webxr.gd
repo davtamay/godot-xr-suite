@@ -6,6 +6,8 @@ func _initialize() -> void:
 func _run() -> void:
 	var activator = load("res://addons/godot_xr_interaction_toolkit/runtime/xr_hand_activator.gd").new()
 	assert(activator.activate_gesture == null)
+	activator.activate_gesture = Resource.new()
+	assert(activator.activate_gesture == null, "Invalid optional gesture resource was accepted")
 	if ResourceLoader.exists("res://addons/godot_xr_hands/runtime/gesture_studio/xr_hand_gesture.gd"):
 		var gesture = load("res://addons/godot_xr_hands/runtime/gesture_studio/xr_hand_gesture.gd").new()
 		activator.activate_gesture = gesture

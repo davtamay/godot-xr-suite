@@ -5,6 +5,8 @@ Demo/integration: https://github.com/davtamay/Godot_WebXR
 
 This is a reusable distribution of the existing runtime kit and interaction toolkit, not a new XR engine. Original OSE metadata, upstream credits, and third-party notices remain intact. `module.json` records version, source commit, dependencies, selected modules, and hashes of distributed files. `LICENSE-NOTICE.md` explains the absence of a root repository license declaration.
 
+Choose one complete bundle: Minimal, or Optional Modules (which also includes the minimal runtime/toolkit). Do not install them as duplicate addon copies.
+
 ## Install in a company project
 
 1. Extract the bundle into a staging folder. Copy its two `addons/` folders into your project's `addons/`. If versions are already installed, review and replace them as a complete matched bundle; do not mix revisions or install duplicate renamed copies.

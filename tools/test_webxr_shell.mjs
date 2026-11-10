@@ -21,3 +21,11 @@ assert.throws(() => context.selectWebRenderer({experimentalWebGPU:true}, {...cap
 assert.throws(() => context.selectWebRenderer({}, caps, 'invalid'), /renderer must/);
 assert.ok(!html.includes('src="runtime_metrics_overlay.js"'));
 console.log('PASS: stock/fork capability, explicit renderer selection, immersive defaults, invalid requests, self-contained shell');
+
+config = {experimentalWebGPU:true,args:['--verbose','--rendering-driver=webgpu','--rendering-method','mobile']};
+context.selectWebRenderer(config,caps,'webgl');
+assert.deepEqual(Array.from(config.args),['--verbose','--rendering-driver','opengl3','--rendering-method','gl_compatibility']);
+config = {experimentalWebGPU:true,args:['--rendering-method','forward_plus','--rendering-driver','opengl3']};
+context.selectWebRenderer(config,caps,'webgpu');
+assert.deepEqual(Array.from(config.args),['--rendering-method','forward_plus','--rendering-driver','webgpu']);
+console.log('PASS: explicit engine driver and rendering-method alignment');
