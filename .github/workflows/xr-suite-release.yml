@@ -2,7 +2,10 @@ name: XR Suite release profiles
 on:
   workflow_dispatch:
   push:
+    branches: ["master"]
     tags: ["xr-suite-v*"]
+  pull_request:
+    branches: ["master"]
 permissions:
   contents: read
 jobs:
@@ -17,6 +20,11 @@ jobs:
           python-version: "3.11"
       - name: Test all module combinations
         run: python tools/test_xr_suite_package.py
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Check stock and fork renderer selection
+        run: node tools/test_webxr_shell.mjs
       - name: Build both profiles from the same revision
         run: python tools/release_xr_suite.py --output-dir "${{ runner.temp }}/xr-suite-release"
       - uses: actions/upload-artifact@v4
